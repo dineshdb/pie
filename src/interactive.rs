@@ -23,7 +23,7 @@ pub struct ParsedInput {
     pub query: String,
 }
 
-pub fn start_interactive_mode() -> anyhow::Result<()> {
+pub async fn start_interactive_mode() -> anyhow::Result<()> {
     info!("Welcome to pie! Type 'help' for usage or 'exit' to quit.\n");
 
     let stdin = io::stdin();
@@ -54,7 +54,7 @@ pub fn start_interactive_mode() -> anyhow::Result<()> {
             }
             _ => {
                 let args = parse_input(input);
-                if let Err(e) = handle_query(&args) {
+                if let Err(e) = handle_query(&args).await {
                     tracing::error!("Error: {e}");
                 }
             }

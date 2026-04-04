@@ -21,10 +21,9 @@ pub fn handle_list_skills() {
     }
 }
 
-pub fn handle_query(args: &ParsedInput) -> Result<()> {
+pub async fn handle_query(args: &ParsedInput) -> Result<()> {
     tracing::debug!(query = %args.query, "query");
     let client = AppleClient::new().context("Apple Intelligence not available")?;
-    let rt = tokio::runtime::Runtime::new()?;
 
     let shell_tool = shell();
     let tools = vec![shell_tool];
@@ -44,7 +43,7 @@ pub fn handle_query(args: &ParsedInput) -> Result<()> {
         tools
     };
 
-    let result = rt.block_on(run_agent_loop(&client, &prompt, &query, &tools, &skills))?;
+    let result = run_agent_loop(&client, &prompt, &query, &tools, &skills).await?;
     info!("{result}");
     Ok(())
 }
@@ -90,7 +89,7 @@ fn resolve_skill(args: &ParsedInput, skills: &[crate::skill::Skill]) -> (String,
 }
 
 /// Build a lean prompt listing skill names and descriptions only.
-/// The model delegates to a skill by outputting: use /<skill-name> to answer following query: <query>
+/// The model delegates to a skill by outputting: /<skill-name> <query>
 /// Full skill content is loaded only when a skill is actually selected.
 fn auto_skill_prompt(skills: &[crate::skill::Skill]) -> String {
     let skill_list = skills
@@ -219,88 +218,88 @@ fn run_agent_loop<'a>(
     skills: &'a [crate::skill::Skill],
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send + 'a>> {
     Box::pin(async move {
-        let system_prompt =
-            "You are a helpful assistant. Follow the instructions and use tools to answer.";
-        let user_msg = format!("Instructions:\n{instructions}\n\nQuestion: {user_query}");
+    let system_prompt =
+        "You are a helpful assistant. Follow the instructions and use tools to answer.";
+    let user_msg = format!("Instructions:\n{instructions}\n\nQuestion: {user_query}");
 
-        let mut messages: Vec<Message> = vec![Message::User(user_msg.into())];
+    let mut messages: Vec<Message> = vec![Message::User(user_msg.into())];
 
-        for step in 0..50 {
-            tracing::debug!(step, messages = messages.len(), "calling model");
-            let response = client.generate(system_prompt, &messages, tools).await?;
+    for step in 0..50 {
+        tracing::debug!(step, messages = messages.len(), "calling model");
+        let response = client.generate(system_prompt, &messages, tools).await?;
 
-            let mut text_parts = Vec::new();
-            let mut tool_call_infos: Vec<ToolCallInfo> = Vec::new();
+        let mut text_parts = Vec::new();
+        let mut tool_call_infos: Vec<ToolCallInfo> = Vec::new();
 
-            for content in &response.contents {
-                match content {
-                    LanguageModelResponseContentType::Text(text) => text_parts.push(text.clone()),
-                    LanguageModelResponseContentType::ToolCall(info) => {
-                        tool_call_infos.push(info.clone())
-                    }
-                    _ => {}
+        for content in &response.contents {
+            match content {
+                LanguageModelResponseContentType::Text(text) => text_parts.push(text.clone()),
+                LanguageModelResponseContentType::ToolCall(info) => {
+                    tool_call_infos.push(info.clone())
                 }
+                _ => {}
             }
+        }
 
-            let text = text_parts.join("\n");
+        let text = text_parts.join("\n");
 
-            if tool_call_infos.is_empty() {
-                let inline_calls = extract_inline_tool_calls(&text);
-                if inline_calls.is_empty() {
-                    // Check if model is delegating to a skill
-                    if let Some((skill_name, query)) = parse_skill_delegation(&text) {
-                        if let Ok(Some(skill_content)) = load_skill(&skill_name) {
-                            tracing::debug!(skill = %skill_name, query = %query, "subagent: loading skill");
-                            // Subagents always need the shell tool to execute commands
-                            let subagent_tools = vec![shell()];
-                            return run_agent_loop(
-                                client,
-                                &skill_content,
-                                &query,
-                                &subagent_tools,
-                                skills,
-                            )
-                            .await;
-                        }
+        if tool_call_infos.is_empty() {
+            let inline_calls = extract_inline_tool_calls(&text);
+            if inline_calls.is_empty() {
+                // Check if model is delegating to a skill
+                if let Some((skill_name, query)) = parse_skill_delegation(&text) {
+                    if let Ok(Some(skill_content)) = load_skill(&skill_name) {
+                        tracing::debug!(skill = %skill_name, query = %query, "subagent: loading skill");
+                        // Subagents always need the shell tool to execute commands
+                        let subagent_tools = vec![shell()];
+                        return run_agent_loop(
+                            client,
+                            &skill_content,
+                            &query,
+                            &subagent_tools,
+                            skills,
+                        )
+                        .await;
                     }
-                    tracing::debug!(response = %text.chars().take(80).collect::<String>(), "final response");
-                    return Ok(text);
                 }
-                let mut results = String::new();
-                for call in &inline_calls {
-                    let cmd = call.arguments["cmd"]
-                        .as_str()
-                        .or_else(|| call.arguments["command"].as_str())
-                        .unwrap_or("");
-                    results.push_str(&exec_to_text(cmd));
-                }
-                messages.push(Message::User(
-                    format!(
-                        "Tool results:\n{results}\nProvide a clear summary of the results above."
-                    )
-                    .into(),
-                ));
-                continue;
+                tracing::debug!(response = %text.chars().take(80).collect::<String>(), "final response");
+                return Ok(text);
             }
-
-            tracing::debug!(tool_calls = tool_call_infos.len(), "executing tool calls");
-
-            let mut results_text = String::new();
-            for tc in &tool_call_infos {
-                let cmd = tc.input["cmd"]
+            let mut results = String::new();
+            for call in &inline_calls {
+                let cmd = call.arguments["cmd"]
                     .as_str()
-                    .or_else(|| tc.input["command"].as_str())
+                    .or_else(|| call.arguments["command"].as_str())
                     .unwrap_or("");
-                results_text.push_str(&exec_to_text(cmd));
+                results.push_str(&exec_to_text(cmd));
             }
-
             messages.push(Message::User(
                 format!(
-                "Tool results:\n{results_text}Provide a clear answer based on the results above."
-            )
+                    "Tool results:\n{results}\nProvide a clear summary of the results above."
+                )
                 .into(),
             ));
+            continue;
         }
-        Ok("Max steps reached.".to_string())
+
+        tracing::debug!(tool_calls = tool_call_infos.len(), "executing tool calls");
+
+        let mut results_text = String::new();
+        for tc in &tool_call_infos {
+            let cmd = tc.input["cmd"]
+                .as_str()
+                .or_else(|| tc.input["command"].as_str())
+                .unwrap_or("");
+            results_text.push_str(&exec_to_text(cmd));
+        }
+
+        messages.push(Message::User(
+            format!(
+            "Tool results:\n{results_text}Provide a clear answer based on the results above."
+        )
+                .into(),
+        ));
+    }
+    Ok("Max steps reached.".to_string())
     })
 }

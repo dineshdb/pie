@@ -27,7 +27,8 @@ struct Cli {
     list_skills: bool,
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     // Handle `list-skills` / `ls` as positional subcommands (like the TS version)
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args
@@ -61,7 +62,7 @@ fn main() -> anyhow::Result<()> {
 
     // No query → interactive mode
     if cli.query.is_empty() && cli.skill.is_none() {
-        return interactive::start_interactive_mode();
+        return interactive::start_interactive_mode().await;
     }
 
     let query = cli.query.join(" ");
@@ -73,5 +74,5 @@ fn main() -> anyhow::Result<()> {
         skill: cli.skill,
         query,
     };
-    shell::handle_query(&parsed)
+    shell::handle_query(&parsed).await
 }
