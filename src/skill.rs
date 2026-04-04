@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::fs;
 use std::path::PathBuf;
 
@@ -41,12 +41,12 @@ pub fn extract_skill_mentions(text: &str) -> Vec<String> {
 /// Load a skill's content (everything after YAML frontmatter).
 pub fn load_skill(name: &str) -> Result<Option<String>> {
     let path = skills_root().join(name).join("SKILL.md");
-    if !path.exists() {
-        return Ok(None);
-    }
-    let raw = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    let content = strip_frontmatter(&raw);
-    Ok(Some(content))
+    let raw = match fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    Ok(Some(strip_frontmatter(&raw)))
 }
 
 /// List all skills from ~/.pie/skills/*/SKILL.md.
@@ -58,7 +58,7 @@ pub fn get_all_skills() -> Vec<Skill> {
 
     let mut skills = Vec::new();
     for entry in entries.flatten() {
-        if !entry.file_type().map_or(false, |t| t.is_dir()) {
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
             continue;
         }
         let md_path = entry.path().join("SKILL.md");
@@ -81,10 +81,10 @@ pub fn get_all_skills() -> Vec<Skill> {
 fn strip_frontmatter(content: &str) -> String {
     let mut lines = content.lines().peekable();
     // Skip opening ---
-    if lines.peek().map_or(false, |l| l.trim() == "---") {
+    if lines.peek().is_some_and(|l| l.trim() == "---") {
         lines.next();
         // Skip until closing ---
-        while lines.peek().map_or(false, |l| l.trim() != "---") {
+        while lines.peek().is_some_and(|l| l.trim() != "---") {
             lines.next();
         }
         lines.next(); // skip closing ---
@@ -114,7 +114,7 @@ fn parse_yaml_field(content: &str, field: &str) -> Option<String> {
 /// Find all skills mentioned in a query that actually exist.
 pub fn find_mentioned_skills(query: &str, skills: &[Skill]) -> Vec<String> {
     let available: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
-    crate::skill::extract_skill_mentions(query)
+    extract_skill_mentions(query)
         .into_iter()
         .filter(|m| available.contains(&m.as_str()))
         .collect()

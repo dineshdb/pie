@@ -1,6 +1,6 @@
 use tracing::info;
 
-use crate::shell::{handle_list_skills, handle_query};
+use crate::agent::{handle_list_skills, handle_query, ParsedInput};
 use std::io::{self, Write};
 
 const HELP_TEXT: &str = r#"
@@ -17,11 +17,6 @@ Examples:
   /search latest TypeScript features
   list-skills
 "#;
-
-pub struct ParsedInput {
-    pub skill: Option<String>,
-    pub query: String,
-}
 
 pub async fn start_interactive_mode() -> anyhow::Result<()> {
     info!("Welcome to pie! Type 'help' for usage or 'exit' to quit.\n");

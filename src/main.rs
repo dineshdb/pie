@@ -1,8 +1,6 @@
-mod aisdk_appleai;
-mod bash;
-mod ffi;
+mod agent;
+mod afm;
 mod interactive;
-mod shell;
 mod skill;
 
 use clap::Parser;
@@ -33,16 +31,15 @@ async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args
         .first()
-        .map_or(false, |a| a == "list-skills" || a == "ls")
+        .is_some_and(|a| a == "list-skills" || a == "ls")
     {
-        shell::handle_list_skills();
+        agent::handle_list_skills();
         return Ok(());
     }
 
     let cli = Cli::parse();
 
     {
-        // Simple tracing: prints to stderr, compact, respects RUST_LOG
         let subscriber = tracing_subscriber::fmt()
             .with_target(false)
             .with_level(false)
@@ -56,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if cli.list_skills {
-        shell::handle_list_skills();
+        agent::handle_list_skills();
         return Ok(());
     }
 
@@ -70,9 +67,9 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("Usage: pie -s <skill> '<query>'");
     }
 
-    let parsed = interactive::ParsedInput {
+    let parsed = agent::ParsedInput {
         skill: cli.skill,
         query,
     };
-    shell::handle_query(&parsed).await
+    agent::handle_query(&parsed).await
 }

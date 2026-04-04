@@ -1,60 +1,95 @@
 //! Apple Foundation Model provider for the pie CLI agent.
 //!
-//! This module provides a high-level async client (`AppleClient`) that wraps
-//! the raw FFI declarations in `ffi.rs`. It accepts `aisdk` types (`Message`,
-//! `Tool`) and converts them to FFI JSON at the boundary.
+//! Provides `AppleClient` — a high-level async client wrapping the Swift FFI bridge.
+//! Accepts `aisdk` types (`Message`, `Tool`) and converts to FFI JSON at the boundary.
 //!
 //! ## Why not implement `aisdk::LanguageModel`?
 //!
-//! The `aisdk` crate's `ProviderStream` type alias and `LanguageModelOptions.tools`
-//! field are `pub(crate)`, making it impossible to implement the `LanguageModel`
-//! trait from outside the crate. Instead, we provide our own `AppleClient` with
-//! `generate()` that accepts `aisdk` types directly.
+//! The `aisdk` crate's `ProviderStream` and `LanguageModelOptions.tools` are `pub(crate)`,
+//! so we provide `AppleClient::generate()` accepting `aisdk` types directly.
 
-use crate::ffi;
 use aisdk::core::language_model::{LanguageModelResponse, LanguageModelResponseContentType};
 use aisdk::core::messages::Message;
 use aisdk::core::tools::{Tool, ToolCallInfo};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::ffi::CString;
-use std::os::raw::c_char;
+use std::os::raw::{c_char, c_double, c_int};
 
 // ---------------------------------------------------------------------------
-// FFI-internal types (only used for JSON serialization to the C bridge)
+// FFI declarations (was ffi.rs)
 // ---------------------------------------------------------------------------
 
-/// Message format for Apple Foundation Model FFI.
+type ChunkCallback = unsafe extern "C" fn(chunk: *const c_char);
+type ToolCallback = unsafe extern "C" fn(tool_id: u64, args_json: *const c_char);
+
+#[link(name = "apple_ai_bridge")]
+extern "C" {
+    fn apple_ai_init() -> bool;
+    fn apple_ai_prewarm() -> bool;
+    fn apple_ai_check_availability() -> i32;
+    fn apple_ai_get_availability_reason() -> *mut c_char;
+    fn apple_ai_free_string(ptr: *mut c_char);
+    fn apple_ai_register_tool_callback(callback: Option<ToolCallback>);
+    #[allow(dead_code)]
+    fn apple_ai_tool_result_callback(tool_id: u64, result_json: *const c_char);
+    #[allow(clippy::too_many_arguments)]
+    fn apple_ai_generate_unified(
+        messages_json: *const c_char,
+        tools_json: *const c_char,
+        schema_json: *const c_char,
+        temperature: c_double,
+        max_tokens: c_int,
+        stream: bool,
+        stop_after_tool_calls: bool,
+        on_chunk: Option<ChunkCallback>,
+    ) -> *mut c_char;
+}
+
+/// Convert a raw pointer from the bridge into a Rust String, freeing the original.
+///
+/// # Safety
+/// Caller must ensure `ptr` was returned by an Apple AI bridge function.
+unsafe fn ptr_to_string(ptr: *mut c_char) -> Option<String> {
+    if ptr.is_null() {
+        return None;
+    }
+    let s = std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned();
+    apple_ai_free_string(ptr);
+    Some(s)
+}
+
+// ---------------------------------------------------------------------------
+// FFI-internal types (JSON serialization to the C bridge)
+// ---------------------------------------------------------------------------
+
 #[derive(serde::Serialize)]
 struct FfiMessage {
     role: String,
     content: String,
 }
 
-/// Tool definition for Apple Foundation Model FFI.
 #[derive(serde::Serialize, Clone)]
-pub struct FfiToolDef {
-    pub id: u64,
-    pub name: String,
-    pub description: String,
-    pub parameters: serde_json::Value,
+struct FfiToolDef {
+    id: u64,
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
 }
 
-/// Tool call returned by Apple Foundation Models FFI.
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 struct FfiToolCall {
     id: String,
     function: FfiToolCallFn,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 struct FfiToolCallFn {
     name: String,
     arguments: String,
 }
 
-/// Response from Apple Foundation Models FFI.
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 struct FfiResponse {
     #[serde(default)]
     text: String,
@@ -63,10 +98,9 @@ struct FfiResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Conversion helpers: aisdk types → FFI JSON
+// Conversion: aisdk types → FFI JSON
 // ---------------------------------------------------------------------------
 
-/// Convert an `aisdk::Message` to an FFI message.
 fn message_to_ffi(msg: &Message) -> Option<FfiMessage> {
     match msg {
         Message::System(s) => Some(FfiMessage {
@@ -88,17 +122,14 @@ fn message_to_ffi(msg: &Message) -> Option<FfiMessage> {
             }),
             _ => None,
         },
-        Message::Tool(result) => {
-            let output = result
+        Message::Tool(result) => Some(FfiMessage {
+            role: "tool".into(),
+            content: result
                 .output
                 .as_ref()
                 .map(|v| v.to_string())
-                .unwrap_or_default();
-            Some(FfiMessage {
-                role: "tool".into(),
-                content: output,
-            })
-        }
+                .unwrap_or_default(),
+        }),
         Message::Developer(d) => Some(FfiMessage {
             role: "developer".into(),
             content: d.clone(),
@@ -106,11 +137,9 @@ fn message_to_ffi(msg: &Message) -> Option<FfiMessage> {
     }
 }
 
-/// Convert an `aisdk::Tool` to an FFI tool definition.
 fn tool_to_ffi(tool: &Tool, id: u64) -> FfiToolDef {
     let mut parameters =
         serde_json::to_value(&tool.input_schema).unwrap_or(serde_json::json!({"type": "object"}));
-    // Strip schemars metadata that Apple Foundation Models doesn't expect
     if let Some(obj) = parameters.as_object_mut() {
         obj.remove("$schema");
         obj.remove("title");
@@ -123,21 +152,19 @@ fn tool_to_ffi(tool: &Tool, id: u64) -> FfiToolDef {
     }
 }
 
-/// Convert an FFI response to an `aisdk::LanguageModelResponse`.
 fn ffi_to_response(ffi: FfiResponse) -> LanguageModelResponse {
     let mut contents = Vec::new();
-
     if !ffi.text.is_empty() {
         contents.push(LanguageModelResponseContentType::Text(ffi.text));
     }
-
     for tc in &ffi.tool_calls {
         let mut info = ToolCallInfo::new(&tc.function.name);
         info.id(tc.id.to_string());
-        info.input(serde_json::from_str(&tc.function.arguments).unwrap_or(serde_json::Value::Null));
+        info.input(
+            serde_json::from_str(&tc.function.arguments).unwrap_or(serde_json::Value::Null),
+        );
         contents.push(LanguageModelResponseContentType::ToolCall(info));
     }
-
     LanguageModelResponse {
         contents,
         usage: None,
@@ -145,14 +172,10 @@ fn ffi_to_response(ffi: FfiResponse) -> LanguageModelResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Tool callback (no-op — lets Swift bridge record tool calls)
+// No-op tool callback (Swift bridge requires one registered to proceed)
 // ---------------------------------------------------------------------------
 
-/// No-op callback for Swift bridge tool calls. The Swift `JSProxyTool` requires
-/// a registered callback to proceed past its guard; it records tool calls in
-/// `ToolCallCollector` and returns them in the JSON response. We execute tools
-/// on the Rust side after receiving the response.
-unsafe extern "C" fn tool_call_noop_callback(_tool_id: u64, _args_json: *const c_char) {}
+unsafe extern "C" fn tool_call_noop(_tool_id: u64, _args_json: *const c_char) {}
 
 // ---------------------------------------------------------------------------
 // AppleClient
@@ -160,54 +183,37 @@ unsafe extern "C" fn tool_call_noop_callback(_tool_id: u64, _args_json: *const c
 
 /// High-level async client for Apple Foundation Models.
 ///
-/// Wraps the FFI calls in `spawn_blocking` so they don't block the async
-/// runtime. Accepts `aisdk` types and converts at the boundary.
+/// Wraps FFI calls in `spawn_blocking` so they don't block the async runtime.
 #[derive(Clone)]
-pub struct AppleClient {
-    _initialized: bool,
-}
+pub struct AppleClient {}
 
 impl AppleClient {
-    /// Create a new client. Initializes the bridge, then checks availability.
     pub fn new() -> Result<Self> {
-        // Init must come first (matches apple_ai crate behavior)
-        unsafe { ffi::apple_ai_init() };
-
-        // Prewarm: eagerly init SystemLanguageModel so first inference is fast
-        unsafe { ffi::apple_ai_prewarm() };
-
-        // Register a no-op tool callback so the Swift bridge's JSProxyTool
-        // records tool calls in ToolCallCollector instead of returning
-        // "Tool system not available".
         unsafe {
-            ffi::apple_ai_register_tool_callback(Some(tool_call_noop_callback));
+            apple_ai_init();
+            apple_ai_prewarm();
+            apple_ai_register_tool_callback(Some(tool_call_noop));
         }
 
-        match unsafe { ffi::apple_ai_check_availability() } {
-            1 => Ok(Self { _initialized: true }),
+        match unsafe { apple_ai_check_availability() } {
+            1 => Ok(Self {}),
             -1 => anyhow::bail!("Apple Intelligence: device not eligible"),
             -2 => anyhow::bail!("Apple Intelligence: not enabled in Settings"),
             -3 => anyhow::bail!("Apple Intelligence: model not ready"),
-            _ => {
-                let reason = unsafe { ffi::ptr_to_string(ffi::apple_ai_get_availability_reason()) }
-                    .unwrap_or_else(|| "unknown reason".to_string());
+            code => {
+                let reason = unsafe { ptr_to_string(apple_ai_get_availability_reason()) }
+                    .unwrap_or_else(|| format!("unknown (code {code})"));
                 anyhow::bail!("Apple Intelligence unavailable: {reason}");
             }
         }
     }
 
-    /// Generate a response from Apple Foundation Models using aisdk types.
-    ///
-    /// - `system_prompt`: System instructions (prepended to messages)
-    /// - `messages`: Conversation history as `aisdk::Message`
-    /// - `tools`: Tool definitions as `aisdk::Tool`
     pub async fn generate(
         &self,
         system_prompt: &str,
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<LanguageModelResponse> {
-        // Build FFI messages
         let mut ffi_messages = Vec::new();
         if !system_prompt.is_empty() {
             ffi_messages.push(FfiMessage {
@@ -221,7 +227,6 @@ impl AppleClient {
             }
         }
 
-        // Build FFI tool definitions
         let ffi_tools: Vec<FfiToolDef> = tools
             .iter()
             .enumerate()
@@ -238,24 +243,22 @@ impl AppleClient {
             "sending to FFI"
         );
 
-        let result = tokio::task::spawn_blocking(move || {
-            unsafe {
-                let c_messages = CString::new(messages_json).unwrap_or_default();
-                let c_tools = CString::new(tools_json).unwrap_or_default();
+        let result = tokio::task::spawn_blocking(move || unsafe {
+            let c_messages = CString::new(messages_json).unwrap_or_default();
+            let c_tools = CString::new(tools_json).unwrap_or_default();
 
-                let ptr = ffi::apple_ai_generate_unified(
-                    c_messages.as_ptr(),
-                    c_tools.as_ptr(),
-                    std::ptr::null(), // no schema
-                    0.3,   // temperature — 0 is too rigid, slight randomness improves quality
-                    0,     // max_tokens (0 = model default)
-                    false, // no streaming
-                    false, // don't stop after tool calls
-                    None,  // no chunk callback
-                );
+            let ptr = apple_ai_generate_unified(
+                c_messages.as_ptr(),
+                c_tools.as_ptr(),
+                std::ptr::null(),
+                0.3,
+                0,
+                false,
+                false,
+                None,
+            );
 
-                ffi::ptr_to_string(ptr)
-            }
+            ptr_to_string(ptr)
         })
         .await
         .context("FFI task panicked")?;
@@ -263,7 +266,6 @@ impl AppleClient {
         let json_str = result.context("Apple AI returned null")?;
         tracing::trace!(response = %json_str, "apple ai");
 
-        // Swift bridge returns "Error: ..." for non-JSON errors
         if json_str.starts_with("Error:") {
             anyhow::bail!("Apple AI: {json_str}");
         }
