@@ -34,6 +34,16 @@ pub fn handle_query(args: &ParsedInput) -> Result<()> {
 
     tracing::debug!(skill = %skill_name, query = %query, "executing");
 
+    // Auto mode must NOT have the shell tool — Apple Intelligence is too small
+    // to follow routing instructions when a tool is available; it calls the tool
+    // directly instead of outputting /<skill-name> <query> text.
+    // Subagents get the shell tool via the delegation path in run_agent_loop.
+    let tools = if skill_name == auto_skill_name() {
+        vec![]
+    } else {
+        tools
+    };
+
     let result = rt.block_on(run_agent_loop(&client, &prompt, &query, &tools, &skills))?;
     info!("{result}");
     Ok(())
@@ -92,9 +102,14 @@ fn auto_skill_prompt(skills: &[crate::skill::Skill]) -> String {
     format!(
         "You have a shell tool. Each call executes a command and returns stdout directly.\n\n\
          Available skills:\n{skill_list}\n\n\
-         If a non-bash skill matches, respond with ONLY this line:\n\
-         use /<skill-name> to answer following query: <original query>\n\n\
-         For bash/file operations, use the shell tool directly. Do NOT ask for clarification."
+         Routing rules (apply in order):\n\
+         1. If the query asks about facts, current events, people, news, or information you may not know → delegate:\n\
+            /web-search <rephrased query>\n\
+         2. If another skill matches the query → delegate:\n\
+            /<skill-name> <rephrased query>\n\
+         3. Only for direct system/shell/file operations → use the shell tool directly.\n\n\
+         IMPORTANT: For knowledge questions, ALWAYS delegate to a skill. NEVER use the shell tool for informational queries.\n\
+         Do NOT ask for clarification."
     )
 }
 
@@ -103,42 +118,26 @@ fn auto_skill_name() -> String {
 }
 
 /// Parse a skill delegation from model text output.
-/// Finds patterns like `use /<skill-name> to answer following query: <query>`
-/// or `use <skill-name> to answer following query: <query>` (without /)
+/// Format: `/<skill-name> <query>` (e.g. `/web-search current prime minister of Nepal 2026`)
 fn parse_skill_delegation(text: &str) -> Option<(String, String)> {
-    // Try with / prefix first, then without
-    if let Some(result) = parse_skill_delegation_with_marker(text, "use /") {
-        return Some(result);
+    let text = text.trim();
+    if !text.starts_with('/') {
+        return None;
     }
-    parse_skill_delegation_with_marker(text, "use ")
-}
-
-fn parse_skill_delegation_with_marker(text: &str, marker: &str) -> Option<(String, String)> {
-    let start = text.find(marker)?;
-    let after = &text[start + marker.len()..];
-    // Extract skill name (alphanumeric, -, _)
+    let after = &text[1..]; // skip the /
+                            // Extract skill name (alphanumeric, -, _)
     let name_end = after
-        .find(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
+        .find(|c: char| c.is_whitespace())
         .unwrap_or(after.len());
     let skill_name = &after[..name_end];
     if skill_name.is_empty() {
         return None;
     }
-    // Look for the query after the skill name
-    let rest = &after[name_end..];
-    let delimiter = " to answer following query: ";
-    if let Some(pos) = rest.find(delimiter) {
-        let query = rest[pos + delimiter.len()..]
-            .lines()
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        if !query.is_empty() {
-            return Some((skill_name.to_string(), query));
-        }
+    let query = after[name_end..].trim().to_string();
+    if query.is_empty() {
+        return None;
     }
-    None
+    Some((skill_name.to_string(), query))
 }
 
 #[derive(Deserialize)]
@@ -252,8 +251,16 @@ fn run_agent_loop<'a>(
                     if let Some((skill_name, query)) = parse_skill_delegation(&text) {
                         if let Ok(Some(skill_content)) = load_skill(&skill_name) {
                             tracing::debug!(skill = %skill_name, query = %query, "subagent: loading skill");
-                            return run_agent_loop(client, &skill_content, &query, tools, skills)
-                                .await;
+                            // Subagents always need the shell tool to execute commands
+                            let subagent_tools = vec![shell()];
+                            return run_agent_loop(
+                                client,
+                                &skill_content,
+                                &query,
+                                &subagent_tools,
+                                skills,
+                            )
+                            .await;
                         }
                     }
                     tracing::debug!(response = %text.chars().take(80).collect::<String>(), "final response");
