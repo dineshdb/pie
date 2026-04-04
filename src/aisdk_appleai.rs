@@ -173,6 +173,9 @@ impl AppleClient {
         // Init must come first (matches apple_ai crate behavior)
         unsafe { ffi::apple_ai_init() };
 
+        // Prewarm: eagerly init SystemLanguageModel so first inference is fast
+        unsafe { ffi::apple_ai_prewarm() };
+
         // Register a no-op tool callback so the Swift bridge's JSProxyTool
         // records tool calls in ToolCallCollector instead of returning
         // "Tool system not available".

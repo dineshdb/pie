@@ -79,25 +79,21 @@ fn resolve_skill(args: &ParsedInput, skills: &[crate::skill::Skill]) -> (String,
     )
 }
 
-/// Build a unified prompt containing all skill instructions.
-/// The LLM reads the user's query and decides which approach to use.
+/// Build a lean prompt listing skill names and descriptions only.
+/// Full skill content is NOT embedded to avoid exceeding the model's small context window.
 fn auto_skill_prompt(skills: &[crate::skill::Skill]) -> String {
-    let mut parts = Vec::new();
+    let skill_list = skills
+        .iter()
+        .map(|s| format!("- {}: {}", s.name, s.description))
+        .collect::<Vec<_>>()
+        .join("\n");
 
-    parts.push(
+    format!(
         "You have a shell tool. Each call executes a command and returns stdout \
          directly — no need to pipe, redirect, or save output to files.\n\n\
-         Pick the right skill below and act. Do NOT ask for clarification.\n"
-            .to_string(),
-    );
-
-    for skill in skills {
-        if let Ok(Some(content)) = load_skill(&skill.name) {
-            parts.push(format!("## Skill: {}\n{}\n", skill.name, content));
-        }
-    }
-
-    parts.join("\n")
+         Available skills:\n{skill_list}\n\n\
+         Pick the right skill and act. Do NOT ask for clarification."
+    )
 }
 
 fn auto_skill_name() -> String {

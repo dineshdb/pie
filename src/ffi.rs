@@ -18,6 +18,9 @@ extern "C" {
     /// Initialize the Apple AI bridge. Returns true on success.
     pub fn apple_ai_init() -> bool;
 
+    /// Eagerly initialize SystemLanguageModel.default so the first inference is fast.
+    pub fn apple_ai_prewarm() -> bool;
+
     /// Check availability of Apple Intelligence.
     /// Returns: 1 = available, -1 = not eligible, -2 = not enabled, -3 = model not ready.
     pub fn apple_ai_check_availability() -> i32;

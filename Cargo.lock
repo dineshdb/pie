@@ -90,19 +90,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
-name = "apple_ai"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee69e91c82048e1d66ca21e35befbbe4640cdcaacf9129e5ddf61df46ec5aedb"
-dependencies = [
- "anyhow",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
-]
-
-[[package]]
 name = "async-trait"
 version = "0.1.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -945,7 +932,6 @@ version = "0.1.0"
 dependencies = [
  "aisdk",
  "anyhow",
- "apple_ai",
  "clap",
  "dirs",
  "serde",
@@ -1549,7 +1535,6 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
- "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",
