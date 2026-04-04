@@ -1,9 +1,8 @@
 mod aisdk_appleai;
 mod bash;
-mod cmd;
 mod ffi;
 mod interactive;
-mod router;
+mod shell;
 mod skill;
 
 use clap::Parser;
@@ -35,7 +34,7 @@ fn main() -> anyhow::Result<()> {
         .first()
         .map_or(false, |a| a == "list-skills" || a == "ls")
     {
-        cmd::handle_list_skills();
+        shell::handle_list_skills();
         return Ok(());
     }
 
@@ -43,20 +42,20 @@ fn main() -> anyhow::Result<()> {
 
     {
         // Simple tracing: prints to stderr, compact, respects RUST_LOG
-        let mut subscriber = tracing_subscriber::fmt()
+        let subscriber = tracing_subscriber::fmt()
             .with_target(false)
             .with_level(false)
             .compact();
 
         if cli.debug {
-            subscriber = subscriber.with_max_level(Level::DEBUG);
+            subscriber.with_max_level(Level::DEBUG).init();
+        } else {
+            subscriber.without_time().init();
         }
-
-        subscriber.init();
     }
 
     if cli.list_skills {
-        cmd::handle_list_skills();
+        shell::handle_list_skills();
         return Ok(());
     }
 
@@ -74,5 +73,5 @@ fn main() -> anyhow::Result<()> {
         skill: cli.skill,
         query,
     };
-    cmd::handle_query(&parsed)
+    shell::handle_query(&parsed)
 }

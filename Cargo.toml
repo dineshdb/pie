@@ -12,6 +12,12 @@ tokio = { version = "1", features = ["rt", "macros", "process", "io-util", "io-s
 dirs = "6"
 apple_ai = "0.1.0"
 aisdk = { git = "https://github.com/lazy-hq/aisdk", branch = "main" }
-schemars = "0.8"
 tracing = "0.1"
 tracing-subscriber = "0.3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+opt-level = "z"

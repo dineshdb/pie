@@ -110,3 +110,12 @@ fn parse_yaml_field(content: &str, field: &str) -> Option<String> {
     }
     None
 }
+
+/// Find all skills mentioned in a query that actually exist.
+pub fn find_mentioned_skills(query: &str, skills: &[Skill]) -> Vec<String> {
+    let available: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+    crate::skill::extract_skill_mentions(query)
+        .into_iter()
+        .filter(|m| available.contains(&m.as_str()))
+        .collect()
+}

@@ -162,6 +162,7 @@ unsafe extern "C" fn tool_call_noop_callback(_tool_id: u64, _args_json: *const c
 ///
 /// Wraps the FFI calls in `spawn_blocking` so they don't block the async
 /// runtime. Accepts `aisdk` types and converts at the boundary.
+#[derive(Clone)]
 pub struct AppleClient {
     _initialized: bool,
 }
@@ -243,11 +244,11 @@ impl AppleClient {
                     c_messages.as_ptr(),
                     c_tools.as_ptr(),
                     std::ptr::null(), // no schema
-                    0.0,              // temperature (0 = deterministic, matches original)
-                    0,                // max_tokens (0 = model default)
-                    false,            // no streaming
-                    false,            // don't stop after tool calls
-                    None,             // no chunk callback
+                    0.3,   // temperature — 0 is too rigid, slight randomness improves quality
+                    0,     // max_tokens (0 = model default)
+                    false, // no streaming
+                    false, // don't stop after tool calls
+                    None,  // no chunk callback
                 );
 
                 ffi::ptr_to_string(ptr)
@@ -257,7 +258,7 @@ impl AppleClient {
         .context("FFI task panicked")?;
 
         let json_str = result.context("Apple AI returned null")?;
-        tracing::debug!(response = %json_str, "apple ai response");
+        tracing::trace!(response = %json_str, "apple ai");
 
         // Swift bridge returns "Error: ..." for non-JSON errors
         if json_str.starts_with("Error:") {

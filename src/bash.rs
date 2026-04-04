@@ -5,13 +5,13 @@ use std::process::Command;
 
 /// Execute a bash command and return stdout, stderr, and exit code
 #[tool]
-pub fn bash(cmd: String) -> Tool {
-    let result = execute_bash(&cmd);
+pub fn shell(cmd: String) -> Tool {
+    let result = execute(&cmd);
     Ok(serde_json::to_string(&result).unwrap_or_default())
 }
 
 /// Execute a bash command and return structured JSON result.
-pub fn execute_bash(cmd: &str) -> serde_json::Value {
+pub fn execute(cmd: &str) -> serde_json::Value {
     let output = Command::new("sh").arg("-c").arg(cmd).output();
 
     match output {

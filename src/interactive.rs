@@ -1,4 +1,6 @@
-use crate::cmd::{handle_list_skills, handle_query};
+use tracing::info;
+
+use crate::shell::{handle_list_skills, handle_query};
 use std::io::{self, Write};
 
 const HELP_TEXT: &str = r#"
@@ -22,7 +24,7 @@ pub struct ParsedInput {
 }
 
 pub fn start_interactive_mode() -> anyhow::Result<()> {
-    println!("Welcome to pie! Type 'help' for usage or 'exit' to quit.\n");
+    info!("Welcome to pie! Type 'help' for usage or 'exit' to quit.\n");
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -41,11 +43,11 @@ pub fn start_interactive_mode() -> anyhow::Result<()> {
 
         match input {
             "exit" | "quit" | "q" => {
-                println!("Goodbye!");
+                info!("Goodbye!");
                 return Ok(());
             }
             "help" | "h" => {
-                println!("{HELP_TEXT}");
+                info!("{HELP_TEXT}");
             }
             "list-skills" | "ls" => {
                 handle_list_skills();
@@ -53,7 +55,7 @@ pub fn start_interactive_mode() -> anyhow::Result<()> {
             _ => {
                 let args = parse_input(input);
                 if let Err(e) = handle_query(&args) {
-                    eprintln!("Error: {e}");
+                    tracing::error!("Error: {e}");
                 }
             }
         }
