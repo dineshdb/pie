@@ -10,9 +10,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "macros", "process", "io-util", "io-std", "sync"] }
 dirs = "6"
-aisdk = { git = "https://github.com/lazy-hq/aisdk", branch = "main" }
 tracing = "0.1"
 tracing-subscriber = "0.3"
+aisdk = "0.5.2"
 
 [profile.release]
 lto = true
