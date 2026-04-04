@@ -227,6 +227,13 @@ impl AppleClient {
         let messages_json = serde_json::to_string(&ffi_messages).unwrap_or_else(|_| "[]".into());
         let tools_json = serde_json::to_string(&ffi_tools).unwrap_or_else(|_| "[]".into());
 
+        tracing::debug!(
+            msg_bytes = messages_json.len(),
+            tools_bytes = tools_json.len(),
+            num_messages = ffi_messages.len(),
+            "sending to FFI"
+        );
+
         let result = tokio::task::spawn_blocking(move || {
             unsafe {
                 let c_messages = CString::new(messages_json).unwrap_or_default();
@@ -250,6 +257,13 @@ impl AppleClient {
         .context("FFI task panicked")?;
 
         let json_str = result.context("Apple AI returned null")?;
+        tracing::debug!(response = %json_str, "apple ai response");
+
+        // Swift bridge returns "Error: ..." for non-JSON errors
+        if json_str.starts_with("Error:") {
+            anyhow::bail!("Apple AI: {json_str}");
+        }
+
         let ffi_resp: FfiResponse =
             serde_json::from_str(&json_str).context("parsing Apple AI response")?;
 

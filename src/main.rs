@@ -7,6 +7,7 @@ mod router;
 mod skill;
 
 use clap::Parser;
+use tracing::Level;
 
 #[derive(Parser)]
 #[command(name = "pie", version = "0.1.0")]
@@ -15,6 +16,9 @@ struct Cli {
     /// Explicitly use a specific skill
     #[arg(short, long)]
     skill: Option<String>,
+
+    #[arg(short, long)]
+    debug: bool,
 
     /// Query to process
     query: Vec<String>,
@@ -36,6 +40,20 @@ fn main() -> anyhow::Result<()> {
     }
 
     let cli = Cli::parse();
+
+    {
+        // Simple tracing: prints to stderr, compact, respects RUST_LOG
+        let mut subscriber = tracing_subscriber::fmt()
+            .with_target(false)
+            .with_level(false)
+            .compact();
+
+        if cli.debug {
+            subscriber = subscriber.with_max_level(Level::DEBUG);
+        }
+
+        subscriber.init();
+    }
 
     if cli.list_skills {
         cmd::handle_list_skills();

@@ -24,15 +24,21 @@ pub fn build_orchestrator_prompt(
         .join("\n");
 
     let mut prompt = format!(
-        r#"
-Run the command below that best matches the user's query.
+        r#"You are a skill router. Given a user question, you must run the matching skill using the bash tool.
 
-Skills: <skill-name>: <skill-description>
+Available skills:
 {skill_commands}
 
-Subagent format: pie --skill <skill-name> "{escaped_query}"
+User question: "{escaped_query}"
 
-Pick ONE command from the list above and run it. Do not modify the command. Do not run anything else."#
+Instructions:
+1. Pick the best skill from the list above that matches the user question.
+2. Run EXACTLY this command using the bash tool:
+   pie --skill <skill-name> "{escaped_query}"
+3. Do NOT answer the question yourself. Do NOT run any other commands.
+
+Example: if the user asks "who is the PM of Nepal?", run:
+pie --skill ddg-search "who is the PM of Nepal?""#
     );
 
     if !mentioned_skills.is_empty() {
