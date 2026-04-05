@@ -1,23 +1,22 @@
 //! Apple Foundation Model provider for the pie CLI agent.
 //!
-//! Provides `AppleClient` — a high-level async client wrapping the Swift FFI bridge.
-//! Accepts `aisdk` types (`Message`, `Tool`) and converts to FFI JSON at the boundary.
-//!
-//! ## Why not implement `aisdk::LanguageModel`?
-//!
-//! The `aisdk` crate's `ProviderStream` and `LanguageModelOptions.tools` are `pub(crate)`,
-//! so we provide `AppleClient::generate()` accepting `aisdk` types directly.
+//! Implements `aisdk::LanguageModel` for `AppleClient` so it can be used
+//! interchangeably with any other provider (OpenAI, Ollama, etc.).
 
-use aisdk::core::language_model::{LanguageModelResponse, LanguageModelResponseContentType};
-use aisdk::core::messages::Message;
-use aisdk::core::tools::{Tool, ToolCallInfo};
-use anyhow::{Context, Result};
-use serde::Deserialize;
+use aisdk::core::language_model::{
+    LanguageModel, LanguageModelOptions, LanguageModelResponse, LanguageModelResponseContentType,
+    LanguageModelStreamChunk, ProviderStream,
+};
+use aisdk::core::messages::{AssistantMessage, Message};
+use aisdk::core::tools::{Tool, ToolCallInfo, ToolList};
+use anyhow::Result;
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use std::ffi::CString;
 use std::os::raw::{c_char, c_double, c_int};
 
 // ---------------------------------------------------------------------------
-// FFI declarations (was ffi.rs)
+// FFI declarations
 // ---------------------------------------------------------------------------
 
 type ChunkCallback = unsafe extern "C" fn(chunk: *const c_char);
@@ -46,10 +45,6 @@ extern "C" {
     ) -> *mut c_char;
 }
 
-/// Convert a raw pointer from the bridge into a Rust String, freeing the original.
-///
-/// # Safety
-/// Caller must ensure `ptr` was returned by an Apple AI bridge function.
 unsafe fn ptr_to_string(ptr: *mut c_char) -> Option<String> {
     if ptr.is_null() {
         return None;
@@ -59,22 +54,82 @@ unsafe fn ptr_to_string(ptr: *mut c_char) -> Option<String> {
     Some(s)
 }
 
+unsafe extern "C" fn tool_call_noop(_tool_id: u64, _args_json: *const c_char) {}
+
 // ---------------------------------------------------------------------------
-// FFI-internal types (JSON serialization to the C bridge)
+// FFI JSON types
 // ---------------------------------------------------------------------------
 
-#[derive(serde::Serialize)]
+#[derive(Serialize)]
 struct FfiMessage {
     role: String,
     content: String,
 }
 
-#[derive(serde::Serialize, Clone)]
+impl From<&Message> for FfiMessage {
+    fn from(msg: &Message) -> Self {
+        match msg {
+            Message::System(s) => FfiMessage {
+                role: "system".into(),
+                content: s.content.clone(),
+            },
+            Message::User(u) => FfiMessage {
+                role: "user".into(),
+                content: u.content.clone(),
+            },
+            Message::Assistant(a) => match &a.content {
+                LanguageModelResponseContentType::Text(text) => FfiMessage {
+                    role: "assistant".into(),
+                    content: text.clone(),
+                },
+                LanguageModelResponseContentType::ToolCall(info) => FfiMessage {
+                    role: "assistant".into(),
+                    content: format!("Tool call: {}({})", info.tool.name, info.input),
+                },
+                other => FfiMessage {
+                    role: "assistant".into(),
+                    content: format!("{other:?}"),
+                },
+            },
+            Message::Tool(result) => FfiMessage {
+                role: "tool".into(),
+                content: result
+                    .output
+                    .as_ref()
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+            },
+            Message::Developer(d) => FfiMessage {
+                role: "developer".into(),
+                content: d.clone(),
+            },
+        }
+    }
+}
+
+#[derive(Serialize, Clone)]
 struct FfiToolDef {
     id: u64,
     name: String,
     description: String,
     parameters: serde_json::Value,
+}
+
+impl From<(&Tool, u64)> for FfiToolDef {
+    fn from((tool, id): (&Tool, u64)) -> Self {
+        let mut params = serde_json::to_value(&tool.input_schema)
+            .unwrap_or(serde_json::json!({"type": "object"}));
+        if let Some(obj) = params.as_object_mut() {
+            obj.remove("$schema");
+            obj.remove("title");
+        }
+        FfiToolDef {
+            id,
+            name: tool.name.clone(),
+            description: tool.description.trim().to_string(),
+            parameters: params,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -97,95 +152,47 @@ struct FfiResponse {
     tool_calls: Vec<FfiToolCall>,
 }
 
-// ---------------------------------------------------------------------------
-// Conversion: aisdk types → FFI JSON
-// ---------------------------------------------------------------------------
-
-fn message_to_ffi(msg: &Message) -> Option<FfiMessage> {
-    match msg {
-        Message::System(s) => Some(FfiMessage {
-            role: "system".into(),
-            content: s.content.clone(),
-        }),
-        Message::User(u) => Some(FfiMessage {
-            role: "user".into(),
-            content: u.content.clone(),
-        }),
-        Message::Assistant(a) => match &a.content {
-            LanguageModelResponseContentType::Text(text) => Some(FfiMessage {
-                role: "assistant".into(),
-                content: text.clone(),
-            }),
-            LanguageModelResponseContentType::ToolCall(info) => Some(FfiMessage {
-                role: "assistant".into(),
-                content: format!("Tool call: {}({})", info.tool.name, info.input),
-            }),
-            _ => None,
-        },
-        Message::Tool(result) => Some(FfiMessage {
-            role: "tool".into(),
-            content: result
-                .output
-                .as_ref()
-                .map(|v| v.to_string())
-                .unwrap_or_default(),
-        }),
-        Message::Developer(d) => Some(FfiMessage {
-            role: "developer".into(),
-            content: d.clone(),
-        }),
+impl From<FfiResponse> for LanguageModelResponse {
+    fn from(ffi: FfiResponse) -> Self {
+        let mut contents = Vec::new();
+        if !ffi.text.is_empty() {
+            contents.push(LanguageModelResponseContentType::Text(ffi.text));
+        }
+        for tc in &ffi.tool_calls {
+            let mut info = ToolCallInfo::new(&tc.function.name);
+            info.id(tc.id.to_string());
+            info.input(
+                serde_json::from_str(&tc.function.arguments).unwrap_or(serde_json::Value::Null),
+            );
+            contents.push(LanguageModelResponseContentType::ToolCall(info));
+        }
+        LanguageModelResponse {
+            contents,
+            usage: None,
+        }
     }
 }
 
-fn tool_to_ffi(tool: &Tool, id: u64) -> FfiToolDef {
-    let mut parameters =
-        serde_json::to_value(&tool.input_schema).unwrap_or(serde_json::json!({"type": "object"}));
-    if let Some(obj) = parameters.as_object_mut() {
-        obj.remove("$schema");
-        obj.remove("title");
-    }
-    FfiToolDef {
-        id,
-        name: tool.name.clone(),
-        description: tool.description.trim().to_string(),
-        parameters,
-    }
+fn extract_tools(tool_list: &Option<ToolList>) -> Vec<Tool> {
+    tool_list
+        .as_ref()
+        .and_then(|tl| tl.tools.lock().ok().map(|g| (*g).clone()))
+        .unwrap_or_default()
 }
-
-fn ffi_to_response(ffi: FfiResponse) -> LanguageModelResponse {
-    let mut contents = Vec::new();
-    if !ffi.text.is_empty() {
-        contents.push(LanguageModelResponseContentType::Text(ffi.text));
-    }
-    for tc in &ffi.tool_calls {
-        let mut info = ToolCallInfo::new(&tc.function.name);
-        info.id(tc.id.to_string());
-        info.input(
-            serde_json::from_str(&tc.function.arguments).unwrap_or(serde_json::Value::Null),
-        );
-        contents.push(LanguageModelResponseContentType::ToolCall(info));
-    }
-    LanguageModelResponse {
-        contents,
-        usage: None,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// No-op tool callback (Swift bridge requires one registered to proceed)
-// ---------------------------------------------------------------------------
-
-unsafe extern "C" fn tool_call_noop(_tool_id: u64, _args_json: *const c_char) {}
 
 // ---------------------------------------------------------------------------
 // AppleClient
 // ---------------------------------------------------------------------------
 
-/// High-level async client for Apple Foundation Models.
-///
-/// Wraps FFI calls in `spawn_blocking` so they don't block the async runtime.
+/// Async client for Apple Foundation Models via Swift FFI bridge.
 #[derive(Clone)]
 pub struct AppleClient {}
+
+impl std::fmt::Debug for AppleClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppleClient").finish()
+    }
+}
 
 impl AppleClient {
     pub fn new() -> Result<Self> {
@@ -207,30 +214,40 @@ impl AppleClient {
             }
         }
     }
+}
 
-    pub async fn generate(
-        &self,
-        system_prompt: &str,
-        messages: &[Message],
-        tools: &[Tool],
-    ) -> Result<LanguageModelResponse> {
-        let mut ffi_messages = Vec::new();
-        if !system_prompt.is_empty() {
+// ---------------------------------------------------------------------------
+// LanguageModel trait impl
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl LanguageModel for AppleClient {
+    fn name(&self) -> String {
+        "apple-foundation-model".into()
+    }
+
+    async fn generate_text(
+        &mut self,
+        options: LanguageModelOptions,
+    ) -> aisdk::error::Result<LanguageModelResponse> {
+        let system = options.system.as_deref().unwrap_or("");
+        let messages: Vec<Message> = options.messages.iter().map(|t| t.message.clone()).collect();
+        let tools = extract_tools(&options.tools);
+
+        // Build FFI messages
+        let mut ffi_messages: Vec<FfiMessage> = Vec::new();
+        if !system.is_empty() {
             ffi_messages.push(FfiMessage {
                 role: "system".into(),
-                content: system_prompt.into(),
+                content: system.into(),
             });
         }
-        for msg in messages {
-            if let Some(m) = message_to_ffi(msg) {
-                ffi_messages.push(m);
-            }
-        }
+        ffi_messages.extend(messages.iter().map(FfiMessage::from));
 
         let ffi_tools: Vec<FfiToolDef> = tools
             .iter()
             .enumerate()
-            .map(|(i, t)| tool_to_ffi(t, (i as u64) + 1))
+            .map(|(i, t)| FfiToolDef::from((t, (i as u64) + 1)))
             .collect();
 
         let messages_json = serde_json::to_string(&ffi_messages).unwrap_or_else(|_| "[]".into());
@@ -261,18 +278,32 @@ impl AppleClient {
             ptr_to_string(ptr)
         })
         .await
-        .context("FFI task panicked")?;
+        .map_err(|e| aisdk::error::Error::Other(e.to_string()))?
+        .ok_or_else(|| aisdk::error::Error::Other("Apple AI returned null".into()))?;
 
-        let json_str = result.context("Apple AI returned null")?;
-        tracing::trace!(response = %json_str, "apple ai");
+        tracing::trace!(response = %result, "apple ai");
 
-        if json_str.starts_with("Error:") {
-            anyhow::bail!("Apple AI: {json_str}");
+        if result.starts_with("Error:") {
+            return Err(aisdk::error::Error::Other(result));
         }
 
-        let ffi_resp: FfiResponse =
-            serde_json::from_str(&json_str).context("parsing Apple AI response")?;
+        let ffi_resp: FfiResponse = serde_json::from_str(&result)
+            .map_err(|e| aisdk::error::Error::Other(format!("parsing Apple AI response: {e}")))?;
 
-        Ok(ffi_to_response(ffi_resp))
+        Ok(LanguageModelResponse::from(ffi_resp))
+    }
+
+    async fn stream_text(
+        &mut self,
+        options: LanguageModelOptions,
+    ) -> aisdk::error::Result<ProviderStream> {
+        let response = self.generate_text(options).await?;
+        let assistant = AssistantMessage {
+            content: response.contents.first().cloned().unwrap_or_default(),
+            usage: response.usage.clone(),
+        };
+        let chunks: Vec<aisdk::error::Result<Vec<LanguageModelStreamChunk>>> =
+            vec![Ok(vec![LanguageModelStreamChunk::Done(assistant)])];
+        Ok(Box::pin(futures::stream::iter(chunks)))
     }
 }

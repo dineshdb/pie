@@ -1,18 +1,13 @@
-use crate::afm::AppleClient;
+use crate::provider::Model;
 use crate::skill::{find_mentioned_skills, get_all_skills, load_skill};
-use aisdk::core::language_model::LanguageModelResponseContentType;
-use aisdk::core::messages::Message;
-use aisdk::core::tools::{Tool, ToolCallInfo};
+use aisdk::core::tools::Tool;
+use aisdk::core::utils::step_count_is;
+use aisdk::core::LanguageModelRequest;
 use aisdk::macros::tool;
 use anyhow::{Context, Result};
-use serde::Deserialize;
 use serde_json::json;
 use std::process::Command;
 use tracing::info;
-
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
 
 /// Parsed user input with optional skill selection.
 pub struct ParsedInput {
@@ -20,16 +15,7 @@ pub struct ParsedInput {
     pub query: String,
 }
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
 const AUTO_SKILL: &str = "auto";
-const MAX_TOOL_OUTPUT: usize = 2000;
-
-// ---------------------------------------------------------------------------
-// Public entry points
-// ---------------------------------------------------------------------------
 
 pub fn handle_list_skills() {
     let skills = get_all_skills();
@@ -43,31 +29,18 @@ pub fn handle_list_skills() {
     }
 }
 
-pub async fn handle_query(args: &ParsedInput) -> Result<()> {
+pub async fn handle_query(model: &mut Model, args: &ParsedInput) -> Result<()> {
     tracing::debug!(query = %args.query, "query");
-    let client = AppleClient::new().context("Apple Intelligence not available")?;
 
-    let tools = vec![shell_tool()];
     let skills = get_all_skills();
-
     let (skill_name, prompt, query) = resolve_skill(args, &skills);
 
     tracing::debug!(skill = %skill_name, query = %query, "executing");
 
-    // Auto mode must NOT have the shell tool — Apple Intelligence is too small
-    // to follow routing instructions when a tool is available; it calls the tool
-    // directly instead of outputting /<skill-name> <query> text.
-    // Subagents get the shell tool via the delegation path in run_agent_loop.
-    let tools = if skill_name == AUTO_SKILL { vec![] } else { tools };
-
-    let result = run_agent_loop(&client, &prompt, &query, &tools, &skills).await?;
+    let result = run_agent_loop(model, &prompt, &query, &skill_name, &skills).await?;
     info!("{result}");
     Ok(())
 }
-
-// ---------------------------------------------------------------------------
-// Skill resolution
-// ---------------------------------------------------------------------------
 
 fn resolve_skill(args: &ParsedInput, skills: &[crate::skill::Skill]) -> (String, String, String) {
     // 1. Explicit --skill flag
@@ -144,18 +117,12 @@ fn parse_skill_delegation(text: &str) -> Option<(String, String)> {
     Some((skill_name.to_string(), query))
 }
 
-// ---------------------------------------------------------------------------
-// Shell tool (was bash.rs)
-// ---------------------------------------------------------------------------
-
-/// Create the shell tool definition for the agent.
 #[tool]
 fn shell_tool(cmd: String) -> Tool {
     let result = execute(&cmd);
     Ok(serde_json::to_string(&result).unwrap_or_default())
 }
 
-/// Execute a bash command and return structured JSON result.
 fn execute(cmd: &str) -> serde_json::Value {
     let output = Command::new("sh").arg("-c").arg(cmd).output();
 
@@ -182,176 +149,55 @@ fn execute(cmd: &str) -> serde_json::Value {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tool call helpers
-// ---------------------------------------------------------------------------
-
-#[derive(Deserialize)]
-struct InlineToolCall {
-    #[allow(dead_code)]
-    name: String,
-    arguments: serde_json::Value,
-}
-
-fn extract_inline_tool_calls(text: &str) -> Vec<InlineToolCall> {
-    let mut calls = Vec::new();
-    for block in text.split("```") {
-        let block = block.trim();
-        let json_str = block
-            .strip_prefix("function")
-            .or_else(|| block.strip_prefix("text"))
-            .unwrap_or(block)
-            .trim();
-        if let Ok(parsed) = serde_json::from_str::<Vec<InlineToolCall>>(json_str) {
-            calls.extend(parsed);
-        } else if let Ok(obj) = serde_json::from_str::<serde_json::Value>(json_str) {
-            if let Some(cmd) = obj.get("cmd").and_then(|v| v.as_str()) {
-                calls.push(InlineToolCall {
-                    name: "bash".to_string(),
-                    arguments: serde_json::json!({ "cmd": cmd }),
-                });
-            }
-        }
-    }
-    calls
-}
-
-/// Truncate to `max_len` bytes on a char boundary.
-fn truncate(s: &str, max_len: usize) -> &str {
-    if s.len() <= max_len {
-        return s;
-    }
-    let mut end = max_len;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
-}
-
-fn exec_to_text(cmd: &str) -> String {
-    let result = execute(cmd);
-    let stdout = truncate(result["stdout"].as_str().unwrap_or(""), MAX_TOOL_OUTPUT);
-    let stderr = truncate(result["stderr"].as_str().unwrap_or(""), MAX_TOOL_OUTPUT);
-    let exit_code = result["exitCode"].as_i64().unwrap_or(-1);
-
-    tracing::debug!(cmd, exit_code, "shell-tool");
-
-    let mut out = format!("$ {cmd}\n");
-    if exit_code != 0 {
-        out.push_str(&format!("exit code: {exit_code}\n"));
-    }
-    if !stdout.is_empty() {
-        out.push_str(&format!("{stdout}\n"));
-    }
-    if !stderr.is_empty() {
-        out.push_str(&format!("stderr: {stderr}\n"));
-    }
-    out
-}
-
-fn extract_cmd(args: &serde_json::Value) -> &str {
-    args["cmd"]
-        .as_str()
-        .or_else(|| args["command"].as_str())
-        .unwrap_or("")
-}
-
-fn execute_tool_calls(calls: &[&serde_json::Value]) -> String {
-    let mut results = String::new();
-    for args in calls {
-        results.push_str(&exec_to_text(extract_cmd(args)));
-    }
-    results
-}
-
-// ---------------------------------------------------------------------------
-// Agent loop
-// ---------------------------------------------------------------------------
-
-#[allow(clippy::only_used_in_recursion)]
 fn run_agent_loop<'a>(
-    client: &'a AppleClient,
+    model: &'a mut Model,
     instructions: &'a str,
     user_query: &'a str,
-    tools: &'a [Tool],
+    skill_name: &'a str,
     skills: &'a [crate::skill::Skill],
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send + 'a>> {
     Box::pin(async move {
-        let system_prompt =
-            "You are a helpful assistant. Follow the instructions and use tools to answer.";
-        let user_msg = format!("Instructions:\n{instructions}\n\nQuestion: {user_query}");
+        // Auto-skill routing: first call without tools to get delegation
+        if skill_name == AUTO_SKILL {
+            let mut req = LanguageModelRequest::builder()
+                .model(model.clone())
+                .system("You are a helpful assistant.")
+                .prompt(format!(
+                    "Instructions:\n{instructions}\n\nQuestion: {user_query}"
+                ))
+                .build();
 
-        let mut messages: Vec<Message> = vec![Message::User(user_msg.into())];
+            let result = req.generate_text().await.context("generate_text failed")?;
+            let text = result.text().unwrap_or_default();
 
-        for step in 0..50 {
-            tracing::debug!(step, messages = messages.len(), "calling model");
-            let response = client.generate(system_prompt, &messages, tools).await?;
-
-            let mut text_parts = Vec::new();
-            let mut tool_call_infos: Vec<ToolCallInfo> = Vec::new();
-
-            for content in &response.contents {
-                match content {
-                    LanguageModelResponseContentType::Text(text) => text_parts.push(text.clone()),
-                    LanguageModelResponseContentType::ToolCall(info) => {
-                        tool_call_infos.push(info.clone())
-                    }
-                    _ => {}
+            if let Some((delegated_skill, query)) = parse_skill_delegation(&text) {
+                if let Ok(Some(skill_content)) = load_skill(&delegated_skill) {
+                    let query = if query.is_empty() {
+                        user_query.to_string()
+                    } else {
+                        query
+                    };
+                    tracing::debug!(skill = %delegated_skill, query = %query, "subagent");
+                    return run_agent_loop(model, &skill_content, &query, &delegated_skill, skills)
+                        .await;
                 }
             }
-
-            let text = text_parts.join("\n");
-
-            if tool_call_infos.is_empty() {
-                let inline_calls = extract_inline_tool_calls(&text);
-                if inline_calls.is_empty() {
-                    if let Some((skill_name, query)) = parse_skill_delegation(&text) {
-                        if let Ok(Some(skill_content)) = load_skill(&skill_name) {
-                            let query = if query.is_empty() {
-                                user_query.to_string()
-                            } else {
-                                query
-                            };
-                            tracing::debug!(skill = %skill_name, query = %query, "subagent");
-                            let subagent_tools = vec![shell_tool()];
-                            return run_agent_loop(
-                                client,
-                                &skill_content,
-                                &query,
-                                &subagent_tools,
-                                skills,
-                            )
-                            .await;
-                        }
-                    }
-                    tracing::debug!(response = %text.chars().take(80).collect::<String>(), "final response");
-                    return Ok(text);
-                }
-                let args: Vec<&serde_json::Value> =
-                    inline_calls.iter().map(|c| &c.arguments).collect();
-                let results = execute_tool_calls(&args);
-                messages.push(Message::User(
-                    format!(
-                        "Tool results:\n{results}\nProvide a clear summary of the results above."
-                    )
-                    .into(),
-                ));
-                continue;
-            }
-
-            tracing::debug!(tool_calls = tool_call_infos.len(), "executing tool calls");
-
-            let args: Vec<&serde_json::Value> =
-                tool_call_infos.iter().map(|tc| &tc.input).collect();
-            let results_text = execute_tool_calls(&args);
-
-            messages.push(Message::User(
-                format!(
-                    "Tool results:\n{results_text}\nProvide a clear answer based on the results above."
-                )
-                .into(),
-            ));
+            tracing::debug!(text, "result");
+            return Ok(text);
         }
-        Ok("Max steps reached.".to_string())
+
+        // Direct skill execution with tools
+        let mut req = LanguageModelRequest::builder()
+            .model(model.clone())
+            .system("You are a helpful assistant. Follow the instructions and use tools to answer.")
+            .prompt(format!(
+                "Instructions:\n{instructions}\n\nQuestion: {user_query}"
+            ))
+            .with_tool(shell_tool())
+            .stop_when(step_count_is(50))
+            .build();
+
+        let result = req.generate_text().await.context("generate_text failed")?;
+        Ok(result.text().unwrap_or_default())
     })
 }

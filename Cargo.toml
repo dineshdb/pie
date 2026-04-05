@@ -4,8 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-aisdk = "0.5.2"
+aisdk = { git = "https://github.com/qretaio/aisdk", features = ["openaicompatible", "openai"] }
 anyhow = "1"
+async-trait = "0.1"
+futures = "0.3"
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
 serde = { version = "1", features = ["derive"] }

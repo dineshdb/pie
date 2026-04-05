@@ -1,6 +1,7 @@
-mod agent;
 mod afm;
+mod agent;
 mod interactive;
+mod provider;
 mod skill;
 
 use clap::Parser;
@@ -8,7 +9,7 @@ use tracing::Level;
 
 #[derive(Parser)]
 #[command(name = "pie", version = "0.1.0")]
-#[command(about = "Minimal Pi-like agent using Apple on-device AI")]
+#[command(about = "Minimal Pi-like agent using Apple on-device AI or OpenAI-compatible providers")]
 struct Cli {
     /// Explicitly use a specific skill
     #[arg(short, long)]
@@ -16,6 +17,18 @@ struct Cli {
 
     #[arg(short, long)]
     debug: bool,
+
+    /// Model name (e.g. llama3, gpt-4o, claude-3.5-sonnet)
+    #[arg(short, long)]
+    model: Option<String>,
+
+    /// API base URL for OpenAI-compatible providers
+    #[arg(long)]
+    base_url: Option<String>,
+
+    /// API key for OpenAI-compatible providers
+    #[arg(long)]
+    api_key: Option<String>,
 
     /// Query to process
     query: Vec<String>,
@@ -27,7 +40,7 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Handle `list-skills` / `ls` as positional subcommands (like the TS version)
+    // Handle `list-skills` / `ls` as positional subcommands
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args
         .first()
@@ -57,9 +70,15 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    let mut model = provider::build_model(
+        cli.model.as_deref(),
+        cli.base_url.as_deref(),
+        cli.api_key.as_deref(),
+    )?;
+
     // No query → interactive mode
     if cli.query.is_empty() && cli.skill.is_none() {
-        return interactive::start_interactive_mode().await;
+        return interactive::start_interactive_mode(&mut model).await;
     }
 
     let query = cli.query.join(" ");
@@ -71,5 +90,5 @@ async fn main() -> anyhow::Result<()> {
         skill: cli.skill,
         query,
     };
-    agent::handle_query(&parsed).await
+    agent::handle_query(&mut model, &parsed).await
 }

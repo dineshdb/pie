@@ -1,6 +1,7 @@
 use tracing::info;
 
 use crate::agent::{handle_list_skills, handle_query, ParsedInput};
+use crate::provider::Model;
 use std::io::{self, Write};
 
 const HELP_TEXT: &str = r#"
@@ -18,7 +19,7 @@ Examples:
   list-skills
 "#;
 
-pub async fn start_interactive_mode() -> anyhow::Result<()> {
+pub async fn start_interactive_mode(model: &mut Model) -> anyhow::Result<()> {
     info!("Welcome to pie! Type 'help' for usage or 'exit' to quit.\n");
 
     let stdin = io::stdin();
@@ -27,7 +28,6 @@ pub async fn start_interactive_mode() -> anyhow::Result<()> {
     loop {
         print!("pie> ");
         stdout.flush()?;
-
         let mut input = String::new();
         stdin.read_line(&mut input)?;
         let input = input.trim();
@@ -49,7 +49,7 @@ pub async fn start_interactive_mode() -> anyhow::Result<()> {
             }
             _ => {
                 let args = parse_input(input);
-                if let Err(e) = handle_query(&args).await {
+                if let Err(e) = handle_query(model, &args).await {
                     tracing::error!("Error: {e}");
                 }
             }
