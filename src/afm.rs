@@ -1,7 +1,4 @@
 //! Apple Foundation Model provider for the pie CLI agent.
-//!
-//! Implements `aisdk::LanguageModel` for `AppleClient` so it can be used
-//! interchangeably with any other provider (OpenAI, Ollama, etc.).
 
 use aisdk::core::language_model::{
     LanguageModel, LanguageModelOptions, LanguageModelResponse, LanguageModelResponseContentType,
@@ -9,15 +6,10 @@ use aisdk::core::language_model::{
 };
 use aisdk::core::messages::{AssistantMessage, Message};
 use aisdk::core::tools::{Tool, ToolCallInfo, ToolList};
-use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::ffi::CString;
 use std::os::raw::{c_char, c_double, c_int};
-
-// ---------------------------------------------------------------------------
-// FFI declarations
-// ---------------------------------------------------------------------------
 
 type ChunkCallback = unsafe extern "C" fn(chunk: *const c_char);
 type ToolCallback = unsafe extern "C" fn(tool_id: u64, args_json: *const c_char);
@@ -56,11 +48,54 @@ unsafe fn ptr_to_string(ptr: *mut c_char) -> Option<String> {
 
 unsafe extern "C" fn tool_call_noop(_tool_id: u64, _args_json: *const c_char) {}
 
-// ---------------------------------------------------------------------------
-// FFI JSON types
-// ---------------------------------------------------------------------------
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let boundary = s
+        .char_indices()
+        .take_while(|(i, _)| *i < max)
+        .last()
+        .map(|(i, c)| i + c.len_utf8())
+        .unwrap_or(max);
+    format!("{}...[truncated]", &s[..boundary])
+}
 
-#[derive(Serialize)]
+/// Compact FFI messages to fit within Apple FM's small context window.
+/// Merges tool call + tool result pairs into single user messages.
+fn compact_messages(msgs: Vec<FfiMessage>) -> Vec<FfiMessage> {
+    let mut result: Vec<FfiMessage> = Vec::new();
+    let mut i = 0;
+    while i < msgs.len() {
+        // Keep system and first user message as-is
+        if matches!(msgs[i].role.as_str(), "system" | "user") && result.len() < 2 {
+            result.push(msgs[i].clone());
+            i += 1;
+            continue;
+        }
+        // Merge assistant tool call + tool result into one user message
+        if i + 1 < msgs.len()
+            && msgs[i].role == "assistant"
+            && msgs[i + 1].role == "tool"
+        {
+            result.push(FfiMessage {
+                role: "user".into(),
+                content: format!(
+                    "Tool result for {}: {}",
+                    truncate_str(&msgs[i].content, 100),
+                    truncate_str(&msgs[i + 1].content, 400)
+                ),
+            });
+            i += 2;
+            continue;
+        }
+        result.push(msgs[i].clone());
+        i += 1;
+    }
+    result
+}
+
+#[derive(Serialize, Clone)]
 struct FfiMessage {
     role: String,
     content: String,
@@ -93,11 +128,14 @@ impl From<&Message> for FfiMessage {
             },
             Message::Tool(result) => FfiMessage {
                 role: "tool".into(),
-                content: result
-                    .output
-                    .as_ref()
-                    .map(|v| v.to_string())
-                    .unwrap_or_default(),
+                content: truncate_str(
+                    &result
+                        .output
+                        .as_ref()
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                    500,
+                ),
             },
             Message::Developer(d) => FfiMessage {
                 role: "developer".into(),
@@ -180,10 +218,6 @@ fn extract_tools(tool_list: &Option<ToolList>) -> Vec<Tool> {
         .unwrap_or_default()
 }
 
-// ---------------------------------------------------------------------------
-// AppleClient
-// ---------------------------------------------------------------------------
-
 /// Async client for Apple Foundation Models via Swift FFI bridge.
 #[derive(Clone)]
 pub struct AppleClient {}
@@ -195,7 +229,7 @@ impl std::fmt::Debug for AppleClient {
 }
 
 impl AppleClient {
-    pub fn new() -> Result<Self> {
+    pub fn new() -> anyhow::Result<Self> {
         unsafe {
             apple_ai_init();
             apple_ai_prewarm();
@@ -216,10 +250,6 @@ impl AppleClient {
     }
 }
 
-// ---------------------------------------------------------------------------
-// LanguageModel trait impl
-// ---------------------------------------------------------------------------
-
 #[async_trait]
 impl LanguageModel for AppleClient {
     fn name(&self) -> String {
@@ -234,7 +264,6 @@ impl LanguageModel for AppleClient {
         let messages: Vec<Message> = options.messages.iter().map(|t| t.message.clone()).collect();
         let tools = extract_tools(&options.tools);
 
-        // Build FFI messages
         let mut ffi_messages: Vec<FfiMessage> = Vec::new();
         if !system.is_empty() {
             ffi_messages.push(FfiMessage {
@@ -243,6 +272,11 @@ impl LanguageModel for AppleClient {
             });
         }
         ffi_messages.extend(messages.iter().map(FfiMessage::from));
+
+        // Compact messages to stay within Apple FM's small context window
+        if ffi_messages.len() > 3 {
+            ffi_messages = compact_messages(ffi_messages);
+        }
 
         let ffi_tools: Vec<FfiToolDef> = tools
             .iter()
