@@ -1,172 +1,93 @@
-use crate::agent::ParsedInput;
-use crate::skill::Skill;
 use std::collections::HashSet;
 
-pub struct Prompt {
-    pub system: String,
-    pub user: String,
-}
+use crate::skill::Skill;
+use crate::utils::{find_upward_in_repo, load_file, pie_home};
+use minijinja::Environment;
 
-const DEFAULT_SYSTEM_PROMPT: &str = r#"
-You are a helpful assistant. Follow the instructions carefully. Be concise and accurate on your output.
-Don't trust your internal knowledge base but only the instructions provided, or the results
-from web search.
+const DEFAULT_SYSTEM_PROMPT: &str = include_str!("SYSTEM_PROMPT.md");
 
-If no skill is mentioned in the user query, select the best skill for the task and call the
-subagent tool with /<skill-name> and a rephrased query that includes all necessary context.
-"#;
+/// Recursively resolve skills mentioned in `text` (and in those skills' contents).
+fn resolve_mentioned<'a>(text: &str, skills: &'a [Skill]) -> Vec<&'a Skill> {
+    let mut resolved = Vec::new();
+    let mut seen = HashSet::new();
+    let mut queue: Vec<&str> = vec![text];
 
-impl Prompt {
-    pub fn router(args: &ParsedInput, skills: &[Skill]) -> Self {
-        let instructions = skills_instructions(args, skills);
-        let query = resolve_query(args, skills);
-        let system = Self::system_prompt(skills);
-        let user = if instructions.is_empty() {
-            query
-        } else {
-            format!("Mentioned Skills Contents:\n{instructions}\n\nQuestion: {query}")
-        };
-        Self { system, user }
-    }
-
-    fn system_prompt(skills: &[Skill]) -> String {
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-        let catalog = skills
-            .iter()
-            .map(|s| format!("- {}: {}", s.name, s.description))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        // Base prompt: ~/.pie/SYSTEM_PROMPT.md overrides the default
-        let base = load_file(home_config_path("SYSTEM_PROMPT.md"))
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string());
-
-        let mut parts = vec![base];
-
-        // Always append ~/.pie/AGENTS.md
-        if let Some(agents) = load_file(home_config_path("AGENTS.md")) {
-            let trimmed = agents.trim();
-            if !trimmed.is_empty() {
-                parts.push(trimmed.to_string());
+    while let Some(source) = queue.pop() {
+        for skill in skills {
+            if seen.contains(&skill.name) {
+                continue;
+            }
+            if source.contains(&format!("/{}", skill.name)) {
+                seen.insert(skill.name.clone());
+                queue.push(&skill.content);
+                resolved.push(skill);
             }
         }
-
-        // Append AGENTS.md from current or parent directory
-        if let Some(agents) = find_upward_in_repo("AGENTS.md") {
-            let trimmed = agents.trim();
-            if !trimmed.is_empty() {
-                parts.push(trimmed.to_string());
-            }
-        }
-
-        // Dynamic parts: skills catalog and date
-        parts.push(format!("Available Skills:\n{catalog}"));
-        parts.push(format!("Date: {today}"));
-
-        parts.join("\n\n")
     }
+
+    resolved
 }
 
-fn home_config_path(name: &str) -> std::path::PathBuf {
-    dirs::home_dir().unwrap_or_default().join(".pie").join(name)
+pub fn system(query: &str, skills: &[Skill]) -> String {
+    let system_prompt = load_file(pie_home().join("SYSTEM_PROMPT.md"))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string());
+
+    let mentioned_skills = resolve_mentioned(query, skills);
+
+    let mut env = Environment::new();
+    env.add_template("prompt", &system_prompt)
+        .expect("invalid system prompt");
+
+    let global_agents_md = load_file(pie_home().join("AGENTS.md"));
+    let local_agents_md = find_upward_in_repo("AGENTS.md");
+
+    let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let pwd = std::env::var("PWD").unwrap_or_else(|_| {
+        std::env::current_dir()
+            .unwrap_or_default()
+            .display()
+            .to_string()
+    });
+    let tmpl = env.get_template("prompt").unwrap();
+    let rendered = tmpl
+        .render(minijinja::context! { skills, mentioned_skills, date, pwd, global_agents_md, local_agents_md, query})
+        .unwrap_or_else(|e| {
+            tracing::warn!("template render error: {e}, using raw template");
+            system_prompt.to_string()
+        });
+
+    rendered
 }
 
-fn load_file(path: impl AsRef<std::path::Path>) -> Option<String> {
-    std::fs::read_to_string(path).ok()
-}
+const DEFAULT_SUBAGENT_PROMPT: &str = include_str!("SUBAGENT_PROMPT.md");
 
-/// Walk from cwd upward to find a file, stopping at the git repo root.
-fn find_upward_in_repo(name: &str) -> Option<String> {
-    let mut dir = std::env::current_dir().ok()?;
-    loop {
-        let path = dir.join(name);
-        if let Some(content) = load_file(&path) {
-            return Some(content);
-        }
-        // Stop at git root
-        if dir.join(".git").exists() {
-            return None;
-        }
-        if !dir.pop() {
-            return None;
-        }
-    }
-}
+pub fn subagent(query: &str, skills: &[Skill]) -> String {
+    let template = load_file(pie_home().join("SUBAGENT_PROMPT.md"))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_SUBAGENT_PROMPT.to_string());
 
-/// Resolve instructions: include skill content if specific skills are mentioned.
-/// When no skills are mentioned, return empty — the router agent will use the subagent tool.
-fn skills_instructions(args: &ParsedInput, skills: &[Skill]) -> String {
-    let mut mentioned_skills = HashSet::new();
-    if let Some(name) = &args.skill {
-        mentioned_skills.insert(name.clone());
-    }
+    let mentioned_skills = resolve_mentioned(query, skills);
 
-    for mentioned in find_mentioned_skills(&args.query, skills) {
-        mentioned_skills.insert(mentioned);
-    }
+    let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let pwd = std::env::var("PWD").unwrap_or_else(|_| {
+        std::env::current_dir()
+            .unwrap_or_default()
+            .display()
+            .to_string()
+    });
 
-    if mentioned_skills.is_empty() {
-        return String::new();
-    }
-
-    mentioned_skills
-        .iter()
-        .filter_map(|s| skills.iter().find(|skill| &skill.name == s))
-        .map(|s| format!("---\nSkill: {}\n{}\n---", s.name, s.content))
-        .collect()
-}
-
-/// Resolve query: strip /skill-name prefix if present.
-fn resolve_query(args: &ParsedInput, skills: &[Skill]) -> String {
-    let mentioned = find_mentioned_skills(&args.query, skills);
-    if mentioned.len() == 1 {
-        let name = &mentioned[0];
-        let stripped = args
-            .query
-            .replace(&format!("/{name}"), "")
-            .trim()
-            .to_string();
-        if !stripped.is_empty() {
-            return stripped;
-        }
-    }
-    if args.query.is_empty() {
-        args.skill.clone().unwrap_or_default()
-    } else {
-        args.query.clone()
-    }
-}
-
-/// Find all skills mentioned in a query that actually exist.
-fn find_mentioned_skills(query: &str, skills: &[Skill]) -> Vec<String> {
-    let available: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
-    extract_skill_mentions(query)
-        .into_iter()
-        .filter(|m| available.contains(&m.as_str()))
-        .collect()
-}
-
-/// Extract /skillname mentions from text.
-pub fn extract_skill_mentions(text: &str) -> Vec<String> {
-    let mut mentions = Vec::new();
-    let chars: Vec<char> = text.chars().collect();
-    let valid = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
-
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == '/' && i + 1 < chars.len() && valid(chars[i + 1]) {
-            let start = i + 1;
-            let mut end = start;
-            while end < chars.len() && valid(chars[end]) {
-                end += 1;
-            }
-            mentions.push(chars[start..end].iter().collect());
-            i = end;
-        } else {
-            i += 1;
-        }
-    }
-    mentions
+    let mut env = Environment::new();
+    env.add_template("subagent", &template)
+        .expect("invalid subagent prompt");
+    let tmpl = env.get_template("subagent").unwrap();
+    let rendered = tmpl
+        .render(minijinja::context! { mentioned_skills, date, pwd, query })
+        .unwrap_or_else(|e| {
+            tracing::warn!("subagent template render error: {e}, using raw template");
+            template.to_string()
+        });
+    rendered
 }

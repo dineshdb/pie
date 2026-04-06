@@ -1,4 +1,4 @@
-use crate::prompt::Prompt;
+use crate::prompt::{subagent, system};
 use crate::provider::Model;
 use crate::skill::{get_all_skills, Skill};
 use aisdk::core::tools::{Tool, ToolExecute};
@@ -9,12 +9,7 @@ use anyhow::{Context, Result};
 use serde_json::json;
 use std::process::Command;
 use std::sync::Arc;
-use tracing::warn;
-
-pub struct ParsedInput {
-    pub skill: Option<String>,
-    pub query: String,
-}
+use tracing::{info, warn};
 
 pub fn handle_list_skills() {
     let skills = get_all_skills();
@@ -28,22 +23,22 @@ pub fn handle_list_skills() {
     }
 }
 
-pub async fn handle_query(model: &mut Model, args: &ParsedInput) -> Result<()> {
+pub async fn handle_query(model: &mut Model, query: &str) -> Result<()> {
     let skills = get_all_skills();
-    let prompt = Prompt::router(args, &skills);
+    let system = system(query, &skills);
 
-    tracing::debug!(system = %prompt.system, user = %prompt.user, "agent:");
+    tracing::debug!(prompt = %system, query, "agent:");
     let mut req = LanguageModelRequest::builder()
         .model(model.clone())
-        .system(&prompt.system)
-        .prompt(&prompt.user)
+        .system(&system)
+        .prompt(query)
         .with_tool(shell_tool())
         .with_tool(subagent_tool(model.clone(), skills))
         .stop_when(step_count_is(10))
         .build();
 
     let result = req.generate_text().await.context("generate_text failed")?;
-    println!("{}", result.text().unwrap_or_default());
+    info!("{}", result.text().unwrap_or_default());
     Ok(())
 }
 
@@ -102,27 +97,16 @@ fn subagent_tool(model: Model, skills: Vec<Skill>) -> Tool {
                 if skill_name.is_empty() || query.is_empty() {
                     return Err("skill_name and query are required".to_string());
                 }
-                let Some(skill) = skills.iter().find(|s| s.name == skill_name) else {
+                if !skills.iter().any(|s| s.name == skill_name) {
                     return Ok(format!("Skill '{}' not found.", skill_name));
                 };
-                tracing::debug!(skill = %skill_name, query, "subagent");
-                let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-                let system = format!(
-                    "You are a helpful assistant. Today's date: {today}.\n\n\
-                     Follow the instructions carefully. Use shell_tool to execute commands when needed.\n\
-                     After receiving tool results, provide your final answer immediately.\n\
-                     Be concise and accurate."
-                );
-                let user = format!(
-                    "{}\n\n\
-                     Use shell_tool to run the command above for this question: {}\n\
-                     Today's date: {}",
-                    skill.content, query, today
-                );
+                let query_with_skill = format!("/{} {}", skill_name, query);
+                let sys = subagent(&query_with_skill, &skills);
+                tracing::debug!(skill = %skill_name, query, sys = %sys, "subagent");
                 let mut req = LanguageModelRequest::builder()
                     .model(model)
-                    .system(&system)
-                    .prompt(&user)
+                    .system(&sys)
+                    .prompt(query)
                     .with_tool(shell_tool())
                     .stop_when(step_count_is(5))
                     .build();

@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Skill {
     pub name: String,
     pub description: String,
@@ -9,10 +9,7 @@ pub struct Skill {
 }
 
 fn skills_root() -> PathBuf {
-    dirs::home_dir()
-        .expect("no home directory")
-        .join(".pie")
-        .join("skills")
+    crate::utils::pie_home().join("skills")
 }
 
 /// List all skills from ~/.pie/skills/*/SKILL.md.

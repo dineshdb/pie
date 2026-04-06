@@ -4,6 +4,7 @@ mod interactive;
 mod prompt;
 mod provider;
 mod skill;
+mod utils;
 
 use clap::Parser;
 use tracing::Level;
@@ -88,9 +89,5 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("Usage: pie -s <skill> '<query>'");
     }
 
-    let parsed = agent::ParsedInput {
-        skill: cli.skill,
-        query,
-    };
-    agent::handle_query(&mut model, &parsed).await
+    agent::handle_query(&mut model, &query).await
 }

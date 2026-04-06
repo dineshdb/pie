@@ -51,7 +51,7 @@ impl LanguageModel for Model {
             Model::Apple(c) => c.generate_text(options).await?,
             Model::OpenAI(p) => p.generate_text(options).await?,
         };
-        Ok(post_process_inline_tool_calls(response))
+        Ok(post_process_response(response))
     }
 
     async fn stream_text(
@@ -82,7 +82,7 @@ pub fn build_model(
     if model_name.is_none() {
         match AppleClient::new() {
             Ok(client) => {
-                tracing::info!("using Apple Foundation Models");
+                tracing::debug!("using Apple Foundation Models");
                 return Ok(Model::Apple(client));
             }
             Err(e) => {
@@ -120,7 +120,7 @@ pub fn build_model(
         .build()
         .context("failed to build OpenAI-compatible provider")?;
 
-    tracing::info!(model = %model_name, base_url = %base_url, "using OpenAI-compatible provider");
+    tracing::debug!(model = %model_name, base_url = %base_url, "using OpenAI-compatible provider");
 
     Ok(Model::OpenAI(provider))
 }
@@ -161,35 +161,45 @@ fn local_placeholder(base_url: &str) -> Option<String> {
 ///
 /// This function detects such inline tool calls in text content and converts
 /// them into proper `LanguageModelResponseContentType::ToolCall` entries.
-fn post_process_inline_tool_calls(response: LanguageModelResponse) -> LanguageModelResponse {
-    let has_tool_calls = response
+fn post_process_response(mut response: LanguageModelResponse) -> LanguageModelResponse {
+    let has_structured_tool_calls = response
         .contents
         .iter()
         .any(|c| matches!(c, LanguageModelResponseContentType::ToolCall(_)));
-
-    // If the server already parsed tool calls, no need to extract from text.
-    if has_tool_calls {
-        return response;
-    }
 
     let mut new_contents = Vec::new();
     for content in response.contents {
         match content {
             LanguageModelResponseContentType::Text(ref text) => {
-                if let Some(calls) = extract_inline_tool_calls(text) {
-                    new_contents.extend(calls);
-                } else {
+                if !has_structured_tool_calls {
+                    if let Some(calls) = extract_inline_tool_calls(text) {
+                        new_contents.extend(calls);
+                        continue;
+                    }
+                }
+                new_contents.push(content);
+            }
+            LanguageModelResponseContentType::ToolCall(ref info) => {
+                let name = info.tool.name.as_str();
+                if matches!(name, "subagent" | "shell_tool") {
                     new_contents.push(content);
+                } else {
+                    // Remap unknown tool names (skill names) to subagent
+                    let query = info.input.get("query").and_then(|v| v.as_str()).unwrap_or("");
+                    let mut remapped = ToolCallInfo::new("subagent");
+                    remapped.input(serde_json::json!({
+                        "skill_name": name,
+                        "query": query,
+                    }));
+                    new_contents.push(LanguageModelResponseContentType::ToolCall(remapped));
                 }
             }
             other => new_contents.push(other),
         }
     }
 
-    LanguageModelResponse {
-        contents: new_contents,
-        usage: response.usage,
-    }
+    response.contents = new_contents;
+    response
 }
 
 /// Extract tool calls from inline text like:
@@ -421,11 +431,31 @@ mod tests {
             )],
             usage: None,
         };
-        let processed = post_process_inline_tool_calls(response);
+        let processed = post_process_response(response);
         assert_eq!(processed.contents.len(), 1);
         assert!(matches!(
             &processed.contents[0],
             LanguageModelResponseContentType::Text(t) if t == "Hello, world!"
         ));
+    }
+
+    #[test]
+    fn test_post_process_remaps_structured_skill_tool_call() {
+        // Model calls "repo" directly as a structured tool call instead of "subagent"
+        let mut info = ToolCallInfo::new("repo");
+        info.input(serde_json::json!({"query": "context"}));
+        let response = LanguageModelResponse {
+            contents: vec![LanguageModelResponseContentType::ToolCall(info)],
+            usage: None,
+        };
+        let processed = post_process_response(response);
+        assert_eq!(processed.contents.len(), 1);
+        if let LanguageModelResponseContentType::ToolCall(remapped) = &processed.contents[0] {
+            assert_eq!(remapped.tool.name, "subagent");
+            assert_eq!(remapped.input["skill_name"], "repo");
+            assert_eq!(remapped.input["query"], "context");
+        } else {
+            panic!("expected ToolCall");
+        }
     }
 }
