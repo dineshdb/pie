@@ -6,11 +6,11 @@ use std::collections::HashSet;
 const DEFAULT_SYSTEM_PROMPT: &str = include_str!("SYSTEM_PROMPT.md");
 const DEFAULT_SUBAGENT_PROMPT: &str = include_str!("SUBAGENT_PROMPT.md");
 
-/// Recursively resolve skills mentioned in `text` (and in those skills' contents).
-fn resolve_mentioned<'a>(text: &str, skills: &'a [Skill]) -> Vec<&'a Skill> {
+/// Recursively resolve skills mentioned in any of `sources` (and in those skills' contents).
+fn resolve_mentioned<'a>(sources: &[&str], skills: &'a [Skill]) -> Vec<&'a Skill> {
     let mut resolved = Vec::new();
     let mut seen = HashSet::new();
-    let mut queue: Vec<&str> = vec![text];
+    let mut queue: Vec<&str> = sources.to_vec();
 
     while let Some(source) = queue.pop() {
         for skill in skills {
@@ -61,9 +61,9 @@ fn context_vars() -> (String, String) {
     (date, pwd)
 }
 
-pub fn system(query: &str, skills: &[Skill]) -> String {
+pub fn system(query: &str, skills: &[Skill], scan_sources: &[&str]) -> String {
     let template = load_template("SYSTEM_PROMPT.md", DEFAULT_SYSTEM_PROMPT);
-    let mentioned_skills = resolve_mentioned(query, skills);
+    let mentioned_skills = resolve_mentioned(scan_sources, skills);
     let global_agents_md = load_file(pie_home().join("AGENTS.md"));
     let local_agents_md = find_upward_in_repo("AGENTS.md");
     let (date, pwd) = context_vars();
@@ -76,7 +76,7 @@ pub fn system(query: &str, skills: &[Skill]) -> String {
 
 pub fn subagent(query: &str, skills: &[Skill]) -> String {
     let template = load_template("SUBAGENT_PROMPT.md", DEFAULT_SUBAGENT_PROMPT);
-    let mentioned_skills = resolve_mentioned(query, skills);
+    let mentioned_skills = resolve_mentioned(&[query], skills);
     let (date, pwd) = context_vars();
     render_template(
         "subagent",

@@ -28,7 +28,16 @@ pub async fn handle_query(
     history: Option<&mut Messages>,
 ) -> Result<()> {
     let skills = get_all_skills();
-    let sys = system(query, &skills);
+
+    let mut scan_sources: Vec<&str> = vec![query];
+    if let Some(h) = &history {
+        for msg in h.iter() {
+            if let Message::User(u) = msg {
+                scan_sources.push(&u.content);
+            }
+        }
+    }
+    let sys = system(query, &skills, &scan_sources);
 
     tracing::debug!(prompt = %sys, query, "agent:");
     let mut req = {
