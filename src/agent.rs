@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use serde_json::json;
 use std::process::Command;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::warn;
 
 pub fn handle_list_skills() {
     let skills = get_all_skills();
@@ -37,8 +37,27 @@ pub async fn handle_query(model: &mut Model, query: &str) -> Result<()> {
         .stop_when(step_count_is(10))
         .build();
 
-    let result = req.generate_text().await.context("generate_text failed")?;
-    info!("{}", result.text().unwrap_or_default());
+    let mut response = req.stream_text().await.context("stream_text failed")?;
+
+    use aisdk::core::LanguageModelStreamChunkType;
+    use futures::StreamExt;
+    use std::io::{self, Write};
+
+    while let Some(chunk) = response.stream.next().await {
+        match chunk {
+            LanguageModelStreamChunkType::TextDelta(text) => {
+                print!("{}", text);
+                io::stdout().flush()?;
+            }
+            LanguageModelStreamChunkType::Failed(e) => {
+                tracing::error!("Stream error: {e}");
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    println!();
     Ok(())
 }
 

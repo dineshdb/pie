@@ -185,7 +185,11 @@ fn post_process_response(mut response: LanguageModelResponse) -> LanguageModelRe
                     new_contents.push(content);
                 } else {
                     // Remap unknown tool names (skill names) to subagent
-                    let query = info.input.get("query").and_then(|v| v.as_str()).unwrap_or("");
+                    let query = info
+                        .input
+                        .get("query")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
                     let mut remapped = ToolCallInfo::new("subagent");
                     remapped.input(serde_json::json!({
                         "skill_name": name,
