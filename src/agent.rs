@@ -3,10 +3,13 @@ use crate::provider::Model;
 use crate::skill::{get_all_skills, Skill};
 use aisdk::core::tools::{Tool, ToolExecute};
 use aisdk::core::utils::step_count_is;
-use aisdk::core::LanguageModelRequest;
+use aisdk::core::LanguageModelStreamChunkType;
+use aisdk::core::{LanguageModelRequest, Message, Messages};
 use aisdk::macros::tool;
 use anyhow::{Context, Result};
+use futures::StreamExt;
 use serde_json::json;
+use std::io::{self, Write};
 use std::process::Command;
 use std::sync::Arc;
 use tracing::warn;
@@ -23,25 +26,35 @@ pub fn handle_list_skills() {
     }
 }
 
-pub async fn handle_query(model: &mut Model, query: &str) -> Result<()> {
+pub async fn handle_query(
+    model: &mut Model,
+    query: &str,
+    history: Option<&mut Messages>,
+) -> Result<()> {
     let skills = get_all_skills();
     let system = system(query, &skills);
 
     tracing::debug!(prompt = %system, query, "agent:");
-    let mut req = LanguageModelRequest::builder()
-        .model(model.clone())
-        .system(&system)
-        .prompt(query)
+    let mut req = {
+        let builder = LanguageModelRequest::builder()
+            .model(model.clone())
+            .system(&system);
+
+        match &history {
+            Some(h) => {
+                let mut conversation = (**h).clone();
+                conversation.push(Message::User(query.into()));
+                builder.messages(conversation)
+            }
+            None => builder.prompt(query),
+        }
         .with_tool(shell_tool())
         .with_tool(subagent_tool(model.clone(), skills))
         .stop_when(step_count_is(10))
-        .build();
+        .build()
+    };
 
     let mut response = req.stream_text().await.context("stream_text failed")?;
-
-    use aisdk::core::LanguageModelStreamChunkType;
-    use futures::StreamExt;
-    use std::io::{self, Write};
 
     while let Some(chunk) = response.stream.next().await {
         match chunk {
@@ -58,6 +71,14 @@ pub async fn handle_query(model: &mut Model, query: &str) -> Result<()> {
     }
 
     println!();
+
+    if let Some(h) = history {
+        h.push(Message::User(query.into()));
+        if let Some(text) = response.text().await {
+            h.push(Message::Assistant(text.into()));
+        }
+    }
+
     Ok(())
 }
 

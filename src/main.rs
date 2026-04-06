@@ -89,5 +89,5 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("Usage: pie -s <skill> '<query>'");
     }
 
-    agent::handle_query(&mut model, &query).await
+    agent::handle_query(&mut model, &query, None).await
 }

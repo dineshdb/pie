@@ -2,6 +2,7 @@ use tracing::info;
 
 use crate::agent::{handle_list_skills, handle_query};
 use crate::provider::Model;
+use aisdk::core::Messages;
 use std::io::{self, Write};
 
 const HELP_TEXT: &str = r#"
@@ -24,6 +25,7 @@ pub async fn start_interactive_mode(model: &mut Model) -> anyhow::Result<()> {
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
+    let mut history: Messages = Vec::new();
 
     loop {
         print!("pie> ");
@@ -48,7 +50,7 @@ pub async fn start_interactive_mode(model: &mut Model) -> anyhow::Result<()> {
                 handle_list_skills();
             }
             _ => {
-                if let Err(e) = handle_query(model, input).await {
+                if let Err(e) = handle_query(model, input, Some(&mut history)).await {
                     tracing::error!("Error: {e}");
                 }
             }
