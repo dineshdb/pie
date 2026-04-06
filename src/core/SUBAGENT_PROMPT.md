@@ -8,12 +8,19 @@ Be concise and accurate.
 ## Skills Instructions
 With each skill loaded below, you follow each roles together to make sure you fulfill all the requirement.
 
-{% for skill in mentioned_skills %}---
+{% for skill in mentioned_skills -%}---
 Skill: {{ skill.name }}
 {{ skill.content }}
 ---
 {% endfor %}
-{% endif %}
+{% endif -%}
+
+{% if history %}
+## Conversation History
+{% for msg in history -%}
+{{ msg.role }}: {{ msg.content }}
+{% endfor %}
+{% endif -%}
 
 Use shell_tool for running commands to fulfill this question: {{ query }}
 Today's date: {{ date }}

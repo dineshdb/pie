@@ -1,4 +1,4 @@
-use crate::core::prompt::system;
+use crate::core::prompt::{build_history, system};
 use crate::core::skill::get_all_skills;
 use crate::core::tools::{shell_tool, subagent_tool};
 use crate::providers::Model;
@@ -37,26 +37,19 @@ pub async fn handle_query(
             }
         }
     }
-    let sys = system(query, &skills, &scan_sources);
+    let history_entries = build_history(history.as_ref().map(|h| h.as_slice()).unwrap_or_default());
+    let sys = system(query, &skills, &scan_sources, &history_entries);
 
     tracing::debug!(prompt = %sys, query, "agent:");
     let mut req = {
-        let builder = LanguageModelRequest::builder()
+        LanguageModelRequest::builder()
             .model(model.clone())
-            .system(&sys);
-
-        match &history {
-            Some(h) => {
-                let mut conversation = (**h).clone();
-                conversation.push(Message::User(query.into()));
-                builder.messages(conversation)
-            }
-            None => builder.prompt(query),
-        }
-        .with_tool(shell_tool())
-        .with_tool(subagent_tool(model.clone(), skills))
-        .stop_when(step_count_is(10))
-        .build()
+            .system(&sys)
+            .prompt(query)
+            .with_tool(shell_tool())
+            .with_tool(subagent_tool(model.clone(), skills, history_entries))
+            .stop_when(step_count_is(10))
+            .build()
     };
 
     let mut response = req.stream_text().await.context("stream_text failed")?;

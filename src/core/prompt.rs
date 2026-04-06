@@ -1,7 +1,36 @@
 use crate::core::skill::Skill;
 use crate::core::utils::{find_upward_in_repo, load_file, pie_home};
+use aisdk::core::language_model::LanguageModelResponseContentType;
+use aisdk::core::Message;
 use minijinja::Environment;
+use serde::Serialize;
 use std::collections::HashSet;
+
+#[derive(Serialize)]
+pub struct HistoryEntry {
+    pub role: &'static str,
+    pub content: String,
+}
+
+pub fn build_history(messages: &[Message]) -> Vec<HistoryEntry> {
+    messages
+        .iter()
+        .filter_map(|msg| match msg {
+            Message::User(u) => Some(HistoryEntry {
+                role: "User",
+                content: u.content.clone(),
+            }),
+            Message::Assistant(a) => match &a.content {
+                LanguageModelResponseContentType::Text(t) => Some(HistoryEntry {
+                    role: "Assistant",
+                    content: t.clone(),
+                }),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
 
 const DEFAULT_SYSTEM_PROMPT: &str = include_str!("SYSTEM_PROMPT.md");
 const DEFAULT_SUBAGENT_PROMPT: &str = include_str!("SUBAGENT_PROMPT.md");
@@ -61,7 +90,12 @@ fn context_vars() -> (String, String) {
     (date, pwd)
 }
 
-pub fn system(query: &str, skills: &[Skill], scan_sources: &[&str]) -> String {
+pub fn system(
+    query: &str,
+    skills: &[Skill],
+    scan_sources: &[&str],
+    history: &[HistoryEntry],
+) -> String {
     let template = load_template("SYSTEM_PROMPT.md", DEFAULT_SYSTEM_PROMPT);
     let mentioned_skills = resolve_mentioned(scan_sources, skills);
     let global_agents_md = load_file(pie_home().join("AGENTS.md"));
@@ -70,17 +104,17 @@ pub fn system(query: &str, skills: &[Skill], scan_sources: &[&str]) -> String {
     render_template(
         "system",
         &template,
-        minijinja::context! { skills, mentioned_skills, date, pwd, global_agents_md, local_agents_md, query },
+        minijinja::context! { skills, mentioned_skills, date, pwd, global_agents_md, local_agents_md, query, history },
     )
 }
 
-pub fn subagent(query: &str, skills: &[Skill]) -> String {
+pub fn subagent(query: &str, skills: &[Skill], history: &[HistoryEntry]) -> String {
     let template = load_template("SUBAGENT_PROMPT.md", DEFAULT_SUBAGENT_PROMPT);
     let mentioned_skills = resolve_mentioned(&[query], skills);
     let (date, pwd) = context_vars();
     render_template(
         "subagent",
         &template,
-        minijinja::context! { mentioned_skills, date, pwd, query },
+        minijinja::context! { mentioned_skills, date, pwd, query, history },
     )
 }

@@ -1,4 +1,4 @@
-use crate::core::prompt::subagent;
+use crate::core::prompt::{subagent, HistoryEntry};
 use crate::core::skill::Skill;
 use crate::providers::Model;
 use aisdk::core::tools::{Tool, ToolExecute};
@@ -48,9 +48,10 @@ struct SubagentInput {
     query: String,
 }
 
-pub fn subagent_tool(model: Model, skills: Vec<Skill>) -> Tool {
+pub fn subagent_tool(model: Model, skills: Vec<Skill>, history: Vec<HistoryEntry>) -> Tool {
     let model = Arc::new(model);
     let skills = Arc::new(skills);
+    let history = Arc::new(history);
     Tool::builder()
         .name("subagent")
         .description("Delegate a task after adding more details such as /<skill-mentions>, requirements, details, etc.")
@@ -58,6 +59,7 @@ pub fn subagent_tool(model: Model, skills: Vec<Skill>) -> Tool {
         .execute(ToolExecute::from_async(move |_ctx, params| {
             let model = (*model).clone();
             let skills = skills.clone();
+            let history = history.clone();
             async move {
                 let skill_name = params["skill_name"].as_str().unwrap_or_default();
                 let query = params["query"].as_str().unwrap_or_default();
@@ -68,7 +70,7 @@ pub fn subagent_tool(model: Model, skills: Vec<Skill>) -> Tool {
                     return Ok(format!("Skill '{}' not found.", skill_name));
                 };
                 let query_with_skill = format!("/{} {}", skill_name, query);
-                let sys = subagent(&query_with_skill, &skills);
+                let sys = subagent(&query_with_skill, &skills, &history);
                 tracing::debug!(skill = %skill_name, query, sys = %sys, "subagent");
                 let mut req = LanguageModelRequest::builder()
                     .model(model)
