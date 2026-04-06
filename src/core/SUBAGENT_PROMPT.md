@@ -6,7 +6,8 @@ Be concise and accurate.
 
 {% if mentioned_skills %}
 ## Skills Instructions
-With each skill loaded below, you follow each roles together to make sure you fulfill all the requirement.
+With each skill loaded below, you follow each rules together to make sure you fulfill all the requirement.
+Rules might conflict with eacher, so choose ones that are most relevant to task in action.
 
 {% for skill in mentioned_skills -%}---
 Skill: {{ skill.name }}
@@ -22,6 +23,6 @@ Skill: {{ skill.name }}
 {% endfor %}
 {% endif -%}
 
-Use shell_tool for running commands to fulfill this question: {{ query }}
+Query: {{ query }}
 Today's date: {{ date }}
 PWD: {{ pwd }}

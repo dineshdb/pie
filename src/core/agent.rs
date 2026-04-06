@@ -54,10 +54,12 @@ pub async fn handle_query(
 
     let mut response = req.stream_text().await.context("stream_text failed")?;
 
+    let mut assistant_text = String::new();
     while let Some(chunk) = response.stream.next().await {
         match chunk {
             LanguageModelStreamChunkType::TextDelta(text) => {
                 print!("{}", text);
+                assistant_text.push_str(&text);
                 io::stdout().flush()?;
             }
             LanguageModelStreamChunkType::Failed(e) => {
@@ -72,8 +74,8 @@ pub async fn handle_query(
 
     if let Some(h) = history {
         h.push(Message::User(query.into()));
-        if let Some(text) = response.text().await {
-            h.push(Message::Assistant(text.into()));
+        if !assistant_text.is_empty() {
+            h.push(Message::Assistant(assistant_text.into()));
         }
     }
 
