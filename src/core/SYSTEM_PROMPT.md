@@ -9,9 +9,11 @@ Rules:
 {% for skill in skills %}
 - {{ skill.name }}: {{ skill.description }}
 {% endfor %}
-{% if mentioned_skills %}
 
-## Skill Instructions
+{% if mentioned_skills %}
+## Skills Instructions
+With each skill loaded below, you follow each roles together to make sure you fulfill all the requirement.
+
 {% for skill in mentioned_skills %}---
 Skill: {{ skill.name }}
 {{ skill.content }}
