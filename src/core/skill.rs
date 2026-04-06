@@ -9,7 +9,7 @@ pub struct Skill {
 }
 
 fn skills_root() -> PathBuf {
-    crate::utils::pie_home().join("skills")
+    crate::core::utils::pie_home().join("skills")
 }
 
 /// List all skills from ~/.pie/skills/*/SKILL.md.

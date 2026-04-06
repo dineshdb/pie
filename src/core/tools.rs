@@ -1,90 +1,17 @@
-use crate::prompt::{subagent, system};
-use crate::provider::Model;
-use crate::skill::{get_all_skills, Skill};
+use crate::core::prompt::subagent;
+use crate::core::skill::Skill;
+use crate::providers::Model;
 use aisdk::core::tools::{Tool, ToolExecute};
 use aisdk::core::utils::step_count_is;
-use aisdk::core::LanguageModelStreamChunkType;
-use aisdk::core::{LanguageModelRequest, Message, Messages};
+use aisdk::core::LanguageModelRequest;
 use aisdk::macros::tool;
-use anyhow::{Context, Result};
-use futures::StreamExt;
 use serde_json::json;
-use std::io::{self, Write};
 use std::process::Command;
 use std::sync::Arc;
-use tracing::warn;
-
-pub fn handle_list_skills() {
-    let skills = get_all_skills();
-    if skills.is_empty() {
-        warn!("No skills found.");
-        return;
-    }
-    println!("Available skills:");
-    for s in &skills {
-        println!(" - {}: {}", s.name, s.description);
-    }
-}
-
-pub async fn handle_query(
-    model: &mut Model,
-    query: &str,
-    history: Option<&mut Messages>,
-) -> Result<()> {
-    let skills = get_all_skills();
-    let system = system(query, &skills);
-
-    tracing::debug!(prompt = %system, query, "agent:");
-    let mut req = {
-        let builder = LanguageModelRequest::builder()
-            .model(model.clone())
-            .system(&system);
-
-        match &history {
-            Some(h) => {
-                let mut conversation = (**h).clone();
-                conversation.push(Message::User(query.into()));
-                builder.messages(conversation)
-            }
-            None => builder.prompt(query),
-        }
-        .with_tool(shell_tool())
-        .with_tool(subagent_tool(model.clone(), skills))
-        .stop_when(step_count_is(10))
-        .build()
-    };
-
-    let mut response = req.stream_text().await.context("stream_text failed")?;
-
-    while let Some(chunk) = response.stream.next().await {
-        match chunk {
-            LanguageModelStreamChunkType::TextDelta(text) => {
-                print!("{}", text);
-                io::stdout().flush()?;
-            }
-            LanguageModelStreamChunkType::Failed(e) => {
-                tracing::error!("Stream error: {e}");
-                break;
-            }
-            _ => {}
-        }
-    }
-
-    println!();
-
-    if let Some(h) = history {
-        h.push(Message::User(query.into()));
-        if let Some(text) = response.text().await {
-            h.push(Message::Assistant(text.into()));
-        }
-    }
-
-    Ok(())
-}
 
 #[tool]
 /// Execute a shell command and return its stdout, stderr, and exit code.
-fn shell_tool(cmd: String) -> Tool {
+pub fn shell_tool(cmd: String) -> Tool {
     tracing::debug!(cmd = %cmd, "shell:");
     let output = Command::new("sh").arg("-c").arg(&cmd).output();
     let result = match output {
@@ -121,12 +48,12 @@ struct SubagentInput {
     query: String,
 }
 
-fn subagent_tool(model: Model, skills: Vec<Skill>) -> Tool {
+pub fn subagent_tool(model: Model, skills: Vec<Skill>) -> Tool {
     let model = Arc::new(model);
     let skills = Arc::new(skills);
     Tool::builder()
         .name("subagent")
-        .description("Delegate a task after adding more details such as /<skill-mentions>, requirments, details, etc.")
+        .description("Delegate a task after adding more details such as /<skill-mentions>, requirements, details, etc.")
         .input_schema(schemars::schema_for!(SubagentInput))
         .execute(ToolExecute::from_async(move |_ctx, params| {
             let model = (*model).clone();

@@ -1,10 +1,6 @@
-mod afm;
-mod agent;
-mod interactive;
-mod prompt;
-mod provider;
-mod skill;
-mod utils;
+mod core;
+mod providers;
+mod ui;
 
 use clap::Parser;
 use tracing::Level;
@@ -43,13 +39,14 @@ struct Cli {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
+
     // Handle `list-skills` / `ls` as positional subcommands
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args
         .first()
         .is_some_and(|a| a == "list-skills" || a == "ls")
     {
-        agent::handle_list_skills();
+        core::agent::handle_list_skills();
         return Ok(());
     }
 
@@ -69,11 +66,11 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if cli.list_skills {
-        agent::handle_list_skills();
+        core::agent::handle_list_skills();
         return Ok(());
     }
 
-    let mut model = provider::build_model(
+    let mut model = providers::build_model(
         cli.model.as_deref(),
         cli.base_url.as_deref(),
         cli.api_key.as_deref(),
@@ -81,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
 
     // No query → interactive mode
     if cli.query.is_empty() && cli.skill.is_none() {
-        return interactive::start_interactive_mode(&mut model).await;
+        return ui::interactive::start_interactive_mode(&mut model).await;
     }
 
     let query = cli.query.join(" ");
@@ -89,5 +86,5 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("Usage: pie -s <skill> '<query>'");
     }
 
-    agent::handle_query(&mut model, &query, None).await
+    core::agent::handle_query(&mut model, &query, None).await
 }

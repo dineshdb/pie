@@ -1,8 +1,8 @@
 use tracing::info;
 
-use crate::agent::{handle_list_skills, handle_query};
-use crate::provider::Model;
-use aisdk::core::Messages;
+use crate::core::agent::{handle_list_skills, handle_query};
+use crate::core::Messages;
+use crate::providers::Model;
 use std::io::{self, Write};
 
 const HELP_TEXT: &str = r#"
