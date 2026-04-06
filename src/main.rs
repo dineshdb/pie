@@ -1,6 +1,7 @@
 mod afm;
 mod agent;
 mod interactive;
+mod prompt;
 mod provider;
 mod skill;
 

@@ -1,4 +1,3 @@
-use anyhow::Result;
 use std::fs;
 use std::path::PathBuf;
 
@@ -6,6 +5,7 @@ use std::path::PathBuf;
 pub struct Skill {
     pub name: String,
     pub description: String,
+    pub content: String,
 }
 
 fn skills_root() -> PathBuf {
@@ -13,40 +13,6 @@ fn skills_root() -> PathBuf {
         .expect("no home directory")
         .join(".pie")
         .join("skills")
-}
-
-/// Extract /skillname mentions from text.
-pub fn extract_skill_mentions(text: &str) -> Vec<String> {
-    let mut mentions = Vec::new();
-    let chars: Vec<char> = text.chars().collect();
-    let valid = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
-
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == '/' && i + 1 < chars.len() && valid(chars[i + 1]) {
-            let start = i + 1;
-            let mut end = start;
-            while end < chars.len() && valid(chars[end]) {
-                end += 1;
-            }
-            mentions.push(chars[start..end].iter().collect());
-            i = end;
-        } else {
-            i += 1;
-        }
-    }
-    mentions
-}
-
-/// Load a skill's content (everything after YAML frontmatter).
-pub fn load_skill(name: &str) -> Result<Option<String>> {
-    let path = skills_root().join(name).join("SKILL.md");
-    let raw = match fs::read_to_string(&path) {
-        Ok(content) => content,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e.into()),
-    };
-    Ok(Some(strip_frontmatter(&raw)))
 }
 
 /// List all skills from ~/.pie/skills/*/SKILL.md.
@@ -65,57 +31,38 @@ pub fn get_all_skills() -> Vec<Skill> {
         let Ok(raw) = fs::read_to_string(&md_path) else {
             continue;
         };
-        let name = parse_yaml_field(&raw, "name");
-        let desc = parse_yaml_field(&raw, "description");
-        if let (Some(n), Some(d)) = (name, desc) {
+        let (meta, content) = parse_frontmatter(&raw);
+        if let (Some(n), Some(d)) = (meta.get("name"), meta.get("description")) {
             skills.push(Skill {
                 name: n.trim().to_string(),
                 description: d.trim().to_string(),
+                content,
             });
         }
     }
     skills
 }
 
-/// Strip YAML frontmatter (between --- delimiters) from markdown.
-fn strip_frontmatter(content: &str) -> String {
-    let mut lines = content.lines().peekable();
-    // Skip opening ---
-    if lines.peek().is_some_and(|l| l.trim() == "---") {
-        lines.next();
-        // Skip until closing ---
-        while lines.peek().is_some_and(|l| l.trim() != "---") {
-            lines.next();
-        }
-        lines.next(); // skip closing ---
-    }
-    lines.collect::<Vec<_>>().join("\n").trim().to_string()
-}
+/// Split raw markdown into (frontmatter key-value map, body content).
+/// Parses the `---` delimited block in a single pass.
+fn parse_frontmatter(raw: &str) -> (std::collections::HashMap<&str, String>, String) {
+    let mut meta = std::collections::HashMap::new();
+    let lines: Vec<&str> = raw.lines().collect();
 
-/// Extract a single field from YAML frontmatter.
-fn parse_yaml_field(content: &str, field: &str) -> Option<String> {
-    let pattern = format!("{}:", field);
-    let mut inside_frontmatter = false;
-    for line in content.lines() {
-        if line.trim() == "---" {
-            if inside_frontmatter {
-                break; // closing ---
+    let mut i = 0;
+    if i < lines.len() && lines[i].trim() == "---" {
+        i += 1;
+        while i < lines.len() && lines[i].trim() != "---" {
+            if let Some((key, value)) = lines[i].split_once(':') {
+                meta.insert(key.trim(), value.trim().to_string());
             }
-            inside_frontmatter = true; // opening ---
-            continue;
+            i += 1;
         }
-        if inside_frontmatter && line.starts_with(&pattern) {
-            return Some(line[pattern.len()..].trim().to_string());
+        if i < lines.len() {
+            i += 1; // skip closing ---
         }
     }
-    None
-}
 
-/// Find all skills mentioned in a query that actually exist.
-pub fn find_mentioned_skills(query: &str, skills: &[Skill]) -> Vec<String> {
-    let available: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
-    extract_skill_mentions(query)
-        .into_iter()
-        .filter(|m| available.contains(&m.as_str()))
-        .collect()
+    let body = lines[i..].join("\n").trim().to_string();
+    (meta, body)
 }

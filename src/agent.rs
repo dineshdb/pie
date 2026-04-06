@@ -1,12 +1,15 @@
+use crate::prompt::Prompt;
 use crate::provider::Model;
-use crate::skill::{find_mentioned_skills, get_all_skills, load_skill};
-use aisdk::core::tools::Tool;
+use crate::skill::{get_all_skills, Skill};
+use aisdk::core::tools::{Tool, ToolExecute};
 use aisdk::core::utils::step_count_is;
 use aisdk::core::LanguageModelRequest;
 use aisdk::macros::tool;
 use anyhow::{Context, Result};
 use serde_json::json;
 use std::process::Command;
+use std::sync::Arc;
+use tracing::warn;
 
 pub struct ParsedInput {
     pub skill: Option<String>,
@@ -16,7 +19,7 @@ pub struct ParsedInput {
 pub fn handle_list_skills() {
     let skills = get_all_skills();
     if skills.is_empty() {
-        println!("No skills found.");
+        warn!("No skills found.");
         return;
     }
     println!("Available skills:");
@@ -27,85 +30,21 @@ pub fn handle_list_skills() {
 
 pub async fn handle_query(model: &mut Model, args: &ParsedInput) -> Result<()> {
     let skills = get_all_skills();
-    let instructions = resolve_instructions(args, &skills);
-    let query = resolve_query(args, &skills);
+    let prompt = Prompt::router(args, &skills);
 
-    let system = system_prompt();
-    let user_msg = format!("Instructions:\n{instructions}\n\nQuestion: {query}");
-
-    tracing::debug!(query = %query, "agent:");
-
+    tracing::debug!(system = %prompt.system, user = %prompt.user, "agent:");
     let mut req = LanguageModelRequest::builder()
         .model(model.clone())
-        .system(&system)
-        .prompt(&user_msg)
+        .system(&prompt.system)
+        .prompt(&prompt.user)
         .with_tool(shell_tool())
+        .with_tool(subagent_tool(model.clone(), skills))
         .stop_when(step_count_is(10))
         .build();
 
     let result = req.generate_text().await.context("generate_text failed")?;
     println!("{}", result.text().unwrap_or_default());
     Ok(())
-}
-
-/// Resolve instructions: load skill content if found, otherwise include all skills as reference.
-fn resolve_instructions(args: &ParsedInput, skills: &[crate::skill::Skill]) -> String {
-    // Explicit -s flag
-    if let Some(name) = &args.skill {
-        if let Ok(Some(prompt)) = load_skill(name) {
-            return prompt;
-        }
-    }
-
-    // Inline /skill-name in query
-    let mentioned = find_mentioned_skills(&args.query, skills);
-    if mentioned.len() == 1 {
-        if let Ok(Some(prompt)) = load_skill(&mentioned[0]) {
-            return prompt;
-        }
-    }
-
-    // No skill found — load all skill contents so model knows the commands
-    let contents: Vec<String> = skills
-        .iter()
-        .filter_map(|s| load_skill(&s.name).ok().flatten())
-        .collect();
-    if contents.is_empty() {
-        "Use shell_tool to execute commands and answer the question.".into()
-    } else {
-        contents.join("\n\n---\n\n")
-    }
-}
-
-/// Resolve query: strip /skill-name prefix if present.
-fn resolve_query(args: &ParsedInput, skills: &[crate::skill::Skill]) -> String {
-    let mentioned = find_mentioned_skills(&args.query, skills);
-    if mentioned.len() == 1 {
-        let name = &mentioned[0];
-        let stripped = args
-            .query
-            .replace(&format!("/{name}"), "")
-            .trim()
-            .to_string();
-        if !stripped.is_empty() {
-            return stripped;
-        }
-    }
-    if args.query.is_empty() {
-        args.skill.clone().unwrap_or_default()
-    } else {
-        args.query.clone()
-    }
-}
-
-fn system_prompt() -> String {
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    format!(
-        "You are a helpful assistant. Today's date: {today}.\n\n\
-         Follow the instructions carefully. Use shell_tool to execute commands when needed.\n\
-         After receiving tool results, provide your final answer immediately.\n\
-         Be concise and accurate."
-    )
 }
 
 #[tool]
@@ -139,4 +78,64 @@ fn shell_tool(cmd: String) -> Tool {
         }
     };
     Ok(serde_json::to_string(&result).unwrap_or_default())
+}
+
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct SubagentInput {
+    skill_name: String,
+    query: String,
+}
+
+fn subagent_tool(model: Model, skills: Vec<Skill>) -> Tool {
+    let model = Arc::new(model);
+    let skills = Arc::new(skills);
+    Tool::builder()
+        .name("subagent")
+        .description("Delegate a task after adding more details such as /<skill-mentions>, requirments, details, etc.")
+        .input_schema(schemars::schema_for!(SubagentInput))
+        .execute(ToolExecute::from_async(move |_ctx, params| {
+            let model = (*model).clone();
+            let skills = skills.clone();
+            async move {
+                let skill_name = params["skill_name"].as_str().unwrap_or_default();
+                let query = params["query"].as_str().unwrap_or_default();
+                if skill_name.is_empty() || query.is_empty() {
+                    return Err("skill_name and query are required".to_string());
+                }
+                let Some(skill) = skills.iter().find(|s| s.name == skill_name) else {
+                    return Ok(format!("Skill '{}' not found.", skill_name));
+                };
+                tracing::debug!(skill = %skill_name, query, "subagent");
+                let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+                let system = format!(
+                    "You are a helpful assistant. Today's date: {today}.\n\n\
+                     Follow the instructions carefully. Use shell_tool to execute commands when needed.\n\
+                     After receiving tool results, provide your final answer immediately.\n\
+                     Be concise and accurate."
+                );
+                let user = format!(
+                    "{}\n\n\
+                     Use shell_tool to run the command above for this question: {}\n\
+                     Today's date: {}",
+                    skill.content, query, today
+                );
+                let mut req = LanguageModelRequest::builder()
+                    .model(model)
+                    .system(&system)
+                    .prompt(&user)
+                    .with_tool(shell_tool())
+                    .stop_when(step_count_is(5))
+                    .build();
+                match req.generate_text().await {
+                    Ok(r) => {
+                        let text = r.text().unwrap_or_default();
+                        tracing::debug!(skill = %skill_name, len = text.len(), "subagent done");
+                        Ok(text)
+                    }
+                    Err(e) => Err(format!("Subagent failed: {e}")),
+                }
+            }
+        }))
+        .build()
+        .unwrap()
 }

@@ -5,7 +5,7 @@ use aisdk::core::language_model::{
     LanguageModelStreamChunk, ProviderStream,
 };
 use aisdk::core::messages::{AssistantMessage, Message};
-use aisdk::core::tools::{Tool, ToolCallInfo, ToolList};
+use aisdk::core::tools::{Tool, ToolCallInfo};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::ffi::CString;
@@ -48,54 +48,7 @@ unsafe fn ptr_to_string(ptr: *mut c_char) -> Option<String> {
 
 unsafe extern "C" fn tool_call_noop(_tool_id: u64, _args_json: *const c_char) {}
 
-fn truncate_str(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
-    }
-    let boundary = s
-        .char_indices()
-        .take_while(|(i, _)| *i < max)
-        .last()
-        .map(|(i, c)| i + c.len_utf8())
-        .unwrap_or(max);
-    format!("{}...[truncated]", &s[..boundary])
-}
-
-/// Compact FFI messages to fit within Apple FM's small context window.
-/// Merges tool call + tool result pairs into single user messages.
-fn compact_messages(msgs: Vec<FfiMessage>) -> Vec<FfiMessage> {
-    let mut result: Vec<FfiMessage> = Vec::new();
-    let mut i = 0;
-    while i < msgs.len() {
-        // Keep system and first user message as-is
-        if matches!(msgs[i].role.as_str(), "system" | "user") && result.len() < 2 {
-            result.push(msgs[i].clone());
-            i += 1;
-            continue;
-        }
-        // Merge assistant tool call + tool result into one user message
-        if i + 1 < msgs.len()
-            && msgs[i].role == "assistant"
-            && msgs[i + 1].role == "tool"
-        {
-            result.push(FfiMessage {
-                role: "user".into(),
-                content: format!(
-                    "Tool result for {}: {}",
-                    truncate_str(&msgs[i].content, 100),
-                    truncate_str(&msgs[i + 1].content, 400)
-                ),
-            });
-            i += 2;
-            continue;
-        }
-        result.push(msgs[i].clone());
-        i += 1;
-    }
-    result
-}
-
-#[derive(Serialize, Clone)]
+#[derive(Serialize)]
 struct FfiMessage {
     role: String,
     content: String,
@@ -128,14 +81,11 @@ impl From<&Message> for FfiMessage {
             },
             Message::Tool(result) => FfiMessage {
                 role: "tool".into(),
-                content: truncate_str(
-                    &result
-                        .output
-                        .as_ref()
-                        .map(|v| v.to_string())
-                        .unwrap_or_default(),
-                    500,
-                ),
+                content: result
+                    .output
+                    .as_ref()
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
             },
             Message::Developer(d) => FfiMessage {
                 role: "developer".into(),
@@ -145,7 +95,7 @@ impl From<&Message> for FfiMessage {
     }
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize)]
 struct FfiToolDef {
     id: u64,
     name: String,
@@ -211,13 +161,6 @@ impl From<FfiResponse> for LanguageModelResponse {
     }
 }
 
-fn extract_tools(tool_list: &Option<ToolList>) -> Vec<Tool> {
-    tool_list
-        .as_ref()
-        .and_then(|tl| tl.tools.lock().ok().map(|g| (*g).clone()))
-        .unwrap_or_default()
-}
-
 /// Async client for Apple Foundation Models via Swift FFI bridge.
 #[derive(Clone)]
 pub struct AppleClient {}
@@ -262,7 +205,6 @@ impl LanguageModel for AppleClient {
     ) -> aisdk::error::Result<LanguageModelResponse> {
         let system = options.system.as_deref().unwrap_or("");
         let messages: Vec<Message> = options.messages.iter().map(|t| t.message.clone()).collect();
-        let tools = extract_tools(&options.tools);
 
         let mut ffi_messages: Vec<FfiMessage> = Vec::new();
         if !system.is_empty() {
@@ -273,16 +215,18 @@ impl LanguageModel for AppleClient {
         }
         ffi_messages.extend(messages.iter().map(FfiMessage::from));
 
-        // Compact messages to stay within Apple FM's small context window
-        if ffi_messages.len() > 3 {
-            ffi_messages = compact_messages(ffi_messages);
-        }
-
-        let ffi_tools: Vec<FfiToolDef> = tools
-            .iter()
-            .enumerate()
-            .map(|(i, t)| FfiToolDef::from((t, (i as u64) + 1)))
-            .collect();
+        let ffi_tools: Vec<FfiToolDef> = options
+            .tools
+            .as_ref()
+            .and_then(|tl| tl.tools.lock().ok())
+            .map(|g| {
+                g.iter()
+                    .cloned()
+                    .enumerate()
+                    .map(|(i, t)| FfiToolDef::from((&t, i as u64 + 1)))
+                    .collect()
+            })
+            .unwrap_or_default();
 
         let messages_json = serde_json::to_string(&ffi_messages).unwrap_or_else(|_| "[]".into());
         let tools_json = serde_json::to_string(&ffi_tools).unwrap_or_else(|_| "[]".into());
