@@ -41,6 +41,7 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
     // Handle `list-skills` / `ls` as positional subcommands
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args

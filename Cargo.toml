@@ -16,6 +16,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "sync"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
+dotenvy = "0.15"
 chrono = "0.4.44"
 
 [profile.release]
