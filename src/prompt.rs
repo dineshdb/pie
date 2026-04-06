@@ -7,7 +7,7 @@ pub struct Prompt {
     pub user: String,
 }
 
-const SYSTEM_PROMPT: &str = r#"
+const DEFAULT_SYSTEM_PROMPT: &str = r#"
 You are a helpful assistant. Follow the instructions carefully. Be concise and accurate on your output.
 Don't trust your internal knowledge base but only the instructions provided, or the results
 from web search.
@@ -37,7 +37,61 @@ impl Prompt {
             .collect::<Vec<_>>()
             .join("\n");
 
-        format!("{SYSTEM_PROMPT}\n\nAvailable Skills:\n{catalog}\nDate: {today}")
+        // Base prompt: ~/.pie/SYSTEM_PROMPT.md overrides the default
+        let base = load_file(home_config_path("SYSTEM_PROMPT.md"))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.to_string());
+
+        let mut parts = vec![base];
+
+        // Always append ~/.pie/AGENTS.md
+        if let Some(agents) = load_file(home_config_path("AGENTS.md")) {
+            let trimmed = agents.trim();
+            if !trimmed.is_empty() {
+                parts.push(trimmed.to_string());
+            }
+        }
+
+        // Append AGENTS.md from current or parent directory
+        if let Some(agents) = find_upward_in_repo("AGENTS.md") {
+            let trimmed = agents.trim();
+            if !trimmed.is_empty() {
+                parts.push(trimmed.to_string());
+            }
+        }
+
+        // Dynamic parts: skills catalog and date
+        parts.push(format!("Available Skills:\n{catalog}"));
+        parts.push(format!("Date: {today}"));
+
+        parts.join("\n\n")
+    }
+}
+
+fn home_config_path(name: &str) -> std::path::PathBuf {
+    dirs::home_dir().unwrap_or_default().join(".pie").join(name)
+}
+
+fn load_file(path: impl AsRef<std::path::Path>) -> Option<String> {
+    std::fs::read_to_string(path).ok()
+}
+
+/// Walk from cwd upward to find a file, stopping at the git repo root.
+fn find_upward_in_repo(name: &str) -> Option<String> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        let path = dir.join(name);
+        if let Some(content) = load_file(&path) {
+            return Some(content);
+        }
+        // Stop at git root
+        if dir.join(".git").exists() {
+            return None;
+        }
+        if !dir.pop() {
+            return None;
+        }
     }
 }
 
