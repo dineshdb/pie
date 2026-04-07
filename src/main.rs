@@ -2,7 +2,9 @@ mod core;
 mod providers;
 mod ui;
 
+use crate::core::{db::DbPool, session::Session};
 use clap::Parser;
+use std::sync::Arc;
 use tracing::Level;
 
 #[derive(Parser)]
@@ -34,24 +36,27 @@ struct Cli {
     /// List available skills
     #[arg(long)]
     list_skills: bool,
+
+    /// Continue the last session for this directory
+    #[arg(short, long)]
+    r#continue: bool,
+}
+
+fn resolve_session(pool: Arc<DbPool>, resume: bool) -> anyhow::Result<Session> {
+    let cwd = std::env::current_dir()?.to_string_lossy().to_string();
+    if resume {
+        if let Some(session) = Session::find_latest_for_cwd(pool.clone(), &cwd)? {
+            return Ok(session);
+        }
+    }
+    core::session::Session::create(pool)
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 
-    // Handle `list-skills` / `ls` as positional subcommands
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args
-        .first()
-        .is_some_and(|a| a == "list-skills" || a == "ls")
-    {
-        core::agent::handle_list_skills();
-        return Ok(());
-    }
-
     let cli = Cli::parse();
-
     {
         let subscriber = tracing_subscriber::fmt()
             .with_target(false)
@@ -76,9 +81,12 @@ async fn main() -> anyhow::Result<()> {
         cli.api_key.as_deref(),
     )?;
 
-    // No query → interactive mode
+    let pool = Arc::new(core::db::create_pool()?);
+
+    // No query -> interactive mode
     if cli.query.is_empty() && cli.skill.is_none() {
-        return ui::interactive::start_interactive_mode(&mut model).await;
+        let session = resolve_session(pool, cli.r#continue)?;
+        return ui::interactive::start_interactive_mode(&mut model, session).await;
     }
 
     let query = cli.query.join(" ");
@@ -86,5 +94,6 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("Usage: pie -s <skill> '<query>'");
     }
 
-    core::agent::handle_query(&mut model, &query, None).await
+    let mut session = resolve_session(pool, cli.r#continue)?;
+    core::agent::handle_query(&mut model, &query, &mut session).await
 }

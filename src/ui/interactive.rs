@@ -1,7 +1,7 @@
 use tracing::info;
 
 use crate::core::agent::{handle_list_skills, handle_query};
-use crate::core::Messages;
+use crate::core::session::Session;
 use crate::providers::Model;
 use std::io::{self, Write};
 
@@ -20,12 +20,11 @@ Examples:
   list-skills
 "#;
 
-pub async fn start_interactive_mode(model: &mut Model) -> anyhow::Result<()> {
+pub async fn start_interactive_mode(model: &mut Model, mut session: Session) -> anyhow::Result<()> {
     info!("Welcome to pie! Type 'help' for usage or 'exit' to quit.\n");
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
-    let mut history: Messages = Vec::new();
 
     loop {
         print!("pie> ");
@@ -50,7 +49,7 @@ pub async fn start_interactive_mode(model: &mut Model) -> anyhow::Result<()> {
                 handle_list_skills();
             }
             _ => {
-                if let Err(e) = handle_query(model, input, Some(&mut history)).await {
+                if let Err(e) = handle_query(model, input, &mut session).await {
                     tracing::error!("Error: {e}");
                 }
             }

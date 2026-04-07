@@ -6,6 +6,7 @@ Rules:
 - Pick the most relevant skill for the user's request.
 - Include a clear, detailed query with all necessary context.
 - Previous messages are provided as context only. Only address the LATEST user message. Do not re-answer questions that were already answered in the conversation history.
+- Be brief. Do not explain what you are doing. Just call the tool.
 
 {% if skills -%}
 ## Available Skills

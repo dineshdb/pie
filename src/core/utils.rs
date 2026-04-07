@@ -1,9 +1,3 @@
-use std::path::PathBuf;
-
-pub fn pie_home() -> PathBuf {
-    dirs::home_dir().unwrap_or_default().join(".pie")
-}
-
 pub fn load_file(path: impl AsRef<std::path::Path>) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }

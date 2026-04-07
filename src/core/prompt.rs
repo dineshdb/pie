@@ -1,35 +1,14 @@
+use crate::core::config::pie_home;
 use crate::core::skill::Skill;
-use crate::core::utils::{find_upward_in_repo, load_file, pie_home};
-use aisdk::core::language_model::LanguageModelResponseContentType;
-use aisdk::core::Message;
+use crate::core::utils::{find_upward_in_repo, load_file};
 use minijinja::Environment;
 use serde::Serialize;
 use std::collections::HashSet;
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct HistoryEntry {
     pub role: &'static str,
     pub content: String,
-}
-
-pub fn build_history(messages: &[Message]) -> Vec<HistoryEntry> {
-    messages
-        .iter()
-        .filter_map(|msg| match msg {
-            Message::User(u) => Some(HistoryEntry {
-                role: "User",
-                content: u.content.clone(),
-            }),
-            Message::Assistant(a) => match &a.content {
-                LanguageModelResponseContentType::Text(t) => Some(HistoryEntry {
-                    role: "Assistant",
-                    content: t.clone(),
-                }),
-                _ => None,
-            },
-            _ => None,
-        })
-        .collect()
 }
 
 const DEFAULT_SYSTEM_PROMPT: &str = include_str!("SYSTEM_PROMPT.md");

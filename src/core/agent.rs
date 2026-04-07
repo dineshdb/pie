@@ -1,10 +1,11 @@
-use crate::core::prompt::{build_history, system};
+use crate::core::prompt::system;
+use crate::core::session::Session;
 use crate::core::skill::get_all_skills;
 use crate::core::tools::{shell_tool, subagent_tool};
 use crate::providers::Model;
 use aisdk::core::utils::step_count_is;
+use aisdk::core::LanguageModelRequest;
 use aisdk::core::LanguageModelStreamChunkType;
-use aisdk::core::{LanguageModelRequest, Message, Messages};
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use std::io::{self, Write};
@@ -22,22 +23,17 @@ pub fn handle_list_skills() {
     }
 }
 
-pub async fn handle_query(
-    model: &mut Model,
-    query: &str,
-    history: Option<&mut Messages>,
-) -> Result<()> {
+pub async fn handle_query(model: &mut Model, query: &str, session: &mut Session) -> Result<()> {
     let skills = get_all_skills();
 
     let mut scan_sources: Vec<&str> = vec![query];
-    if let Some(h) = &history {
-        for msg in h.iter() {
-            if let Message::User(u) = msg {
-                scan_sources.push(&u.content);
-            }
+    for entry in session.history_entries() {
+        if entry.role == "user" {
+            scan_sources.push(&entry.content);
         }
     }
-    let history_entries = build_history(history.as_ref().map(|h| h.as_slice()).unwrap_or_default());
+
+    let history_entries = session.history_entries().to_vec();
     let sys = system(query, &skills, &scan_sources, &history_entries);
 
     tracing::debug!(prompt = %sys, query, "agent:");
@@ -72,11 +68,9 @@ pub async fn handle_query(
 
     println!();
 
-    if let Some(h) = history {
-        h.push(Message::User(query.into()));
-        if !assistant_text.is_empty() {
-            h.push(Message::Assistant(assistant_text.into()));
-        }
+    session.add_user(query)?;
+    if !assistant_text.is_empty() {
+        session.add_assistant(&assistant_text)?;
     }
 
     Ok(())
