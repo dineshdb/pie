@@ -20,12 +20,11 @@ pub fn post_process_response(mut response: LanguageModelResponse) -> LanguageMod
     for content in response.contents {
         match content {
             LanguageModelResponseContentType::Text(ref text) => {
-                if !has_structured_tool_calls {
-                    if let Some(calls) = extract_inline_tool_calls(text) {
+                if !has_structured_tool_calls
+                    && let Some(calls) = extract_inline_tool_calls(text) {
                         new_contents.extend(calls);
                         continue;
                     }
-                }
                 new_contents.push(content);
             }
             LanguageModelResponseContentType::ToolCall(ref info) => {

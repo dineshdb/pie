@@ -17,13 +17,13 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io
 tracing = "0.1"
 tracing-subscriber = "0.3"
 dotenvy = "0.15"
-strum = { version = "0.27", features = ["derive"] }
+strum = { version = "0.28", features = ["derive"] }
 chrono = "0.4.44"
 minijinja = "2"
 
-rusqlite = { version = "0.34", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
 r2d2 = "0.8"
-r2d2_sqlite = "0.27"
+r2d2_sqlite = "0.31"
 refinery = { version = "0.9", features = ["rusqlite"] }
 uuid = { version = "1", features = ["v7"] }
 

@@ -44,11 +44,10 @@ struct Cli {
 
 fn resolve_session(pool: Arc<DbPool>, resume: bool) -> anyhow::Result<Session> {
     let cwd = std::env::current_dir()?.to_string_lossy().to_string();
-    if resume {
-        if let Some(session) = Session::find_latest_for_cwd(pool.clone(), &cwd)? {
+    if resume
+        && let Some(session) = Session::find_latest_for_cwd(pool.clone(), &cwd)? {
             return Ok(session);
         }
-    }
     core::session::Session::create(pool)
 }
 
