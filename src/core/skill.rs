@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 
@@ -12,14 +13,36 @@ fn skills_root() -> PathBuf {
     crate::core::config::pie_home().join("skills")
 }
 
-/// List all skills from ~/.pie/skills/*/SKILL.md.
+const EMBEDDED_SKILLS: &[&str] = &[
+    include_str!("../../.pie/skills/filesystem/SKILL.md"),
+    include_str!("../../.pie/skills/developer/SKILL.md"),
+];
+
+/// Parse a raw markdown string with `---` frontmatter into a Skill.
+fn parse_skill(raw: &str) -> Option<Skill> {
+    let (meta, content) = parse_frontmatter(raw);
+    let name = meta.get("name")?.trim().to_string();
+    let description = meta.get("description")?.trim().to_string();
+    Some(Skill {
+        name,
+        description,
+        content,
+    })
+}
+
+/// List all skills: embedded + filesystem. Filesystem skills override embedded ones with the same name.
 pub fn get_all_skills() -> Vec<Skill> {
+    let mut skills: Vec<Skill> = EMBEDDED_SKILLS
+        .iter()
+        .filter_map(|s| parse_skill(s))
+        .collect();
+    let mut names: HashSet<String> = skills.iter().map(|s| s.name.clone()).collect();
+
     let root = skills_root();
     let Ok(entries) = fs::read_dir(&root) else {
-        return vec![];
+        return skills;
     };
 
-    let mut skills = Vec::new();
     for entry in entries.flatten() {
         if !entry.file_type().is_ok_and(|t| t.is_dir()) {
             continue;
@@ -28,20 +51,23 @@ pub fn get_all_skills() -> Vec<Skill> {
         let Ok(raw) = fs::read_to_string(&md_path) else {
             continue;
         };
-        let (meta, content) = parse_frontmatter(&raw);
-        if let (Some(n), Some(d)) = (meta.get("name"), meta.get("description")) {
-            skills.push(Skill {
-                name: n.trim().to_string(),
-                description: d.trim().to_string(),
-                content,
-            });
+        let Some(skill) = parse_skill(&raw) else {
+            continue;
+        };
+        let name = skill.name.clone();
+        if names.contains(&name) {
+            if let Some(existing) = skills.iter_mut().find(|s| s.name == name) {
+                *existing = skill;
+            }
+        } else {
+            names.insert(name);
+            skills.push(skill);
         }
     }
     skills
 }
 
 /// Split raw markdown into (frontmatter key-value map, body content).
-/// Parses the `---` delimited block in a single pass.
 fn parse_frontmatter(raw: &str) -> (std::collections::HashMap<&str, String>, String) {
     let mut meta = std::collections::HashMap::new();
     let lines: Vec<&str> = raw.lines().collect();

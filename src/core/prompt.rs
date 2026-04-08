@@ -10,8 +10,8 @@ pub struct HistoryEntry {
     pub content: String,
 }
 
-const DEFAULT_SYSTEM_PROMPT: &str = include_str!("SYSTEM_PROMPT.md");
-const DEFAULT_SUBAGENT_PROMPT: &str = include_str!("SUBAGENT_PROMPT.md");
+const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../../.pie/SYSTEM_PROMPT.md");
+const DEFAULT_SUBAGENT_PROMPT: &str = include_str!("../../.pie/SUBAGENT_PROMPT.md");
 
 /// Recursively resolve skills mentioned in any of `sources` (and in those skills' contents).
 pub fn resolve_mentioned<'a>(sources: &[&str], skills: &'a [Skill]) -> Vec<&'a Skill> {
