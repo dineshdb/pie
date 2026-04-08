@@ -90,7 +90,9 @@ pub fn mentioned_skills_message(skills: &[Skill], scan_sources: &[&str]) -> Opti
     if mentioned.is_empty() {
         return None;
     }
-    let mut out = String::from("## Skills Instructions\nWith each skill loaded below, you follow each rules together to make sure you fulfill all the requirement.\nRules might conflict with each other, so choose ones that are most relevant to task in action.\n\n");
+    let mut out = String::from(
+        "## Skills Instructions\nWith each skill loaded below, you follow each rules together to make sure you fulfill all the requirement.\nRules might conflict with each other, so choose ones that are most relevant to task in action.\n\n",
+    );
     for skill in &mentioned {
         out.push_str(&format!(
             "---\nSkill: {}\n{}\n---\n\n",

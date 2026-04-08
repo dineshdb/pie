@@ -1,5 +1,6 @@
 use super::apple::AppleClient;
 use super::tool_compat::post_process_response;
+use aisdk::core::DynamicModel;
 use aisdk::core::capabilities::{
     AudioInputSupport, AudioOutputSupport, ImageInputSupport, ImageOutputSupport, ReasoningSupport,
     StructuredOutputSupport, TextInputSupport, TextOutputSupport, ToolCallSupport,
@@ -8,7 +9,6 @@ use aisdk::core::capabilities::{
 use aisdk::core::language_model::{
     LanguageModel, LanguageModelOptions, LanguageModelResponse, ProviderStream,
 };
-use aisdk::core::DynamicModel;
 use aisdk::providers::OpenAICompatible;
 use anyhow::{Context, Result};
 use async_trait::async_trait;

@@ -15,7 +15,7 @@ type ChunkCallback = unsafe extern "C" fn(chunk: *const c_char);
 type ToolCallback = unsafe extern "C" fn(tool_id: u64, args_json: *const c_char);
 
 #[link(name = "apple_ai_bridge")]
-extern "C" {
+unsafe extern "C" {
     fn apple_ai_init() -> bool;
     fn apple_ai_prewarm() -> bool;
     fn apple_ai_check_availability() -> i32;
@@ -38,12 +38,14 @@ extern "C" {
 }
 
 unsafe fn ptr_to_string(ptr: *mut c_char) -> Option<String> {
-    if ptr.is_null() {
-        return None;
+    unsafe {
+        if ptr.is_null() {
+            return None;
+        }
+        let s = std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned();
+        apple_ai_free_string(ptr);
+        Some(s)
     }
-    let s = std::ffi::CStr::from_ptr(ptr).to_string_lossy().into_owned();
-    apple_ai_free_string(ptr);
-    Some(s)
 }
 
 unsafe extern "C" fn tool_call_noop(_tool_id: u64, _args_json: *const c_char) {}
