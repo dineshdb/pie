@@ -47,7 +47,7 @@ impl rusqlite::types::FromSql for Role {
 }
 
 pub struct Session {
-    id: Uuid,
+    pub id: Uuid,
     pool: Arc<DbPool>,
     cache: Vec<HistoryEntry>,
 }
@@ -110,10 +110,6 @@ impl Session {
 
     pub fn history_entries(&self) -> &[HistoryEntry] {
         &self.cache
-    }
-
-    pub fn id(&self) -> Uuid {
-        self.id
     }
 
     fn add_message(&mut self, role: Role, content: &str) -> anyhow::Result<()> {
@@ -185,7 +181,7 @@ mod tests {
     fn load_existing_session() {
         let pool = pool();
         let session = Session::create(pool.clone()).unwrap();
-        let loaded = Session::load(pool, session.id()).unwrap();
+        let loaded = Session::load(pool, session.id).unwrap();
         assert!(loaded.history_entries().is_empty());
     }
 
@@ -219,7 +215,7 @@ mod tests {
         drop(conn);
 
         let found = Session::find_latest_for_cwd(pool, cwd).unwrap().unwrap();
-        assert_eq!(found.id(), Uuid::parse_str(&id2).unwrap());
+        assert_eq!(found.id, Uuid::parse_str(&id2).unwrap());
     }
 
     #[test]
@@ -251,7 +247,7 @@ mod tests {
             let mut session = Session::create(pool.clone()).unwrap();
             session.add_user("first").unwrap();
             session.add_assistant("second").unwrap();
-            session.id()
+            session.id
         };
 
         let loaded = Session::load(pool, id).unwrap();

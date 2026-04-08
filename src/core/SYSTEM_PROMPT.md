@@ -15,28 +15,15 @@ Rules:
 {% endfor -%}
 {% endif -%}
 
-{% if mentioned_skills -%}
-## Skills Instructions
-With each skill loaded below, you follow each rules together to make sure you fulfill all the requirement.
-Rules might conflict with eacher, so choose ones that are most relevant to task in action.
+{% if global_agents_md -%}
+## Global Agents Config
+{{ global_agents_md }}
+{% endif -%}
 
-{% for skill in mentioned_skills -%}---
-Skill: {{ skill.name }}
-{{ skill.content }}
----
-{% endfor -%}
+{% if local_agents_md -%}
+## Project Agents Config
+{{ local_agents_md }}
 {% endif -%}
 
 Date: {{ date }}
 Working directory: {{ pwd }}
-
-{% if history -%}
-## Conversation History
-{% for msg in history -%}
-{{ msg.role }}: {{ msg.content }}
-{% endfor -%}
-{% endif -%}
-
-Query: {{ query }}
-Today's date: {{ date }}
-PWD: {{ pwd }}

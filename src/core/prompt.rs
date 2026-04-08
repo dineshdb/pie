@@ -2,10 +2,9 @@ use crate::core::config::pie_home;
 use crate::core::skill::Skill;
 use crate::core::utils::{find_upward_in_repo, load_file};
 use minijinja::Environment;
-use serde::Serialize;
 use std::collections::HashSet;
 
-#[derive(Serialize, Clone)]
+#[derive(Clone)]
 pub struct HistoryEntry {
     pub role: &'static str,
     pub content: String,
@@ -15,7 +14,7 @@ const DEFAULT_SYSTEM_PROMPT: &str = include_str!("SYSTEM_PROMPT.md");
 const DEFAULT_SUBAGENT_PROMPT: &str = include_str!("SUBAGENT_PROMPT.md");
 
 /// Recursively resolve skills mentioned in any of `sources` (and in those skills' contents).
-fn resolve_mentioned<'a>(sources: &[&str], skills: &'a [Skill]) -> Vec<&'a Skill> {
+pub fn resolve_mentioned<'a>(sources: &[&str], skills: &'a [Skill]) -> Vec<&'a Skill> {
     let mut resolved = Vec::new();
     let mut seen = HashSet::new();
     let mut queue: Vec<&str> = sources.to_vec();
@@ -69,31 +68,49 @@ fn context_vars() -> (String, String) {
     (date, pwd)
 }
 
-pub fn system(
-    query: &str,
-    skills: &[Skill],
-    scan_sources: &[&str],
-    history: &[HistoryEntry],
-) -> String {
+/// Build the system prompt for the router agent.
+/// Contains: rules, skill list, AGENTS.md, date, pwd.
+/// Mentioned skills, history and query are sent as separate API messages.
+pub fn system(skills: &[Skill]) -> String {
     let template = load_template("SYSTEM_PROMPT.md", DEFAULT_SYSTEM_PROMPT);
-    let mentioned_skills = resolve_mentioned(scan_sources, skills);
     let global_agents_md = load_file(pie_home().join("AGENTS.md"));
     let local_agents_md = find_upward_in_repo("AGENTS.md");
     let (date, pwd) = context_vars();
     render_template(
         "system",
         &template,
-        minijinja::context! { skills, mentioned_skills, date, pwd, global_agents_md, local_agents_md, query, history },
+        minijinja::context! { skills, date, pwd, global_agents_md, local_agents_md },
     )
 }
 
-pub fn subagent(query: &str, skills: &[Skill], history: &[HistoryEntry]) -> String {
+/// Render the mentioned skills instructions as a user message.
+/// Returns None if no skills are mentioned.
+pub fn mentioned_skills_message(skills: &[Skill], scan_sources: &[&str]) -> Option<String> {
+    let mentioned = resolve_mentioned(scan_sources, skills);
+    if mentioned.is_empty() {
+        return None;
+    }
+    let mut out = String::from("## Skills Instructions\nWith each skill loaded below, you follow each rules together to make sure you fulfill all the requirement.\nRules might conflict with each other, so choose ones that are most relevant to task in action.\n\n");
+    for skill in &mentioned {
+        out.push_str(&format!(
+            "---\nSkill: {}\n{}\n---\n\n",
+            skill.name, skill.content
+        ));
+    }
+    Some(out)
+}
+
+/// Build the system prompt for a subagent.
+/// Contains: base instructions, AGENTS.md, date, pwd.
+/// Mentioned skills are sent as a separate user message.
+pub fn subagent() -> String {
     let template = load_template("SUBAGENT_PROMPT.md", DEFAULT_SUBAGENT_PROMPT);
-    let mentioned_skills = resolve_mentioned(&[query], skills);
+    let global_agents_md = load_file(pie_home().join("AGENTS.md"));
+    let local_agents_md = find_upward_in_repo("AGENTS.md");
     let (date, pwd) = context_vars();
     render_template(
         "subagent",
         &template,
-        minijinja::context! { mentioned_skills, date, pwd, query, history },
+        minijinja::context! { date, pwd, global_agents_md, local_agents_md },
     )
 }

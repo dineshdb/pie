@@ -1,4 +1,4 @@
-use crate::core::prompt::{subagent, HistoryEntry};
+use crate::core::prompt;
 use crate::core::skill::Skill;
 use crate::providers::Model;
 use aisdk::core::tools::{Tool, ToolExecute};
@@ -13,7 +13,13 @@ use std::sync::Arc;
 /// Execute a shell command and return its stdout, stderr, and exit code.
 pub fn shell_tool(cmd: String) -> Tool {
     tracing::debug!(cmd = %cmd, "shell:");
-    let output = Command::new("sh").arg("-c").arg(&cmd).output();
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(&cmd)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("PAGER", "cat")
+        .env("EDITOR", "true")
+        .output();
     let result = match output {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -48,10 +54,9 @@ struct SubagentInput {
     query: String,
 }
 
-pub fn subagent_tool(model: Model, skills: Vec<Skill>, history: Vec<HistoryEntry>) -> Tool {
+pub fn subagent_tool(model: Model, skills: Vec<Skill>) -> Tool {
     let model = Arc::new(model);
     let skills = Arc::new(skills);
-    let history = Arc::new(history);
     Tool::builder()
         .name("subagent")
         .description("Delegate a task after adding more details such as /<skill-mentions>, requirements, details, etc.")
@@ -59,7 +64,6 @@ pub fn subagent_tool(model: Model, skills: Vec<Skill>, history: Vec<HistoryEntry
         .execute(ToolExecute::from_async(move |_ctx, params| {
             let model = (*model).clone();
             let skills = skills.clone();
-            let history = history.clone();
             async move {
                 let skill_name = params["skill_name"].as_str().unwrap_or_default();
                 let query = params["query"].as_str().unwrap_or_default();
@@ -69,13 +73,22 @@ pub fn subagent_tool(model: Model, skills: Vec<Skill>, history: Vec<HistoryEntry
                 if !skills.iter().any(|s| s.name == skill_name) {
                     return Ok(format!("Skill '{}' not found.", skill_name));
                 };
+
                 let query_with_skill = format!("/{} {}", skill_name, query);
-                let sys = subagent(&query_with_skill, &skills, &history);
+                let sys = prompt::subagent();
+
+                // Build messages: mentioned skills → query
+                let mut messages: Vec<aisdk::core::Message> = Vec::new();
+                if let Some(skills_msg) = prompt::mentioned_skills_message(&skills, &[&query_with_skill]) {
+                    messages.push(aisdk::core::Message::User(aisdk::core::UserMessage::new(skills_msg)));
+                }
+                messages.push(aisdk::core::Message::User(aisdk::core::UserMessage::new(query)));
+
                 tracing::debug!(skill = %skill_name, query, sys = %sys, "subagent");
                 let mut req = LanguageModelRequest::builder()
                     .model(model)
                     .system(&sys)
-                    .prompt(query)
+                    .messages(messages)
                     .with_tool(shell_tool())
                     .stop_when(step_count_is(5))
                     .build();

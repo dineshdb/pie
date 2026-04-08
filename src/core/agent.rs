@@ -1,11 +1,12 @@
-use crate::core::prompt::system;
+use crate::core::prompt;
 use crate::core::session::Session;
 use crate::core::skill::get_all_skills;
 use crate::core::tools::{shell_tool, subagent_tool};
 use crate::providers::Model;
 use aisdk::core::utils::step_count_is;
-use aisdk::core::LanguageModelRequest;
-use aisdk::core::LanguageModelStreamChunkType;
+use aisdk::core::{
+    AssistantMessage, LanguageModelRequest, LanguageModelStreamChunkType, Message, UserMessage,
+};
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use std::io::{self, Write};
@@ -34,16 +35,36 @@ pub async fn handle_query(model: &mut Model, query: &str, session: &mut Session)
     }
 
     let history_entries = session.history_entries().to_vec();
-    let sys = system(query, &skills, &scan_sources, &history_entries);
+
+    // Static system prompt — cacheable across the entire session
+    let sys = prompt::system(&skills);
+
+    // Dynamic context — mentioned skills sent as first user message
+    let mut messages: Vec<Message> = Vec::new();
+    if let Some(skills_msg) = prompt::mentioned_skills_message(&skills, &scan_sources) {
+        messages.push(Message::User(UserMessage::new(skills_msg)));
+    }
+
+    // History messages
+    for entry in &history_entries {
+        match entry.role {
+            "user" => messages.push(Message::User(UserMessage::new(&entry.content))),
+            "assistant" => messages.push(Message::Assistant(AssistantMessage::from(
+                entry.content.clone(),
+            ))),
+            _ => {}
+        }
+    }
+    messages.push(Message::User(UserMessage::new(query)));
 
     tracing::debug!(prompt = %sys, query, "agent:");
     let mut req = {
         LanguageModelRequest::builder()
             .model(model.clone())
             .system(&sys)
-            .prompt(query)
+            .messages(messages)
             .with_tool(shell_tool())
-            .with_tool(subagent_tool(model.clone(), skills, history_entries))
+            .with_tool(subagent_tool(model.clone(), skills))
             .stop_when(step_count_is(10))
             .build()
     };
