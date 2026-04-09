@@ -4,48 +4,63 @@ use crate::providers::Model;
 use aisdk::core::LanguageModelRequest;
 use aisdk::core::tools::{Tool, ToolExecute};
 use aisdk::core::utils::step_count_is;
-use aisdk::macros::tool;
 use serde_json::json;
 use std::process::Command;
 use std::sync::Arc;
 
-#[tool]
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct ShellInput {
+    cmd: String,
+}
+
 /// Execute a shell command and return its stdout, stderr, and exit code.
-pub fn shell_tool(cmd: String) -> Tool {
-    tracing::debug!(cmd = %cmd, "shell:");
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg(&cmd)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("PAGER", "cat")
-        .env("EDITOR", "true")
-        .output();
-    let result = match output {
-        Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            let exit_code = out.status.code().unwrap_or(-1);
-            tracing::debug!(exit_code, stdout_len = stdout.len(), "shell_tool done");
-            json!({
-                "cmd": cmd,
-                "exitCode": exit_code,
-                "stdout": stdout,
-                "stderr": stderr,
-                "success": exit_code == 0
-            })
-        }
-        Err(e) => {
-            tracing::debug!(error = %e, "shell_tool failed");
-            json!({
-                "cmd": cmd,
-                "exitCode": -1,
-                "stdout": "",
-                "stderr": e.to_string(),
-                "success": false
-            })
-        }
-    };
-    Ok(serde_json::to_string(&result).unwrap_or_default())
+pub fn shell_tool() -> Tool {
+    Tool::builder()
+        .name("shell_tool")
+        .description("Execute a shell command and return its stdout, stderr, and exit code.")
+        .input_schema(schemars::schema_for!(ShellInput))
+        .execute(ToolExecute::from_sync(|_ctx, params| {
+            let cmd = match params.get("cmd").and_then(|v| v.as_str()) {
+                Some(c) => c.to_string(),
+                None => return Err("cmd parameter is required".to_string()),
+            };
+            tracing::debug!(cmd = %cmd, "shell:");
+            let output = Command::new("sh")
+                .arg("-c")
+                .arg(&cmd)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("PAGER", "cat")
+                .env("EDITOR", "true")
+                .output();
+            let result = match output {
+                Ok(out) => {
+                    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                    let exit_code = out.status.code().unwrap_or(-1);
+                    tracing::debug!(exit_code, stdout_len = stdout.len(), "shell_tool done");
+                    json!({
+                        "cmd": cmd,
+                        "exitCode": exit_code,
+                        "stdout": stdout,
+                        "stderr": stderr,
+                        "success": exit_code == 0
+                    })
+                }
+                Err(e) => {
+                    tracing::debug!(error = %e, "shell_tool failed");
+                    json!({
+                        "cmd": cmd,
+                        "exitCode": -1,
+                        "stdout": "",
+                        "stderr": e.to_string(),
+                        "success": false
+                    })
+                }
+            };
+            Ok(serde_json::to_string(&result).unwrap_or_default())
+        }))
+        .build()
+        .unwrap()
 }
 
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -75,19 +90,30 @@ pub fn subagent_tool(model: Model, skills: Vec<Skill>) -> Tool {
                 };
 
                 let query_with_skill = format!("/{} {}", skill_name, query);
-                let sys = prompt::subagent();
 
-                // Build messages: mentioned skills → query
-                let mut messages: Vec<aisdk::core::Message> = Vec::new();
+                // Build a minimal context for the subagent — avoid overwhelming small models
+                let (date, pwd) = crate::core::prompt::context_vars();
+                let sys = prompt::subagent_role();
+
+                let mut user_content = String::new();
                 if let Some(skills_msg) = prompt::mentioned_skills_message(&skills, &[&query_with_skill]) {
-                    messages.push(aisdk::core::Message::User(aisdk::core::UserMessage::new(skills_msg)));
+                    user_content.push_str(&skills_msg);
+                    user_content.push_str("\n\n");
                 }
-                messages.push(aisdk::core::Message::User(aisdk::core::UserMessage::new(query)));
+                user_content.push_str(&format!("Date: {date} Working directory: {pwd}\n\n"));
+                user_content.push_str(&format!("Query: {query}"));
 
-                tracing::debug!(skill = %skill_name, query, sys = %sys, "subagent");
+                let messages: Vec<aisdk::core::Message> = vec![
+                    aisdk::core::Message::User(aisdk::core::UserMessage::new(user_content)),
+                ];
+
+                tracing::debug!(skill = %skill_name, query, sys, "subagent");
+                for (i, msg) in messages.iter().enumerate() {
+                    tracing::debug!(i, ?msg, "subagent message");
+                }
                 let mut req = LanguageModelRequest::builder()
                     .model(model)
-                    .system(&sys)
+                    .system(sys)
                     .messages(messages)
                     .with_tool(shell_tool())
                     .stop_when(step_count_is(5))
@@ -95,7 +121,7 @@ pub fn subagent_tool(model: Model, skills: Vec<Skill>) -> Tool {
                 match req.generate_text().await {
                     Ok(r) => {
                         let text = r.text().unwrap_or_default();
-                        tracing::debug!(skill = %skill_name, len = text.len(), "subagent done");
+                        tracing::debug!(skill = %skill_name, len = text.len(), text, "subagent done");
                         Ok(text)
                     }
                     Err(e) => Err(format!("Subagent failed: {e}")),

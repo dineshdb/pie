@@ -7,6 +7,8 @@ pub struct Skill {
     pub name: String,
     pub description: String,
     pub content: String,
+    #[serde(skip)]
+    pub is_embedded: bool,
 }
 
 fn skills_root() -> PathBuf {
@@ -27,6 +29,7 @@ fn parse_skill(raw: &str) -> Option<Skill> {
         name,
         description,
         content,
+        is_embedded: false,
     })
 }
 
@@ -34,7 +37,11 @@ fn parse_skill(raw: &str) -> Option<Skill> {
 pub fn get_all_skills() -> Vec<Skill> {
     let mut skills: Vec<Skill> = EMBEDDED_SKILLS
         .iter()
-        .filter_map(|s| parse_skill(s))
+        .filter_map(|s| {
+            let mut skill = parse_skill(s)?;
+            skill.is_embedded = true;
+            Some(skill)
+        })
         .collect();
     let mut names: HashSet<String> = skills.iter().map(|s| s.name.clone()).collect();
 
