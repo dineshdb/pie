@@ -1,0 +1,107 @@
+# pie CLI integration tests
+#
+# Fields:
+#   name          - test description (required)
+#   args          - CLI flags (e.g. --help, --list-skills)
+#   input         - query string sent to the model
+#   exit          - expected exit code (omit = don't check)
+#   contains      - pattern(s) that MUST appear in output (string or list)
+#   not_contains  - pattern(s) that must NOT appear (string or list)
+#   filter        - grep pattern to pre-filter output before checking contains/not_contains
+#   timeout       - max seconds to wait (default 30)
+#   debug         - run with --debug flag (true/false)
+#   skip          - "online" = skip when model server unavailable
+
+tests:
+  # ── CLI flags ──────────────────────────────────────────────
+  - name: --help exits 0
+    args: --help
+    exit: 0
+
+  - name: --help shows usage
+    args: --help
+    contains: Usage
+
+  - name: --help lists --list-skills
+    args: --help
+    contains: list-skills
+
+  - name: --version shows semver
+    args: --version
+    contains: "0.1.0"
+
+  - name: unknown flag exits non-zero
+    args: --nonexistent
+    exit: 2
+
+  # ── Skills listing ─────────────────────────────────────────
+  - name: --list-skills shows all skills
+    args: --list-skills
+    contains:
+      - filesystem
+      - developer
+      - web-search
+      - repo
+
+  - name: --list-skills hides IMMUTABLE sections
+    args: --list-skills
+    not_contains: "[IMMUTABLE]"
+
+  # ── Prompt structure (debug mode) ─────────────────────────
+  - name: system core has IMMUTABLE System Skills
+    input: "echo hello"
+    debug: true
+    contains: "[IMMUTABLE] System Skills"
+    skip: online
+
+  - name: system core has Priority Hierarchy
+    input: "echo hello"
+    debug: true
+    contains: Priority Hierarchy
+    skip: online
+
+  - name: router role has CONFIG Agent Role
+    input: "echo hello"
+    debug: true
+    contains: "[CONFIG] Agent Role"
+    skip: online
+
+  - name: subagent sys is not task router
+    input: "echo hello"
+    debug: true
+    filter: "subagent.*sys="
+    not_contains: "task router"
+    skip: online
+
+  - name: system core has no role instructions
+    input: "echo hello"
+    debug: true
+    filter: "prompt="
+    not_contains: "You are a task router"
+    skip: online
+
+  # ── Online: shell commands ────────────────────────────────
+  - name: date query returns current year
+    input: "what is the date today?"
+    contains: "2026"
+    timeout: 30
+    skip: online
+
+  - name: shell command shows kernel
+    input: "run uname -a and show output"
+    contains: Darwin
+    timeout: 30
+    skip: online
+
+  - name: shell command shows architecture
+    input: "run uname -m"
+    contains: arm64
+    timeout: 30
+    skip: online
+
+  # ── Online: search queries ────────────────────────────────
+  - name: web search returns results
+    input: "/web-search latest technology news 2026"
+    contains: news
+    timeout: 45
+    skip: online
