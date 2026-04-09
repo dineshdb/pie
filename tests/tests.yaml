@@ -1,22 +1,23 @@
 # pie CLI integration tests
 #
 # Fields:
-# name - test description (required)
-# args - CLI flags (e.g. --help, --list-skills)
-# input - query string sent to the model
-# exit - expected exit code (omit = don't check)
-# contains - pattern(s) that MUST appear in output (string or list)
-# not_contains - pattern(s) that must NOT appear (string or list)
-# filter - grep pattern to pre-filter output before checking contains/not_contains
-# timeout - max seconds to wait (default 30)
-# debug - run with --debug flag (true/false)
-# skip - "online" = skip when model server unavailable
+#   name          - test description (required)
+#   args          - CLI flags (e.g. --help, --list-skills)
+#   input         - query string sent to the model
+#   exit          - expected exit code (omit = don't check)
+#   contains      - pattern(s) that MUST appear in output (string or list)
+#   not_contains  - pattern(s) that must NOT appear (string or list)
+#   filter        - grep pattern to pre-filter output before checking contains/not_contains
+#   timeout       - max seconds to wait (default 30)
+#   debug         - run with --debug flag (true/false)
+#   skip          - "online" = skip when model server unavailable
+#   parallel      - true = safe to run concurrently with other tests (default false)
 #
 # Multiple checks in one test: All checks (exit, contains, not_contains) run
 # and ALL failures are reported before the test is marked as failed.
 
 tests:
-  # ── CLI flags (no API calls) ─────────────────────────────────
+  # ── CLI flags (no API calls, instant) ────────────────────────
   - name: --help comprehensive
     args: --help
     exit: 0
@@ -37,7 +38,7 @@ tests:
     args: --nonexistent
     exit: 2
 
-  # ── Skills listing (no API calls) ────────────────────────────
+  # ── Skills listing (no API calls, instant) ───────────────────
   - name: --list-skills comprehensive
     args: --list-skills
     contains:
@@ -47,30 +48,24 @@ tests:
       - repo
     not_contains: "[IMMUTABLE]"
 
-  # ── Prompt structure (single API call with debug) ───────────
-  - name: prompt structure in debug mode
-    input: "echo hello"
+  # ── Single API call: prompt structure + shell execution ──────
+  - name: agent comprehensive (prompt + shell)
+    input: "run uname -a and uname -m"
     debug: true
     contains:
       - "[IMMUTABLE] System Skills"
       - Priority Hierarchy
       - "[CONFIG] Agent Role"
-    skip: online
-
-  # ── Shell commands (single API call) ─────────────────────────
-  - name: shell commands comprehensive
-    input: "run uname -a and uname -m"
-    contains:
       - Darwin
       - arm64
     timeout: 30
     skip: online
+    parallel: true
 
-  # ── Online: search queries ───────────────────────────────────
+  # ── Single API call: web search ─────────────────────────────
   - name: web search returns results
-    input: "use web-search skill to search for tech news"
-    contains:
-      - search
-      - results
+    input: "/web-search latest technology news 2026"
+    contains: technology
     timeout: 45
     skip: online
+    parallel: true

@@ -5,8 +5,8 @@
 # ///
 """YAML-driven integration tests for pie.
 
-Usage: uv run tests/run.py           (run all)
-       uv run tests/run.py offline    (skip tests needing a model)
+Usage: uv run scripts/test.py           (run all)
+       uv run scripts/test.py offline    (skip tests needing a model)
 """
 
 import re
@@ -14,6 +14,7 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import yaml
@@ -70,8 +71,7 @@ def run_test(test, online):
     failures = []
 
     if test.get("skip") == "online" and not online:
-        yellow(f"  SKIP: {name}")
-        return "skip"
+        return name, "skip", []
 
     args = test.get("args", "").split() if test.get("args") else []
     out, exit_code = run_pie(
@@ -96,16 +96,24 @@ def run_test(test, online):
         if pat in check:
             failures.append(f"unexpected: {pat!r}")
 
-    if failures:
-        red(f"  FAIL: {name}")
-        for f in failures:
-            red(f"    - {f}")
-        for line in out.splitlines()[:5]:
-            print(f"    {line}")
-        return "fail"
+    preview = out.splitlines()[:5]
+    status = "fail" if failures else "pass"
+    return name, status, failures, preview
 
-    green(f"  PASS: {name}")
-    return "pass"
+
+def print_result(result):
+    name = result[0]
+    status = result[1]
+    if status == "skip":
+        yellow(f"  SKIP: {name}")
+    elif status == "fail":
+        red(f"  FAIL: {name}")
+        for f in result[2]:
+            red(f"    - {f}")
+        for line in result[3]:
+            print(f"    {line}")
+    else:
+        green(f"  PASS: {name}")
 
 
 def main():
@@ -119,20 +127,43 @@ def main():
     subprocess.run(["cargo", "build", "--quiet"], cwd=ROOT, check=True)
     print()
 
-    with open("tests/tests.yaml") as f:
+    with open(ROOT / "tests" / "tests.yaml") as f:
         tests = yaml.safe_load(f)["tests"]
 
     print("══ Running tests ══\n")
 
+    # Split into sequential (instant) and parallel (API calls) groups
+    sequential = [t for t in tests if not t.get("parallel")]
+    parallel = [t for t in tests if t.get("parallel")]
+
     passed = failed = skipped = 0
-    for test in tests:
+
+    # Run sequential tests first (CLI flags, skills listing — instant)
+    for test in sequential:
         result = run_test(test, online)
-        if result == "pass":
+        print_result(result)
+        _, status, *_ = result
+        if status == "pass":
             passed += 1
-        elif result == "fail":
+        elif status == "fail":
             failed += 1
         else:
             skipped += 1
+
+    # Run parallel tests concurrently (API calls — slow)
+    if parallel:
+        with ThreadPoolExecutor(max_workers=len(parallel)) as pool:
+            futures = {pool.submit(run_test, t, online): t for t in parallel}
+            for future in as_completed(futures):
+                result = future.result()
+                print_result(result)
+                _, status, *_ = result
+                if status == "pass":
+                    passed += 1
+                elif status == "fail":
+                    failed += 1
+                else:
+                    skipped += 1
 
     print(f"\n══ Results ══")
     green(f"  Passed: {passed}")
