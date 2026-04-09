@@ -8,6 +8,7 @@ use clap::Parser;
 use std::io::{self, IsTerminal, Read};
 use std::sync::Arc;
 use tracing::Level;
+use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(name = "pie", version = "0.1.0")]
@@ -62,9 +63,13 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     {
+        let filter =
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("refinery=warn"));
+
         let subscriber = tracing_subscriber::fmt()
             .with_target(false)
             .with_level(false)
+            .with_env_filter(filter)
             .compact();
 
         if cli.debug {
