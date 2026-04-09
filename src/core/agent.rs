@@ -1,8 +1,10 @@
+use crate::core::output::{JsonResponse, OutputFormat};
 use crate::core::prompt;
 use crate::core::session::Session;
 use crate::core::skill::get_all_skills;
 use crate::core::tools::{load_skills_tool, shell_tool, subagent_tool};
 use crate::providers::Model;
+use aisdk::core::LanguageModel;
 use aisdk::core::utils::step_count_is;
 use aisdk::core::{AssistantMessage, LanguageModelRequest, Message, SystemMessage, UserMessage};
 use anyhow::{Context, Result};
@@ -20,7 +22,12 @@ pub fn handle_list_skills() {
     }
 }
 
-pub async fn handle_query(model: &mut Model, query: &str, session: &mut Session) -> Result<()> {
+pub async fn handle_query(
+    model: &mut Model,
+    query: &str,
+    session: &mut Session,
+    format: OutputFormat,
+) -> Result<()> {
     let skills = get_all_skills();
     let (system_skills, user_skills): (Vec<_>, Vec<_>) =
         skills.iter().cloned().partition(|s| s.is_embedded);
@@ -50,6 +57,10 @@ pub async fn handle_query(model: &mut Model, query: &str, session: &mut Session)
         messages.push(Message::User(UserMessage::new(skills_msg)));
     }
     messages.push(Message::System(SystemMessage::new(prompt::router_role())));
+    let format_instructions = format.to_instructions();
+    if !format_instructions.is_empty() {
+        messages.push(Message::System(SystemMessage::new(format_instructions)));
+    }
 
     // History messages
     for entry in &history_entries {
@@ -98,7 +109,16 @@ pub async fn handle_query(model: &mut Model, query: &str, session: &mut Session)
     };
 
     if !output.is_empty() {
-        println!("{output}");
+        if format.is_json() {
+            let json_resp = JsonResponse::new(
+                output.clone(),
+                Some(session.id.to_string()),
+                Some(model.name()),
+            );
+            println!("{}", serde_json::to_string(&json_resp)?);
+        } else {
+            println!("{output}");
+        }
     }
 
     session.add_user(query)?;

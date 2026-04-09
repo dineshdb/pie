@@ -2,6 +2,7 @@ mod core;
 mod providers;
 mod ui;
 
+use crate::core::output::OutputFormat;
 use crate::core::{db::DbPool, session::Session};
 use clap::Parser;
 use std::io::{self, IsTerminal, Read};
@@ -18,6 +19,10 @@ struct Cli {
 
     #[arg(short, long)]
     debug: bool,
+
+    /// Output response in JSON format
+    #[arg(long)]
+    json: bool,
 
     /// Model name (e.g. llama3, gpt-4o, claude-3.5-sonnet)
     #[arg(short, long)]
@@ -85,10 +90,17 @@ async fn main() -> anyhow::Result<()> {
     let piped_stdin = read_piped_stdin();
 
     // No query args and no skill -> interactive mode (or use piped stdin as query)
+    let format = if cli.json {
+        OutputFormat::Json
+    } else {
+        OutputFormat::Markdown
+    };
+
     if cli.query.is_empty() && cli.skill.is_none() {
         if let Some(stdin_content) = piped_stdin {
             let mut session = resolve_session(pool, cli.r#continue)?;
-            return core::agent::handle_query(&mut model, &stdin_content, &mut session).await;
+            return core::agent::handle_query(&mut model, &stdin_content, &mut session, format)
+                .await;
         }
         let session = resolve_session(pool, cli.r#continue)?;
         return ui::interactive::start_interactive_mode(&mut model, session).await;
@@ -106,7 +118,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let mut session = resolve_session(pool, cli.r#continue)?;
-    core::agent::handle_query(&mut model, &full_query, &mut session).await
+    core::agent::handle_query(&mut model, &full_query, &mut session, format).await
 }
 
 /// Read piped stdin. Returns None if stdin is a terminal or empty.

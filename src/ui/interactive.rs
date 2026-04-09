@@ -1,6 +1,7 @@
 use tracing::info;
 
 use crate::core::agent::{handle_list_skills, handle_query};
+use crate::core::output::OutputFormat;
 use crate::core::session::Session;
 use crate::providers::Model;
 use std::io::{self, Write};
@@ -49,7 +50,9 @@ pub async fn start_interactive_mode(model: &mut Model, mut session: Session) -> 
                 handle_list_skills();
             }
             _ => {
-                if let Err(e) = handle_query(model, input, &mut session).await {
+                if let Err(e) =
+                    handle_query(model, input, &mut session, OutputFormat::default()).await
+                {
                     tracing::error!("Error: {e}");
                 }
             }

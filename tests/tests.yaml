@@ -69,3 +69,19 @@ tests:
     timeout: 45
     skip: online
     parallel: true
+
+  # ── JSON output format ──────────────────────────────────────
+  - name: --json returns valid JSON
+    args: --json
+    input: "what is 2+2"
+    contains:
+      - '"response"'
+      - '"session_id"'
+      - '"model_used"'
+      - '"timestamp"'
+    not_contains:
+      - "```json"
+      - "```"
+    timeout: 30
+    skip: online
+    parallel: true
