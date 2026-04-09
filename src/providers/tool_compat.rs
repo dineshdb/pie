@@ -1,6 +1,26 @@
 use aisdk::core::language_model::{LanguageModelResponse, LanguageModelResponseContentType};
 use aisdk::core::tools::ToolCallInfo;
 
+const KNOWN_TOOLS: &[&str] = &["subagent", "shell_tool"];
+
+/// If `name` is a known tool (subagent, shell_tool), return it unchanged.
+/// Otherwise remap it to a subagent call with the original name as skill_name.
+fn normalize_tool_call(name: &str, input: serde_json::Value) -> LanguageModelResponseContentType {
+    if KNOWN_TOOLS.contains(&name) {
+        let mut info = ToolCallInfo::new(name);
+        info.input(input);
+        LanguageModelResponseContentType::ToolCall(info)
+    } else {
+        let query = input.get("query").and_then(|v| v.as_str()).unwrap_or("");
+        let mut info = ToolCallInfo::new("subagent");
+        info.input(serde_json::json!({
+            "skill_name": name,
+            "query": query,
+        }));
+        LanguageModelResponseContentType::ToolCall(info)
+    }
+}
+
 /// Post-process a language model response to extract inline tool calls.
 ///
 /// Some local model servers (e.g., MLX serving gemma-4) don't parse the model's
@@ -28,20 +48,10 @@ pub fn post_process_response(mut response: LanguageModelResponse) -> LanguageMod
             }
             LanguageModelResponseContentType::ToolCall(ref info) => {
                 let name = info.tool.name.as_str();
-                if matches!(name, "subagent" | "shell_tool") {
+                if KNOWN_TOOLS.contains(&name) {
                     new_contents.push(content);
                 } else {
-                    let query = info
-                        .input
-                        .get("query")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let mut remapped = ToolCallInfo::new("subagent");
-                    remapped.input(serde_json::json!({
-                        "skill_name": name,
-                        "query": query,
-                    }));
-                    new_contents.push(LanguageModelResponseContentType::ToolCall(remapped));
+                    new_contents.push(normalize_tool_call(name, info.input.clone()));
                 }
             }
             other => new_contents.push(other),
@@ -81,22 +91,7 @@ fn extract_inline_tool_calls(text: &str) -> Option<Vec<LanguageModelResponseCont
             let input = serde_json::from_str(&normalized)
                 .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
-            let (tool_name, input) = if matches!(name, "subagent" | "shell_tool") {
-                (name.to_string(), input)
-            } else {
-                let query = input.get("query").and_then(|v| v.as_str()).unwrap_or("");
-                (
-                    "subagent".to_string(),
-                    serde_json::json!({
-                        "skill_name": name,
-                        "query": query,
-                    }),
-                )
-            };
-
-            let mut info = ToolCallInfo::new(&tool_name);
-            info.input(input);
-            results.push(LanguageModelResponseContentType::ToolCall(info));
+            results.push(normalize_tool_call(name, input));
         }
 
         let consumed = start + "<|tool_call>".len() + "call:".len() + end + "<tool_call|>".len();

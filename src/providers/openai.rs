@@ -21,17 +21,22 @@ pub enum Model {
 }
 
 // Delegate all capability marker traits
-impl TextInputSupport for Model {}
-impl TextOutputSupport for Model {}
-impl ToolCallSupport for Model {}
-impl StructuredOutputSupport for Model {}
-impl ReasoningSupport for Model {}
-impl ImageInputSupport for Model {}
-impl ImageOutputSupport for Model {}
-impl VideoInputSupport for Model {}
-impl AudioInputSupport for Model {}
-impl AudioOutputSupport for Model {}
-impl VideoOutputSupport for Model {}
+macro_rules! impl_capability {
+    ($($trait:ident),* $(,)?) => { $( impl $trait for Model {} )* }
+}
+impl_capability!(
+    TextInputSupport,
+    TextOutputSupport,
+    ToolCallSupport,
+    StructuredOutputSupport,
+    ReasoningSupport,
+    ImageInputSupport,
+    ImageOutputSupport,
+    VideoInputSupport,
+    AudioInputSupport,
+    AudioOutputSupport,
+    VideoOutputSupport,
+);
 
 #[async_trait]
 impl LanguageModel for Model {

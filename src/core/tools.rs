@@ -5,7 +5,6 @@ use aisdk::core::LanguageModelRequest;
 use aisdk::core::tools::{Tool, ToolExecute};
 use aisdk::core::utils::step_count_is;
 use serde_json::json;
-use std::collections::HashSet;
 use std::process::Command;
 use std::sync::Arc;
 
@@ -95,36 +94,11 @@ pub fn load_skills_tool(skills: Vec<Skill>) -> Tool {
                 return Err("skills parameter must be a non-empty array of skill names".to_string());
             }
 
-            // Recursively resolve: start with requested names, then scan their
-            // content for mentions of other skills (using /<skill-name> pattern).
-            let mut resolved: Vec<&Skill> = Vec::new();
-            let mut seen: HashSet<String> = HashSet::new();
-            let mut queue: Vec<String> = names;
-
-            while let Some(name) = queue.pop() {
-                if seen.contains(&name) {
-                    continue;
-                }
-                let Some(skill) = skills.iter().find(|s| s.name == name) else {
-                    continue;
-                };
-                seen.insert(name);
-                // Scan this skill's content for mentions of other skills
-                for other in skills.iter() {
-                    if !seen.contains(&other.name)
-                        && skill.content.contains(&format!("/{}", other.name))
-                    {
-                        queue.push(other.name.clone());
-                    }
-                }
-                resolved.push(skill);
-            }
+            let resolved = prompt::resolve_by_name(&names, &skills);
 
             if resolved.is_empty() {
                 return Err("No skills found matching the requested names".to_string());
             }
-
-            resolved.sort_by_key(|s| &s.name);
 
             let mut output = String::new();
             for skill in &resolved {

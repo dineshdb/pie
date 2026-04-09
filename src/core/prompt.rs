@@ -4,12 +4,6 @@ use crate::core::utils::{find_upward_in_repo, load_file};
 use minijinja::Environment;
 use std::collections::HashSet;
 
-#[derive(Clone)]
-pub struct HistoryEntry {
-    pub role: &'static str,
-    pub content: String,
-}
-
 const SYSTEM_CORE_TEMPLATE: &str = r#"
 ## [IMMUTABLE] System Skills
 
@@ -115,9 +109,10 @@ Skill: {{ skill.name }}
 "#;
 
 /// Recursively resolve skills mentioned in any of `sources` (and in those skills' contents).
+/// Scans for `/<skill-name>` patterns and follows transitive mentions.
 pub fn resolve_mentioned<'a>(sources: &[&str], skills: &'a [Skill]) -> Vec<&'a Skill> {
     let mut resolved = Vec::new();
-    let mut seen = HashSet::new();
+    let mut seen: HashSet<String> = HashSet::new();
     let mut queue: Vec<&str> = sources.to_vec();
 
     while let Some(source) = queue.pop() {
@@ -134,6 +129,13 @@ pub fn resolve_mentioned<'a>(sources: &[&str], skills: &'a [Skill]) -> Vec<&'a S
     }
 
     resolved
+}
+
+/// Resolve skills by name, then recursively follow `/<skill-name>` mentions in their content.
+pub fn resolve_by_name<'a>(names: &[String], skills: &'a [Skill]) -> Vec<&'a Skill> {
+    let name_sources: Vec<String> = names.iter().map(|n| format!("/{n}")).collect();
+    let sources: Vec<&str> = name_sources.iter().map(|s| s.as_str()).collect();
+    resolve_mentioned(&sources, skills)
 }
 
 /// Render a MiniJinja template with context, falling back to raw template on error.
@@ -161,8 +163,6 @@ pub fn context_vars() -> (String, String) {
     (date, pwd)
 }
 
-/// Core system prompt for the router agent.
-/// [IMMUTABLE] rules + system skills + priority hierarchy.
 pub fn system_core(system_skills: &[Skill]) -> String {
     render_template(
         "system_core",
@@ -171,20 +171,14 @@ pub fn system_core(system_skills: &[Skill]) -> String {
     )
 }
 
-/// Router role instructions.
-/// Placed as the last system message before user messages.
 pub fn router_role() -> &'static str {
     ROUTER_ROLE
 }
 
-/// Subagent role instructions.
-/// Placed as the last system message before user messages.
 pub fn subagent_role() -> &'static str {
     SUBAGENT_ROLE
 }
 
-/// Build the global config system message.
-/// Contains: [CONFIG] user skills list + [CONFIG] global AGENTS.md.
 pub fn global_config(user_skills: &[Skill]) -> String {
     let global_agents_md = load_file(pie_home().join("AGENTS.md"));
     render_template(
@@ -194,8 +188,6 @@ pub fn global_config(user_skills: &[Skill]) -> String {
     )
 }
 
-/// Build the project context system message.
-/// Contains: [CONFIG] local AGENTS.md, [CONFIG] date, [CONFIG] pwd.
 pub fn project_context() -> String {
     let local_agents_md = find_upward_in_repo("AGENTS.md");
     let (date, pwd) = context_vars();
@@ -206,8 +198,6 @@ pub fn project_context() -> String {
     )
 }
 
-/// Render the mentioned skills instructions as a user message.
-/// Returns None if no skills are mentioned.
 pub fn mentioned_skills_message(skills: &[Skill], scan_sources: &[&str]) -> Option<String> {
     let mentioned = resolve_mentioned(scan_sources, skills);
     if mentioned.is_empty() {

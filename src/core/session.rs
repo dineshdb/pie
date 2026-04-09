@@ -1,5 +1,4 @@
 use crate::core::db::DbPool;
-use crate::core::prompt::HistoryEntry;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use strum::{AsRefStr, EnumString, IntoStaticStr};
@@ -24,6 +23,12 @@ pub enum Role {
     User,
     Assistant,
     System,
+}
+
+#[derive(Clone)]
+pub struct HistoryEntry {
+    pub role: Role,
+    pub content: String,
 }
 
 impl Role {
@@ -124,7 +129,7 @@ impl Session {
             ],
         )?;
         self.cache.push(HistoryEntry {
-            role: role.as_str(),
+            role,
             content: content.to_string(),
         });
         Ok(())
@@ -149,10 +154,7 @@ impl Session {
             .query_map(rusqlite::params![self.id.to_string()], |row| {
                 let role: Role = row.get(0)?;
                 let content: String = row.get(1)?;
-                Ok(HistoryEntry {
-                    role: role.as_str(),
-                    content,
-                })
+                Ok(HistoryEntry { role, content })
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -234,9 +236,9 @@ mod tests {
 
         let entries = session.history_entries();
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].role, "user");
+        assert_eq!(entries[0].role, Role::User);
         assert_eq!(entries[0].content, "hello");
-        assert_eq!(entries[1].role, "assistant");
+        assert_eq!(entries[1].role, Role::Assistant);
         assert_eq!(entries[1].content, "hi there");
     }
 

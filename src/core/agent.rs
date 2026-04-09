@@ -1,6 +1,6 @@
 use crate::core::output::{JsonResponse, OutputFormat};
 use crate::core::prompt;
-use crate::core::session::Session;
+use crate::core::session::{Role, Session};
 use crate::core::skill::get_all_skills;
 use crate::core::tools::{load_skills_tool, shell_tool, subagent_tool};
 use crate::providers::Model;
@@ -32,14 +32,13 @@ pub async fn handle_query(
     let (system_skills, user_skills): (Vec<_>, Vec<_>) =
         skills.iter().cloned().partition(|s| s.is_embedded);
 
+    let history_entries = session.history_entries().to_vec();
     let mut scan_sources: Vec<&str> = vec![query];
-    for entry in session.history_entries() {
-        if entry.role == "user" {
+    for entry in &history_entries {
+        if entry.role == Role::User {
             scan_sources.push(&entry.content);
         }
     }
-
-    let history_entries = session.history_entries().to_vec();
 
     // Layer 1: Core system prompt — compiled-in, immutable, most cacheable
     let core_sys = prompt::system_core(&system_skills);
@@ -62,14 +61,13 @@ pub async fn handle_query(
         messages.push(Message::System(SystemMessage::new(format_instructions)));
     }
 
-    // History messages
     for entry in &history_entries {
         match entry.role {
-            "user" => messages.push(Message::User(UserMessage::new(&entry.content))),
-            "assistant" => messages.push(Message::Assistant(AssistantMessage::from(
+            Role::User => messages.push(Message::User(UserMessage::new(&entry.content))),
+            Role::Assistant => messages.push(Message::Assistant(AssistantMessage::from(
                 entry.content.clone(),
             ))),
-            _ => {}
+            Role::System => {}
         }
     }
     messages.push(Message::User(UserMessage::new(query)));
