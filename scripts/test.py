@@ -67,6 +67,7 @@ def check_online():
 
 def run_test(test, online):
     name = test["name"]
+    failures = []
 
     if test.get("skip") == "online" and not online:
         yellow(f"  SKIP: {name}")
@@ -85,24 +86,23 @@ def run_test(test, online):
         check = "\n".join(re.findall(test["filter"], out))
 
     if "exit" in test and exit_code != test["exit"]:
-        red(f"  FAIL: {name} (exit: expected {test['exit']}, got {exit_code})")
-        for line in out.splitlines()[:5]:
-            print(f"    {line}")
-        return "fail"
+        failures.append(f"exit: expected {test['exit']}, got {exit_code}")
 
     for pat in ensure_list(test.get("contains")):
         if pat not in check:
-            red(f"  FAIL: {name} (missing: {pat})")
-            for line in out.splitlines()[:5]:
-                print(f"    {line}")
-            return "fail"
+            failures.append(f"missing: {pat!r}")
 
     for pat in ensure_list(test.get("not_contains")):
         if pat in check:
-            red(f"  FAIL: {name} (unexpected: {pat})")
-            for line in out.splitlines()[:5]:
-                print(f"    {line}")
-            return "fail"
+            failures.append(f"unexpected: {pat!r}")
+
+    if failures:
+        red(f"  FAIL: {name}")
+        for f in failures:
+            red(f"    - {f}")
+        for line in out.splitlines()[:5]:
+            print(f"    {line}")
+        return "fail"
 
     green(f"  PASS: {name}")
     return "pass"
