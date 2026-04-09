@@ -1,12 +1,10 @@
 use crate::core::prompt;
 use crate::core::session::Session;
 use crate::core::skill::get_all_skills;
-use crate::core::tools::subagent_tool;
+use crate::core::tools::{load_skills_tool, shell_tool, subagent_tool};
 use crate::providers::Model;
 use aisdk::core::utils::step_count_is;
-use aisdk::core::{
-    AssistantMessage, LanguageModelRequest, Message, SystemMessage, UserMessage,
-};
+use aisdk::core::{AssistantMessage, LanguageModelRequest, Message, SystemMessage, UserMessage};
 use anyhow::{Context, Result};
 use tracing::warn;
 
@@ -72,6 +70,8 @@ pub async fn handle_query(model: &mut Model, query: &str, session: &mut Session)
             .model(model.clone())
             .system(core_sys)
             .messages(messages)
+            .with_tool(shell_tool())
+            .with_tool(load_skills_tool(skills.clone()))
             .with_tool(subagent_tool(model.clone(), skills))
             .stop_when(step_count_is(10))
             .build()
@@ -83,8 +83,12 @@ pub async fn handle_query(model: &mut Model, query: &str, session: &mut Session)
     let output = if !assistant_text.is_empty() {
         assistant_text
     } else if let Some(results) = response.tool_results() {
+        // Find shell_tool results first, then fall back to last result
         results
+            .iter()
+            .filter(|r| r.tool.name == "shell_tool")
             .last()
+            .or_else(|| results.last())
             .and_then(|r| r.output.as_ref().ok())
             .and_then(|v| v.as_str())
             .unwrap_or_default()

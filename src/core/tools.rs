@@ -5,6 +5,7 @@ use aisdk::core::LanguageModelRequest;
 use aisdk::core::tools::{Tool, ToolExecute};
 use aisdk::core::utils::step_count_is;
 use serde_json::json;
+use std::collections::HashSet;
 use std::process::Command;
 use std::sync::Arc;
 
@@ -58,6 +59,78 @@ pub fn shell_tool() -> Tool {
                 }
             };
             Ok(serde_json::to_string(&result).unwrap_or_default())
+        }))
+        .build()
+        .unwrap()
+}
+
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct LoadSkillsInput {
+    /// List of skill names to load (e.g. ["filesystem", "developer"])
+    skills: Vec<String>,
+}
+
+/// Load one or more skills by name. Recursively resolves any additional skills
+/// mentioned within the loaded skill contents. Returns the full skill instructions
+/// inline so the caller can use them directly.
+pub fn load_skills_tool(skills: Vec<Skill>) -> Tool {
+    let skills = Arc::new(skills);
+    Tool::builder()
+        .name("load_skills")
+        .description("Load skill instructions by name. Recursively resolves all mentioned skills. Use this when you need skill knowledge to answer directly, without delegating to a subagent.")
+        .input_schema(schemars::schema_for!(LoadSkillsInput))
+        .execute(ToolExecute::from_sync(move |_ctx, params| {
+            let skills = skills.clone();
+            let names: Vec<String> = params
+                .get("skills")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            if names.is_empty() {
+                return Err("skills parameter must be a non-empty array of skill names".to_string());
+            }
+
+            // Recursively resolve: start with requested names, then scan their
+            // content for mentions of other skills (using /<skill-name> pattern).
+            let mut resolved: Vec<&Skill> = Vec::new();
+            let mut seen: HashSet<String> = HashSet::new();
+            let mut queue: Vec<String> = names;
+
+            while let Some(name) = queue.pop() {
+                if seen.contains(&name) {
+                    continue;
+                }
+                let Some(skill) = skills.iter().find(|s| s.name == name) else {
+                    continue;
+                };
+                seen.insert(name);
+                // Scan this skill's content for mentions of other skills
+                for other in skills.iter() {
+                    if !seen.contains(&other.name)
+                        && skill.content.contains(&format!("/{}", other.name))
+                    {
+                        queue.push(other.name.clone());
+                    }
+                }
+                resolved.push(skill);
+            }
+
+            if resolved.is_empty() {
+                return Err("No skills found matching the requested names".to_string());
+            }
+
+            resolved.sort_by_key(|s| &s.name);
+
+            let mut output = String::new();
+            for skill in &resolved {
+                output.push_str(&format!("## Skill: {}\n{}\n---\n", skill.name, skill.content));
+            }
+            Ok(output)
         }))
         .build()
         .unwrap()
