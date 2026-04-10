@@ -3,6 +3,7 @@ pub mod config;
 pub mod db;
 pub mod output;
 pub mod prompt;
+pub mod sandbox;
 pub mod session;
 pub mod skill;
 pub mod tools;

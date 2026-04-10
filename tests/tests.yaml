@@ -10,6 +10,7 @@
 #   filter        - grep pattern to pre-filter output before checking contains/not_contains
 #   timeout       - max seconds to wait (default 30)
 #   debug         - run with --debug flag (true/false)
+#   post          - shell command to run after main test (exit 0 = pass, non-0 = fail)
 #   skip          - "online" = skip when model server unavailable
 #   parallel      - true = safe to run concurrently with other tests (default false)
 #
@@ -85,3 +86,30 @@ tests:
     timeout: 30
     skip: online
     parallel: true
+
+  # ── Sandbox integration ─────────────────────────────────────
+  - name: sandbox srt-settings.json generated
+    args: --help
+    contains: "Usage"
+    timeout: 5
+    post: "test -f ~/.pie/srt-settings.json"
+
+  - name: sandbox blocks ~/.ssh reads
+    args: --help
+    timeout: 5
+    post: "! srt --settings ~/.pie/srt-settings.json sh -c 'cat ~/.ssh/known_hosts' 2>/dev/null"
+
+  - name: sandbox blocks unauthorized writes
+    args: --help
+    timeout: 5
+    post: "! srt --settings ~/.pie/srt-settings.json sh -c 'touch /etc/sandbox-test' 2>/dev/null"
+
+  - name: sandbox allows workspace writes
+    args: --help
+    timeout: 5
+    post: "srt --settings ~/.pie/srt-settings.json sh -c 'mktemp -q /tmp/sandbox-test.XXXXXX | xargs rm'"
+
+  - name: sandbox allows workspace reads
+    args: --help
+    timeout: 5
+    post: "srt --settings ~/.pie/srt-settings.json sh -c 'cat Cargo.toml | head -1'"

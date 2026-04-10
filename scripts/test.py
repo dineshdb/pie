@@ -96,6 +96,21 @@ def run_test(test, online):
         if pat in check:
             failures.append(f"unexpected: {pat!r}")
 
+    # Run post-test shell command (exit code determines pass/fail)
+    post_cmd = test.get("post")
+    if post_cmd:
+        try:
+            r = subprocess.run(
+                post_cmd, shell=True, capture_output=True, text=True, timeout=10, cwd=ROOT
+            )
+            if r.returncode != 0:
+                preview_lines = (r.stdout + r.stderr).strip().splitlines()[:3]
+                failures.append(f"post: {post_cmd!r} exited {r.returncode}")
+                for line in preview_lines:
+                    failures.append(f"  {line}")
+        except subprocess.TimeoutExpired:
+            failures.append(f"post: {post_cmd!r} timed out")
+
     preview = out.splitlines()[:5]
     status = "fail" if failures else "pass"
     return name, status, failures, preview

@@ -5,6 +5,7 @@ use crate::core::output::OutputFormat;
 use crate::core::session::Session;
 use crate::providers::Model;
 use std::io::{self, Write};
+use std::path::PathBuf;
 
 const HELP_TEXT: &str = r#"
 pie - Interactive Mode
@@ -21,7 +22,11 @@ Examples:
   list-skills
 "#;
 
-pub async fn start_interactive_mode(model: &mut Model, mut session: Session) -> anyhow::Result<()> {
+pub async fn start_interactive_mode(
+    model: &mut Model,
+    mut session: Session,
+    sandbox_settings: PathBuf,
+) -> anyhow::Result<()> {
     info!("Welcome to pie! Type 'help' for usage or 'exit' to quit.\n");
 
     let stdin = io::stdin();
@@ -50,8 +55,14 @@ pub async fn start_interactive_mode(model: &mut Model, mut session: Session) -> 
                 handle_list_skills();
             }
             _ => {
-                if let Err(e) =
-                    handle_query(model, input, &mut session, OutputFormat::default()).await
+                if let Err(e) = handle_query(
+                    model,
+                    input,
+                    &mut session,
+                    OutputFormat::default(),
+                    sandbox_settings.clone(),
+                )
+                .await
                 {
                     tracing::error!("Error: {e}");
                 }

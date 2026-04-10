@@ -1,11 +1,12 @@
 use crate::core::prompt;
+use crate::core::sandbox;
 use crate::core::skill::Skill;
 use crate::providers::Model;
 use aisdk::core::LanguageModelRequest;
 use aisdk::core::tools::{Tool, ToolExecute};
 use aisdk::core::utils::step_count_is;
 use serde_json::json;
-use std::process::Command;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -13,21 +14,20 @@ struct ShellInput {
     cmd: String,
 }
 
-/// Execute a shell command and return its stdout, stderr, and exit code.
-pub fn shell_tool() -> Tool {
+/// Execute a shell command inside the sandbox and return its stdout, stderr, and exit code.
+pub fn shell_tool(sandbox_settings: PathBuf) -> Tool {
+    let sandbox_settings = Arc::new(sandbox_settings);
     Tool::builder()
         .name("shell_tool")
         .description("Execute a shell command and return its stdout, stderr, and exit code.")
         .input_schema(schemars::schema_for!(ShellInput))
-        .execute(ToolExecute::from_sync(|_ctx, params| {
+        .execute(ToolExecute::from_sync(move |_ctx, params| {
             let cmd = match params.get("cmd").and_then(|v| v.as_str()) {
                 Some(c) => c.to_string(),
                 None => return Err("cmd parameter is required".to_string()),
             };
             tracing::debug!(cmd = %cmd, "shell:");
-            let output = Command::new("sh")
-                .arg("-c")
-                .arg(&cmd)
+            let output = sandbox::build_command(&cmd, &sandbox_settings)
                 .env("GIT_TERMINAL_PROMPT", "0")
                 .env("PAGER", "cat")
                 .env("EDITOR", "true")
@@ -116,9 +116,10 @@ struct SubagentInput {
     query: String,
 }
 
-pub fn subagent_tool(model: Model, skills: Vec<Skill>) -> Tool {
+pub fn subagent_tool(model: Model, skills: Vec<Skill>, sandbox_settings: PathBuf) -> Tool {
     let model = Arc::new(model);
     let skills = Arc::new(skills);
+    let sandbox_settings = Arc::new(sandbox_settings);
     Tool::builder()
         .name("subagent")
         .description("Delegate a task after adding more details such as /<skill-mentions>, requirements, details, etc.")
@@ -126,6 +127,7 @@ pub fn subagent_tool(model: Model, skills: Vec<Skill>) -> Tool {
         .execute(ToolExecute::from_async(move |_ctx, params| {
             let model = (*model).clone();
             let skills = skills.clone();
+            let sandbox_ref = sandbox_settings.clone();
             async move {
                 let skill_name = params["skill_name"].as_str().unwrap_or_default();
                 let query = params["query"].as_str().unwrap_or_default();
@@ -162,7 +164,7 @@ pub fn subagent_tool(model: Model, skills: Vec<Skill>) -> Tool {
                     .model(model)
                     .system(sys)
                     .messages(messages)
-                    .with_tool(shell_tool())
+                    .with_tool(shell_tool((*sandbox_ref).clone()))
                     .stop_when(step_count_is(5))
                     .build();
                 match req.generate_text().await {

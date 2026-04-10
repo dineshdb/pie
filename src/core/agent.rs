@@ -8,6 +8,7 @@ use aisdk::core::LanguageModel;
 use aisdk::core::utils::step_count_is;
 use aisdk::core::{AssistantMessage, LanguageModelRequest, Message, SystemMessage, UserMessage};
 use anyhow::{Context, Result};
+use std::path::PathBuf;
 use tracing::warn;
 
 pub fn handle_list_skills() {
@@ -27,6 +28,7 @@ pub async fn handle_query(
     query: &str,
     session: &mut Session,
     format: OutputFormat,
+    sandbox_settings: PathBuf,
 ) -> Result<()> {
     let skills = get_all_skills();
     let (system_skills, user_skills): (Vec<_>, Vec<_>) =
@@ -79,9 +81,9 @@ pub async fn handle_query(
             .model(model.clone())
             .system(core_sys)
             .messages(messages)
-            .with_tool(shell_tool())
+            .with_tool(shell_tool(sandbox_settings.clone()))
             .with_tool(load_skills_tool(skills.clone()))
-            .with_tool(subagent_tool(model.clone(), skills))
+            .with_tool(subagent_tool(model.clone(), skills, sandbox_settings))
             .stop_when(step_count_is(10))
             .build()
     };

@@ -3,6 +3,7 @@ mod providers;
 mod ui;
 
 use crate::core::output::OutputFormat;
+use crate::core::sandbox;
 use crate::core::{db::DbPool, session::Session};
 use clap::Parser;
 use std::io::{self, IsTerminal, Read};
@@ -84,6 +85,9 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Sandbox: required — exits if srt is not installed
+    let sandbox_settings = sandbox::prepare(&sandbox::load_config())?;
+
     let mut model = providers::build_model(
         cli.model.as_deref(),
         cli.base_url.as_deref(),
@@ -104,11 +108,18 @@ async fn main() -> anyhow::Result<()> {
     if cli.query.is_empty() && cli.skill.is_none() {
         if let Some(stdin_content) = piped_stdin {
             let mut session = resolve_session(pool, cli.r#continue)?;
-            return core::agent::handle_query(&mut model, &stdin_content, &mut session, format)
-                .await;
+            return core::agent::handle_query(
+                &mut model,
+                &stdin_content,
+                &mut session,
+                format,
+                sandbox_settings,
+            )
+            .await;
         }
         let session = resolve_session(pool, cli.r#continue)?;
-        return ui::interactive::start_interactive_mode(&mut model, session).await;
+        return ui::interactive::start_interactive_mode(&mut model, session, sandbox_settings)
+            .await;
     }
 
     let query = cli.query.join(" ");
@@ -123,7 +134,14 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let mut session = resolve_session(pool, cli.r#continue)?;
-    core::agent::handle_query(&mut model, &full_query, &mut session, format).await
+    core::agent::handle_query(
+        &mut model,
+        &full_query,
+        &mut session,
+        format,
+        sandbox_settings,
+    )
+    .await
 }
 
 /// Read piped stdin. Returns None if stdin is a terminal or empty.
