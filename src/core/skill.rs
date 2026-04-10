@@ -102,31 +102,6 @@ pub fn skill_dir(name: &str) -> Option<PathBuf> {
     }
 }
 
-/// Read a reference file from a skill directory.
-/// Validates the filename to prevent path traversal.
-pub fn read_reference(skill_name: &str, filename: &str) -> std::io::Result<String> {
-    // Validate filename first — regardless of whether skill exists
-    if filename.contains("..") || filename.starts_with('/') || filename.starts_with('.') {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "path traversal, absolute paths, and hidden files are not allowed",
-        ));
-    }
-    if !filename.ends_with(".md") {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "only .md reference files are allowed",
-        ));
-    }
-    let dir = skill_dir(skill_name).ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("skill '{skill_name}' has no filesystem directory"),
-        )
-    })?;
-    fs::read_to_string(dir.join(filename))
-}
-
 /// Split raw markdown into (frontmatter key-value map, body content).
 fn parse_frontmatter(raw: &str) -> (std::collections::HashMap<&str, String>, String) {
     let mut meta = std::collections::HashMap::new();
@@ -185,40 +160,8 @@ mod tests {
     }
 
     #[test]
-    fn read_reference_rejects_path_traversal() {
-        let result = read_reference("any-skill", "../etc/passwd");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn read_reference_rejects_absolute_path() {
-        let result = read_reference("any-skill", "/etc/passwd");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn read_reference_rejects_hidden_file() {
-        let result = read_reference("any-skill", ".secret.md");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn read_reference_rejects_non_md() {
-        let result = read_reference("any-skill", "script.sh");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("only .md"));
-    }
-
-    #[test]
-    fn read_reference_rejects_unknown_skill() {
-        let result = read_reference("nonexistent-skill-xyz", "guide.md");
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("no filesystem directory")
-        );
+    fn skill_dir_returns_none_for_unknown() {
+        assert!(skill_dir("nonexistent-skill-xyz").is_none());
     }
 
     #[test]

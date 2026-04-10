@@ -151,7 +151,22 @@ pub fn load_references_tool(loaded_refs: Arc<Mutex<HashSet<String>>>) -> Tool {
                         name
                     ));
                 }
+                if !name.ends_with(".md") {
+                    return Err(format!(
+                        "Invalid reference '{}': only .md files are allowed",
+                        name
+                    ));
+                }
             }
+
+            // Resolve skill directory once
+            let dir = match crate::core::skill::skill_dir(&skill_name) {
+                Some(d) => d,
+                None => return Err(format!(
+                    "Skill '{}' has no filesystem directory",
+                    skill_name
+                )),
+            };
 
             let mut output = String::new();
             for ref_name in &ref_names {
@@ -166,7 +181,7 @@ pub fn load_references_tool(loaded_refs: Arc<Mutex<HashSet<String>>>) -> Tool {
                         continue;
                     }
                 }
-                match crate::core::skill::read_reference(&skill_name, ref_name) {
+                match std::fs::read_to_string(dir.join(ref_name)) {
                     Ok(content) => {
                         output.push_str(&format!(
                             "### Reference: {}\n{}\n---\n",
