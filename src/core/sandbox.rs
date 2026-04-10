@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 /// Sandbox configuration stored at ~/.pie/sandbox.json
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SandboxConfig {
     #[serde(default)]
@@ -60,15 +60,6 @@ impl Default for FilesystemConfig {
             deny_read: vec!["~/.ssh".into(), "~/.gnupg".into()],
             allow_write: vec![".".into(), "/tmp".into()],
             deny_write: vec![".env".into(), ".env.local".into()],
-        }
-    }
-}
-
-impl Default for SandboxConfig {
-    fn default() -> Self {
-        Self {
-            network: NetworkConfig::default(),
-            filesystem: FilesystemConfig::default(),
         }
     }
 }
@@ -165,7 +156,7 @@ pub fn is_srt_available() -> bool {
 
 /// Build a sandboxed command using `srt`.
 pub fn build_command(cmd: &str, settings_path: &PathBuf) -> Command {
-    tracing::debug!(settings = %settings_path.display(), cmd, "sandbox: wrapping with srt");
+    tracing::debug!(settings = %settings_path.display(), cmd, "sandbox:");
     let mut c = Command::new("srt");
     c.arg("--settings")
         .arg(settings_path)

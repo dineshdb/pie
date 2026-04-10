@@ -6,7 +6,7 @@ use crate::core::tools::{load_skills_tool, shell_tool, subagent_tool};
 use crate::providers::Model;
 use aisdk::core::LanguageModel;
 use aisdk::core::utils::step_count_is;
-use aisdk::core::{AssistantMessage, LanguageModelRequest, Message, SystemMessage, UserMessage};
+use aisdk::core::{AssistantMessage, LanguageModelRequest, Message, UserMessage};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use tracing::warn;
@@ -42,25 +42,12 @@ pub async fn handle_query(
         }
     }
 
-    // Layer 1: Core system prompt — compiled-in, immutable, most cacheable
-    let core_sys = prompt::system_core(&system_skills);
+    // Single system prompt rendered from template with all context
+    let system = prompt::system_prompt(&system_skills, &user_skills, format.to_instructions());
 
-    // Layer 2: Global config — user skills + global agents, cacheable across projects
-    // Layer 3: Project context — per-project, cacheable within session
-    let global_sys = prompt::global_config(&user_skills);
-    let project_sys = prompt::project_context();
-
-    // Build messages: global config → project context → skills → role → history → query
     let mut messages: Vec<Message> = Vec::new();
-    messages.push(Message::System(SystemMessage::new(&global_sys)));
-    messages.push(Message::System(SystemMessage::new(&project_sys)));
     if let Some(skills_msg) = prompt::mentioned_skills_message(&skills, &scan_sources) {
         messages.push(Message::User(UserMessage::new(skills_msg)));
-    }
-    messages.push(Message::System(SystemMessage::new(prompt::router_role())));
-    let format_instructions = format.to_instructions();
-    if !format_instructions.is_empty() {
-        messages.push(Message::System(SystemMessage::new(format_instructions)));
     }
 
     for entry in &history_entries {
@@ -74,12 +61,11 @@ pub async fn handle_query(
     }
     messages.push(Message::User(UserMessage::new(query)));
 
-    tracing::debug!(prompt = core_sys, query, "agent:");
-    tracing::debug!(role = prompt::router_role(), "agent role");
+    tracing::debug!(system = %system, query, "agent:");
     let mut req = {
         LanguageModelRequest::builder()
             .model(model.clone())
-            .system(core_sys)
+            .system(&system)
             .messages(messages)
             .with_tool(shell_tool(sandbox_settings.clone()))
             .with_tool(load_skills_tool(skills.clone()))
@@ -97,8 +83,7 @@ pub async fn handle_query(
         // Find shell_tool results first, then fall back to last result
         results
             .iter()
-            .filter(|r| r.tool.name == "shell_tool")
-            .last()
+            .rfind(|r| r.tool.name == "shell_tool")
             .or_else(|| results.last())
             .and_then(|r| r.output.as_ref().ok())
             .and_then(|v| v.as_str())

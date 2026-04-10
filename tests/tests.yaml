@@ -54,9 +54,9 @@ tests:
     input: "run uname -a and uname -m"
     debug: true
     contains:
-      - "[IMMUTABLE] System Skills"
+      - "System Skills"
       - Priority Hierarchy
-      - "[CONFIG] Agent Role"
+      - "Agent Role"
       - Darwin
       - arm64
     timeout: 30
@@ -84,6 +84,16 @@ tests:
       - "```json"
       - "```"
     timeout: 30
+    skip: online
+    parallel: true
+
+  - name: repo summarization returns project overview
+    input: "summarize this repo"
+    debug: true
+    contains:
+      - Rust
+      - agent
+    timeout: 45
     skip: online
     parallel: true
 

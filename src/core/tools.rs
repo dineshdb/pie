@@ -142,7 +142,7 @@ pub fn subagent_tool(model: Model, skills: Vec<Skill>, sandbox_settings: PathBuf
 
                 // Build a minimal context for the subagent — avoid overwhelming small models
                 let (date, pwd) = crate::core::prompt::context_vars();
-                let sys = prompt::subagent_role();
+                let sys = prompt::subagent_prompt(prompt::git_repo_root());
 
                 let mut user_content = String::new();
                 if let Some(skills_msg) = prompt::mentioned_skills_message(&skills, &[&query_with_skill]) {
@@ -156,9 +156,9 @@ pub fn subagent_tool(model: Model, skills: Vec<Skill>, sandbox_settings: PathBuf
                     aisdk::core::Message::User(aisdk::core::UserMessage::new(user_content)),
                 ];
 
-                tracing::debug!(skill = %skill_name, query, sys, "subagent");
+                tracing::debug!(skill = %skill_name, query, %sys, "subagent");
                 for (i, msg) in messages.iter().enumerate() {
-                    tracing::debug!(i, ?msg, "subagent message");
+                    tracing::trace!(i, ?msg, "subagent message");
                 }
                 let mut req = LanguageModelRequest::builder()
                     .model(model)
@@ -170,7 +170,7 @@ pub fn subagent_tool(model: Model, skills: Vec<Skill>, sandbox_settings: PathBuf
                 match req.generate_text().await {
                     Ok(r) => {
                         let text = r.text().unwrap_or_default();
-                        tracing::debug!(skill = %skill_name, len = text.len(), text, "subagent done");
+                        tracing::debug!(skill = %skill_name, len = text.len(), %text, "subagent done");
                         Ok(text)
                     }
                     Err(e) => Err(format!("Subagent failed: {e}")),
