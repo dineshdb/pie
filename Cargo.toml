@@ -27,6 +27,9 @@ r2d2_sqlite = "0.31"
 refinery = { version = "0.9", features = ["rusqlite"] }
 uuid = { version = "1", features = ["v7"] }
 
+[dev-dependencies]
+tempfile = "3"
+
 [profile.release]
 lto = true
 panic = "abort"

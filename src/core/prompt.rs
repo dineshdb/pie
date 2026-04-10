@@ -7,36 +7,6 @@ use std::collections::HashSet;
 const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("./prompt.md");
 const SKILL_RULES_TEMPLATE: &str = include_str!("./skill_rules.md");
 
-/// Recursively resolve skills mentioned in any of `sources` (and in those skills' contents).
-/// Scans for `/<skill-name>` patterns and follows transitive mentions.
-pub fn resolve_mentioned<'a>(sources: &[&str], skills: &'a [Skill]) -> Vec<&'a Skill> {
-    let mut resolved = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut queue: Vec<&str> = sources.to_vec();
-
-    while let Some(source) = queue.pop() {
-        for skill in skills {
-            if seen.contains(&skill.name) {
-                continue;
-            }
-            if source.contains(&format!("/{}", skill.name)) {
-                seen.insert(skill.name.clone());
-                queue.push(&skill.content);
-                resolved.push(skill);
-            }
-        }
-    }
-
-    resolved
-}
-
-/// Resolve skills by name, then recursively follow `/<skill-name>` mentions in their content.
-pub fn resolve_by_name<'a>(names: &[String], skills: &'a [Skill]) -> Vec<&'a Skill> {
-    let name_sources: Vec<String> = names.iter().map(|n| format!("/{n}")).collect();
-    let sources: Vec<&str> = name_sources.iter().map(|s| s.as_str()).collect();
-    resolve_mentioned(&sources, skills)
-}
-
 /// Render a MiniJinja template with context, falling back to raw template on error.
 fn render_template(template_name: &str, template: &str, ctx: minijinja::Value) -> String {
     let mut env = Environment::new();
@@ -82,11 +52,7 @@ pub fn git_repo_root() -> Option<String> {
 }
 
 /// Render the full system prompt as a single message.
-pub fn system_prompt(
-    system_skills: &[Skill],
-    user_skills: &[Skill],
-    format_instructions: &str,
-) -> String {
+pub fn system_prompt(skills: &[Skill], format_instructions: &str) -> String {
     let global_agents_md = load_file(pie_home().join("AGENTS.md"));
     let local_agents_md = find_upward_in_repo("AGENTS.md");
     let (date, pwd) = context_vars();
@@ -99,8 +65,7 @@ pub fn system_prompt(
         SYSTEM_PROMPT_TEMPLATE,
         minijinja::context! {
             is_subagent => false,
-            system_skills,
-            user_skills,
+            skills,
             global_agents_md,
             local_agents_md,
             date,
@@ -113,13 +78,13 @@ pub fn system_prompt(
 
 pub fn subagent_prompt(repo_root: Option<String>) -> String {
     let (date, pwd) = context_vars();
+    let empty: &[Skill] = &[];
     render_template(
         "system_prompt",
         SYSTEM_PROMPT_TEMPLATE,
         minijinja::context! {
             is_subagent => true,
-            system_skills => &[] as &[Skill],
-            user_skills => &[] as &[Skill],
+            skills => empty,
             global_agents_md => String::new(),
             local_agents_md => String::new(),
             date,
@@ -130,15 +95,57 @@ pub fn subagent_prompt(repo_root: Option<String>) -> String {
     )
 }
 
+/// Resolve skills mentioned as `/skill-name` in the given sources (user messages, queries).
+/// Single pass — does NOT scan skill content for further mentions.
+/// Also auto-resolves explicit `needs` dependencies from resolved skills.
+pub fn resolve_mentioned<'a>(sources: &[&str], skills: &'a [Skill]) -> Vec<&'a Skill> {
+    let mut resolved = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for source in sources {
+        for skill in skills {
+            if seen.contains(&skill.name) {
+                continue;
+            }
+            if source.contains(&format!("/{}", skill.name)) {
+                seen.insert(skill.name.clone());
+                resolved.push(skill);
+            }
+        }
+    }
+
+    // Auto-resolve explicit `needs` dependencies
+    let needs_names: Vec<String> = resolved
+        .iter()
+        .flat_map(|s| s.needs.iter().cloned())
+        .filter(|n| !seen.contains(n))
+        .collect();
+    for need_name in &needs_names {
+        if let Some(skill) = skills.iter().find(|s| &s.name == need_name) {
+            seen.insert(skill.name.clone());
+            resolved.push(skill);
+        }
+    }
+
+    resolved
+}
+
+/// Build a skill rules message for skills mentioned in the given sources.
+/// Returns None if no skills are mentioned.
 pub fn mentioned_skills_message(skills: &[Skill], scan_sources: &[&str]) -> Option<String> {
     let mentioned = resolve_mentioned(scan_sources, skills);
     if mentioned.is_empty() {
         return None;
     }
+    let mentioned_names: HashSet<String> = mentioned.iter().map(|s| s.name.clone()).collect();
+    let available: Vec<&Skill> = skills
+        .iter()
+        .filter(|s| !mentioned_names.contains(&s.name))
+        .collect();
     Some(render_template(
         "skill_rules",
         SKILL_RULES_TEMPLATE,
-        minijinja::context! { mentioned },
+        minijinja::context! { mentioned, available },
     ))
 }
 
@@ -148,19 +155,34 @@ pub fn mentioned_skills_message(skills: &[Skill], scan_sources: &[&str]) -> Opti
 mod test_helpers {
     use crate::core::skill::Skill;
 
-    pub fn skill(name: &str, desc: &str, content: &str, embedded: bool) -> Skill {
+    pub fn skill(name: &str, desc: &str, content: &str) -> Skill {
         Skill {
             name: name.to_string(),
             description: desc.to_string(),
             content: content.to_string(),
-            is_embedded: embedded,
+            needs: Vec::new(),
         }
+    }
+
+    pub fn skill_with_needs(name: &str, desc: &str, content: &str, needs: Vec<&str>) -> Skill {
+        Skill {
+            name: name.to_string(),
+            description: desc.to_string(),
+            content: content.to_string(),
+            needs: needs.into_iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    pub fn mentioned_names(skills: &[Skill], sources: &[&str]) -> Vec<String> {
+        super::resolve_mentioned(sources, skills)
+            .iter()
+            .map(|s| s.name.clone())
+            .collect()
     }
 
     /// Render the main agent prompt with deterministic values.
     pub fn render_main(
-        system_skills: &[Skill],
-        user_skills: &[Skill],
+        skills: &[Skill],
         repo_root: Option<&str>,
         format_instructions: &str,
     ) -> String {
@@ -169,8 +191,7 @@ mod test_helpers {
             super::SYSTEM_PROMPT_TEMPLATE,
             minijinja::context! {
                 is_subagent => false,
-                system_skills,
-                user_skills,
+                skills,
                 global_agents_md => String::new(),
                 local_agents_md => String::new(),
                 date => "2026-04-10",
@@ -189,8 +210,7 @@ mod test_helpers {
             super::SYSTEM_PROMPT_TEMPLATE,
             minijinja::context! {
                 is_subagent => true,
-                system_skills => empty,
-                user_skills => empty,
+                skills => empty,
                 global_agents_md => String::new(),
                 local_agents_md => String::new(),
                 date => "2026-04-10",
@@ -209,8 +229,7 @@ mod test_helpers {
             super::SYSTEM_PROMPT_TEMPLATE,
             minijinja::context! {
                 is_subagent => false,
-                system_skills => empty,
-                user_skills => empty,
+                skills => empty,
                 global_agents_md,
                 local_agents_md,
                 date => "2026-04-10",
@@ -220,42 +239,28 @@ mod test_helpers {
             },
         )
     }
-
-    pub fn mentioned<'a>(skills: &'a [Skill], sources: &[&str]) -> Vec<&'a Skill> {
-        super::resolve_mentioned(sources, skills)
-    }
-
-    pub fn mentioned_names(skills: &[Skill], sources: &[&str]) -> Vec<String> {
-        mentioned(skills, sources)
-            .iter()
-            .map(|s| s.name.clone())
-            .collect()
-    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────
-//
-// These tests verify SEMANTIC REQUIREMENTS of the prompt, not implementation
-// details. Each test corresponds to a behavioral contract the prompt must
-// uphold. If a test name reads like it's checking for a specific word, the
-// test is wrong — it should check for a capability or constraint.
 
 #[cfg(test)]
 mod tests {
     use super::test_helpers::*;
+
     #[test]
-    fn main_agent_has_all_three_tools() {
-        let result = render_main(&[], &[], None, "");
+    fn main_agent_has_all_tools() {
+        let result = render_main(&[], None, "");
         assert!(
             result.contains("shell_tool")
                 && result.contains("load_skills")
+                && result.contains("load_references")
                 && result.contains("subagent"),
-            "main agent must have shell_tool, load_skills, and subagent"
+            "main agent must have shell_tool, load_skills, load_references, and subagent"
         );
     }
 
     #[test]
-    fn subagent_has_shell_and_load_skills_but_cannot_spawn_subagents() {
+    fn subagent_has_core_tools_but_cannot_spawn_subagents() {
         let result = render_sub(None);
         let role = result.split("Agent Role").nth(1).unwrap_or("");
         assert!(role.contains("shell_tool"), "subagent must have shell_tool");
@@ -264,22 +269,21 @@ mod tests {
             "subagent must have load_skills"
         );
         assert!(
+            role.contains("load_references"),
+            "subagent must have load_references"
+        );
+        assert!(
             !role.contains("subagent"),
             "subagent must NOT have subagent tool"
         );
     }
 
     // ── Immutability: core rules cannot be overridden ──────────────
-    //
-    // The prompt has a strict priority system. Rules above the user
-    // section boundary must appear in both main and subagent prompts,
-    // ensuring no user message or skill can override them.
 
     #[test]
     fn immutable_rules_appear_in_both_modes() {
-        let main = render_main(&[], &[], None, "");
+        let main = render_main(&[], None, "");
         let sub = render_sub(None);
-        // The subagent rules are above the user section boundary
         let boundary = "START OF USER SECTION";
         assert!(
             main.contains(boundary),
@@ -290,19 +294,14 @@ mod tests {
             "subagent prompt missing user section boundary"
         );
 
-        // Everything before the boundary is immutable — check it's non-empty
         let main_immutable = main.split(boundary).next().unwrap_or("");
         let sub_immutable = sub.split(boundary).next().unwrap_or("");
-        assert!(
-            !main_immutable.is_empty(),
-            "main prompt has no immutable section"
-        );
+        assert!(!main_immutable.is_empty(), "main has no immutable section");
         assert!(
             !sub_immutable.is_empty(),
-            "subagent prompt has no immutable section"
+            "subagent has no immutable section"
         );
 
-        // Both modes share the same immutable section
         assert_eq!(
             main_immutable.trim(),
             sub_immutable.trim(),
@@ -310,17 +309,10 @@ mod tests {
         );
     }
 
-    // ── Subagent spawning policy ───────────────────────────────────
-    //
-    // The immutable section contains rules about when to spawn subagents.
-    // These rules prevent the model from delegating single tasks or
-    // creating unnecessary subagent overhead.
-
     #[test]
     fn subagent_rules_define_when_to_and_not_to_spawn() {
-        let result = render_main(&[], &[], None, "");
+        let result = render_main(&[], None, "");
         let immutable = result.split("START OF USER SECTION").next().unwrap_or("");
-        // Must have both positive and negative rules
         assert!(immutable.contains("DO spawn"), "missing spawn permissions");
         assert!(
             immutable.contains("DO NOT spawn"),
@@ -328,15 +320,11 @@ mod tests {
         );
     }
 
-    // ── Self-sufficiency: agents must act, not ask ─────────────────
-    //
-    // Both agent modes must be instructed to use their tools rather
-    // than asking the user to provide information they could gather
-    // themselves.
+    // ── Self-sufficiency ─────────────────────────────────────────
 
     #[test]
     fn main_agent_must_be_self_sufficient() {
-        let result = render_main(&[], &[], None, "");
+        let result = render_main(&[], None, "");
         let role = result.split("Agent Role").nth(1).unwrap_or("");
         assert!(
             role.contains("NEVER ask") || role.contains("use your tools"),
@@ -354,31 +342,20 @@ mod tests {
         );
     }
 
-    // ── Repo-awareness: file reading behavior changes in git repos ─
-    //
-    // When inside a git repo, the prompt must instruct the agent to
-    // read actual files. The main agent uses load_skills + shell_tool
-    // directly (NOT subagent delegation). The subagent reads files
-    // itself since it only has shell_tool.
+    // ── Repo-awareness ─────────────────────────────────────────
 
     #[test]
-    fn main_agent_in_repo_reads_files_directly() {
-        let result = render_main(&[], &[], Some("/my/project"), "");
+    fn main_agent_does_not_hardcode_repo_instructions() {
+        let result = render_main(&[], Some("/my/project"), "");
         assert!(
-            result.contains("/my/project"),
-            "repo root must appear in prompt"
-        );
-        // Must NOT delegate to subagent for repo summarization
-        let repo_section = result.split("/my/project").nth(1).unwrap_or("");
-        assert!(
-            !repo_section.contains("subagent tool with skill_name"),
-            "main agent must not delegate repo exploration to subagent"
+            !result.contains("/my/project"),
+            "repo root must not be hardcoded in system prompt"
         );
     }
 
     #[test]
     fn main_agent_outside_repo_has_no_repo_instructions() {
-        let result = render_main(&[], &[], None, "");
+        let result = render_main(&[], None, "");
         assert!(
             !result.contains("git repo"),
             "should not mention git repo when not in one"
@@ -395,25 +372,16 @@ mod tests {
         );
     }
 
-    // ── Config layering: user config sections are conditional ──────
-    //
-    // User skills, global AGENTS.md, and project AGENTS.md are
-    // injected conditionally. Empty config must not produce ghost
-    // sections that confuse the model.
+    // ── Config layering ─────────────────────────────────────────
 
     #[test]
-    fn user_skills_appear_only_when_provided() {
-        let with = render_main(
-            &[],
-            &[skill("my-skill", "desc", "content", false)],
-            None,
-            "",
-        );
-        let without = render_main(&[], &[], None, "");
-        assert!(with.contains("my-skill"), "provided user skill must appear");
+    fn skills_appear_only_when_provided() {
+        let with = render_main(&[skill("my-skill", "desc", "content")], None, "");
+        let without = render_main(&[], None, "");
+        assert!(with.contains("my-skill"), "provided skill must appear");
         assert!(
             !without.contains("my-skill"),
-            "missing user skill must not appear"
+            "missing skill must not appear"
         );
     }
 
@@ -424,11 +392,11 @@ mod tests {
         let with_neither = render_with_agents("", "");
         assert!(
             with_global.contains("use rustfmt"),
-            "global config must appear when provided"
+            "global config must appear"
         );
         assert!(
             with_local.contains("test first"),
-            "local config must appear when provided"
+            "local config must appear"
         );
         assert!(
             !with_neither.contains("Global Agents Config"),
@@ -442,89 +410,23 @@ mod tests {
 
     #[test]
     fn runtime_context_includes_date_and_working_directory() {
-        let result = render_main(&[], &[], None, "");
-        // These are injected from the test helpers with fixed values
-        assert!(
-            result.contains("2026-04-10"),
-            "date must appear in runtime context"
-        );
-        assert!(
-            result.contains("/test/project"),
-            "pwd must appear in runtime context"
-        );
+        let result = render_main(&[], None, "");
+        assert!(result.contains("2026-04-10"), "date must appear");
+        assert!(result.contains("/test/project"), "pwd must appear");
     }
 
     #[test]
     fn format_instructions_injected_when_provided() {
-        let with = render_main(&[], &[], None, "respond in YAML");
-        let without = render_main(&[], &[], None, "");
+        let with = render_main(&[], None, "respond in YAML");
+        let without = render_main(&[], None, "");
         assert!(
             with.contains("respond in YAML"),
             "format instructions must appear"
         );
-        // Empty format instructions should not produce visible artifacts
         let trimmed = without.trim();
         assert!(
             !trimmed.ends_with("format_instructions"),
             "no dangling format instructions"
-        );
-    }
-
-    // ── Skill resolution: transitive, deduplicating ────────────────
-    //
-    // Skills can reference other skills via /<skill-name> in their
-    // content. Resolution must be transitive (follows chains) and
-    // deduplicating (handles circular references).
-
-    #[test]
-    fn skill_resolution_is_transitive() {
-        let skills = vec![
-            skill(
-                "review",
-                "code review",
-                "needs /filesystem and /developer",
-                false,
-            ),
-            skill("filesystem", "file ops", "content", true),
-            skill("developer", "dev workflow", "content", true),
-        ];
-        let names = mentioned_names(&skills, &["/review this"]);
-        assert!(names.contains(&"review".to_string()));
-        assert!(
-            names.contains(&"filesystem".to_string()),
-            "must transitively resolve /filesystem"
-        );
-        assert!(
-            names.contains(&"developer".to_string()),
-            "must transitively resolve /developer"
-        );
-    }
-
-    #[test]
-    fn skill_resolution_deduplicates_circular_refs() {
-        let skills = vec![
-            skill("a", "skill a", "refs /b", false),
-            skill("b", "skill b", "refs /a", false),
-        ];
-        let names = mentioned_names(&skills, &["/a and /b"]);
-        assert_eq!(
-            names.iter().filter(|n| **n == "a").count(),
-            1,
-            "circular ref must not duplicate skill a"
-        );
-        assert_eq!(
-            names.iter().filter(|n| **n == "b").count(),
-            1,
-            "circular ref must not duplicate skill b"
-        );
-    }
-
-    #[test]
-    fn skill_resolution_returns_nothing_for_unmentioned_skills() {
-        let skills = vec![skill("bash", "commands", "content", true)];
-        assert!(
-            mentioned_names(&skills, &["nothing relevant here"]).is_empty(),
-            "unmentioned skills must not resolve"
         );
     }
 
@@ -533,12 +435,95 @@ mod tests {
     #[test]
     fn all_template_variables_resolve() {
         let result = render_main(
-            &[skill("bash", "commands", "content", true)],
-            &[skill("custom", "user skill", "content", false)],
+            &[skill("bash", "commands", "content")],
             Some("/repo"),
             "format",
         );
         assert!(!result.contains("{%"), "unrendered Jinja block tag");
         assert!(!result.contains("{{"), "unrendered Jinja expression");
+    }
+
+    // ── Skill mention resolution ──────────────────────────────────
+
+    #[test]
+    fn mentioned_skills_resolve_from_query() {
+        let skills = vec![
+            skill("review", "code review", "review content"),
+            skill("filesystem", "file ops", "fs content"),
+        ];
+        let names = mentioned_names(&skills, &["/review this file"]);
+        assert!(names.contains(&"review".to_string()));
+        assert!(
+            !names.contains(&"filesystem".to_string()),
+            "unmentioned skill must not resolve"
+        );
+    }
+
+    #[test]
+    fn mentioned_skills_does_not_scan_skill_content() {
+        let skills = vec![
+            skill("review", "code review", "needs /filesystem and /developer"),
+            skill("filesystem", "file ops", "fs content"),
+            skill("developer", "dev workflow", "dev content"),
+        ];
+        // Only the source is scanned, not the skill content
+        let names = mentioned_names(&skills, &["/review this"]);
+        assert!(names.contains(&"review".to_string()));
+        assert!(
+            !names.contains(&"filesystem".to_string()),
+            "must NOT resolve from skill content — only from sources"
+        );
+    }
+
+    #[test]
+    fn needs_deps_auto_loaded() {
+        let skills = vec![
+            skill_with_needs("review", "code review", "content", vec!["filesystem"]),
+            skill("filesystem", "file ops", "fs content"),
+        ];
+        let names = mentioned_names(&skills, &["/review this"]);
+        assert!(names.contains(&"review".to_string()));
+        assert!(
+            names.contains(&"filesystem".to_string()),
+            "needs dep must auto-load"
+        );
+    }
+
+    #[test]
+    fn mentioned_skills_deduplicates() {
+        let skills = vec![skill("review", "code review", "content")];
+        let names = mentioned_names(&skills, &["/review and /review again"]);
+        assert_eq!(
+            names.iter().filter(|n| **n == "review").count(),
+            1,
+            "must not duplicate"
+        );
+    }
+
+    #[test]
+    fn mentioned_skills_message_shows_loaded_and_available() {
+        let skills = vec![
+            skill("review", "code review", "review content"),
+            skill("filesystem", "file ops", "fs content"),
+        ];
+        let result = super::mentioned_skills_message(&skills, &["/review this"]).unwrap();
+        assert!(result.contains("Skill: review"), "loaded skill must appear");
+        assert!(
+            result.contains("Other available skills"),
+            "available section must appear"
+        );
+        assert!(
+            result.contains("filesystem"),
+            "non-loaded skill must be listed as available"
+        );
+    }
+
+    #[test]
+    fn mentioned_skills_returns_none_when_nothing_mentioned() {
+        let skills = vec![skill("review", "code review", "content")];
+        assert!(
+            super::mentioned_skills_message(&skills, &["nothing relevant"]).is_none(),
+            "must return None when no skills mentioned"
+        );
     }
 }
