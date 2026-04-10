@@ -259,7 +259,10 @@ mod tests {
         let result = render_sub(None);
         let role = result.split("Agent Role").nth(1).unwrap_or("");
         assert!(role.contains("shell_tool"), "subagent must have shell_tool");
-        assert!(role.contains("load_skills"), "subagent must have load_skills");
+        assert!(
+            role.contains("load_skills"),
+            "subagent must have load_skills"
+        );
         assert!(
             !role.contains("subagent"),
             "subagent must NOT have subagent tool"
