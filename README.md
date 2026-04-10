@@ -125,8 +125,6 @@ Place `~/.pie/sandbox.json` to customise restrictions (uses defaults if absent):
 
 - **Config directory**: `~/.pie/`
 - **Sandbox config**: `~/.pie/sandbox.json`
-- **System prompt override**: `~/.pie/SYSTEM_PROMPT.md` (MiniJinja template)
-- **Subagent prompt override**: `~/.pie/SUBAGENT_PROMPT.md`
 - **Project instructions**: Place `AGENTS.md` in your project root (or any
   parent directory)
 - **Global instructions**: `~/.pie/AGENTS.md`

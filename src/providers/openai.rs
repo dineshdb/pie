@@ -1,4 +1,3 @@
-use super::apple::AppleClient;
 use super::tool_compat::post_process_response;
 use aisdk::core::DynamicModel;
 use aisdk::core::capabilities::{
@@ -13,14 +12,13 @@ use aisdk::providers::OpenAICompatible;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 
-/// Resolved model provider — both variants implement `LanguageModel`.
+/// Resolved model provider (OpenAI-compatible).
 #[derive(Debug, Clone)]
-pub enum Model {
-    Apple(AppleClient),
-    OpenAI(OpenAICompatible<DynamicModel>),
+pub struct Model {
+    inner: OpenAICompatible<DynamicModel>,
 }
 
-// Delegate all capability marker traits
+// Delegate capability marker traits
 macro_rules! impl_capability {
     ($($trait:ident),* $(,)?) => { $( impl $trait for Model {} )* }
 }
@@ -41,20 +39,14 @@ impl_capability!(
 #[async_trait]
 impl LanguageModel for Model {
     fn name(&self) -> String {
-        match self {
-            Model::Apple(c) => c.name(),
-            Model::OpenAI(p) => <OpenAICompatible<DynamicModel> as LanguageModel>::name(p),
-        }
+        self.inner.name()
     }
 
     async fn generate_text(
         &mut self,
         options: LanguageModelOptions,
     ) -> aisdk::error::Result<LanguageModelResponse> {
-        let response = match self {
-            Model::Apple(c) => c.generate_text(options).await?,
-            Model::OpenAI(p) => p.generate_text(options).await?,
-        };
+        let response = self.inner.generate_text(options).await?;
         Ok(post_process_response(response))
     }
 
@@ -62,16 +54,13 @@ impl LanguageModel for Model {
         &mut self,
         options: LanguageModelOptions,
     ) -> aisdk::error::Result<ProviderStream> {
-        match self {
-            Model::Apple(c) => c.stream_text(options).await,
-            Model::OpenAI(p) => p.stream_text(options).await,
-        }
+        self.inner.stream_text(options).await
     }
 }
 
 /// Build a model from CLI args + env vars.
 ///
-/// Priority: CLI arg > `PIE_*` env > provider-specific env > default.
+/// Priority: CLI arg > env var > default.
 pub fn build_model(
     model: Option<&str>,
     base_url: Option<&str>,
@@ -79,43 +68,21 @@ pub fn build_model(
 ) -> Result<Model> {
     let model_name = model
         .map(|s| s.to_string())
-        .or_else(|| std::env::var("PIE_MODEL").ok())
-        .or_else(|| std::env::var("OPENAI_MODEL").ok());
+        .or_else(|| std::env::var("OPENAI_MODEL").ok())
+        .context("model name is required (set --model or OPENAI_MODEL)")?;
 
-    // If no model specified, try Apple
-    if model_name.is_none() {
-        match AppleClient::new() {
-            Ok(client) => {
-                tracing::debug!("using Apple Foundation Models");
-                return Ok(Model::Apple(client));
-            }
-            Err(e) => {
-                anyhow::bail!(
-                    "No model specified and Apple Intelligence unavailable: {e}\n\
-                     Set --model or PIE_MODEL to use an OpenAI-compatible provider."
-                );
-            }
-        }
-    }
-
-    let model_name = model_name.unwrap();
-
-    // Resolve base URL
     let base_url = base_url
         .map(|s| s.to_string())
-        .or_else(|| std::env::var("PIE_BASE_URL").ok())
         .or_else(|| std::env::var("OPENAI_BASE_URL").ok())
         .or_else(|| std::env::var("OPENAI_API_BASE").ok())
         .or_else(|| ollama_default(&model_name))
-        .context("base URL is required (set --base-url, PIE_BASE_URL, or OPENAI_BASE_URL)")?;
+        .context("base URL is required (set --base-url, OPENAI_BASE_URL, or OPENAI_API_BASE)")?;
 
-    // Resolve API key
     let api_key = api_key
         .map(|s| s.to_string())
-        .or_else(|| std::env::var("PIE_API_KEY").ok())
         .or_else(|| std::env::var("OPENAI_API_KEY").ok())
         .or_else(|| local_placeholder(&base_url))
-        .context("API key is required (set --api-key, PIE_API_KEY, or OPENAI_API_KEY)")?;
+        .context("API key is required (set --api-key or OPENAI_API_KEY)")?;
 
     let provider = OpenAICompatible::<DynamicModel>::builder()
         .model_name(&model_name)
@@ -126,7 +93,7 @@ pub fn build_model(
 
     tracing::debug!(model = %model_name, base_url = %base_url, "using OpenAI-compatible provider");
 
-    Ok(Model::OpenAI(provider))
+    Ok(Model { inner: provider })
 }
 
 /// Well-known local model prefixes that default to Ollama.

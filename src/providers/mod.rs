@@ -1,4 +1,3 @@
-mod apple;
 mod openai;
 mod tool_compat;
 
