@@ -2,13 +2,15 @@ use crate::core::output::{JsonResponse, OutputFormat};
 use crate::core::prompt;
 use crate::core::session::{Role, Session};
 use crate::core::skill::get_all_skills;
-use crate::core::tools::{load_skills_tool, shell_tool, subagent_tool};
+use crate::core::tools::{load_references_tool, load_skills_tool, shell_tool, subagent_tool};
 use crate::providers::Model;
 use aisdk::core::LanguageModel;
 use aisdk::core::utils::step_count_is;
 use aisdk::core::{AssistantMessage, LanguageModelRequest, Message, UserMessage};
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tracing::warn;
 
 pub fn handle_list_skills() {
@@ -31,10 +33,10 @@ pub async fn handle_query(
     sandbox_settings: PathBuf,
 ) -> Result<()> {
     let skills = get_all_skills();
-    let (system_skills, user_skills): (Vec<_>, Vec<_>) =
-        skills.iter().cloned().partition(|s| s.is_embedded);
 
     let history_entries = session.history_entries().to_vec();
+
+    // Scan query + history for /skill-name mentions
     let mut scan_sources: Vec<&str> = vec![query];
     for entry in &history_entries {
         if entry.role == Role::User {
@@ -42,8 +44,7 @@ pub async fn handle_query(
         }
     }
 
-    // Single system prompt rendered from template with all context
-    let system = prompt::system_prompt(&system_skills, &user_skills, format.to_instructions());
+    let system = prompt::system_prompt(&skills, format.to_instructions());
 
     let mut messages: Vec<Message> = Vec::new();
     if let Some(skills_msg) = prompt::mentioned_skills_message(&skills, &scan_sources) {
@@ -62,6 +63,7 @@ pub async fn handle_query(
     messages.push(Message::User(UserMessage::new(query)));
 
     tracing::debug!(system = %system, query, "agent:");
+    let loaded_refs = Arc::new(Mutex::new(HashSet::new()));
     let mut req = {
         LanguageModelRequest::builder()
             .model(model.clone())
@@ -69,8 +71,9 @@ pub async fn handle_query(
             .messages(messages)
             .with_tool(shell_tool(sandbox_settings.clone()))
             .with_tool(load_skills_tool(skills.clone()))
+            .with_tool(load_references_tool(loaded_refs))
             .with_tool(subagent_tool(model.clone(), skills, sandbox_settings))
-            .stop_when(step_count_is(10))
+            .stop_when(step_count_is(25))
             .build()
     };
 
