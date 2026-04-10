@@ -95,39 +95,42 @@ pub fn subagent_prompt(repo_root: Option<String>) -> String {
     )
 }
 
+/// Resolve skill names to skills, auto-loading their `needs` dependencies.
+/// Deduplicates and handles circular needs gracefully.
+pub fn resolve_with_needs<'a>(names: &[String], skills: &'a [Skill]) -> Vec<&'a Skill> {
+    let mut resolved = Vec::new();
+    let mut seen = HashSet::new();
+
+    for name in names {
+        if let Some(skill) = skills.iter().find(|s| s.name == *name)
+            && seen.insert(skill.name.clone())
+        {
+            resolved.push(skill);
+            for need in &skill.needs {
+                if seen.insert(need.clone())
+                    && let Some(dep) = skills.iter().find(|s| s.name == *need)
+                {
+                    resolved.push(dep);
+                }
+            }
+        }
+    }
+    resolved
+}
+
 /// Resolve skills mentioned as `/skill-name` in the given sources (user messages, queries).
 /// Single pass — does NOT scan skill content for further mentions.
 /// Also auto-resolves explicit `needs` dependencies from resolved skills.
 pub fn resolve_mentioned<'a>(sources: &[&str], skills: &'a [Skill]) -> Vec<&'a Skill> {
-    let mut resolved = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-
-    for source in sources {
-        for skill in skills {
-            if seen.contains(&skill.name) {
-                continue;
-            }
-            if source.contains(&format!("/{}", skill.name)) {
-                seen.insert(skill.name.clone());
-                resolved.push(skill);
-            }
-        }
-    }
-
-    // Auto-resolve explicit `needs` dependencies
-    let needs_names: Vec<String> = resolved
+    let mentioned_names: Vec<String> = skills
         .iter()
-        .flat_map(|s| s.needs.iter().cloned())
-        .filter(|n| !seen.contains(n))
+        .filter(|skill| {
+            sources.iter().any(|s| s.contains(&format!("/{}", skill.name)))
+        })
+        .map(|s| s.name.clone())
         .collect();
-    for need_name in &needs_names {
-        if let Some(skill) = skills.iter().find(|s| &s.name == need_name) {
-            seen.insert(skill.name.clone());
-            resolved.push(skill);
-        }
-    }
 
-    resolved
+    resolve_with_needs(&mentioned_names, skills)
 }
 
 /// Build a skill rules message for skills mentioned in the given sources.
@@ -525,5 +528,38 @@ mod tests {
             super::mentioned_skills_message(&skills, &["nothing relevant"]).is_none(),
             "must return None when no skills mentioned"
         );
+    }
+
+    // ── resolve_with_needs (shared by mention resolution and load_skills) ──
+
+    #[test]
+    fn resolve_with_needs_auto_loads_deps() {
+        let skills = vec![
+            skill_with_needs("review", "code review", "content", vec!["filesystem", "developer"]),
+            skill("filesystem", "file ops", "fs content"),
+            skill("developer", "dev workflow", "dev content"),
+        ];
+        let resolved = super::resolve_with_needs(&["review".to_string()], &skills);
+        let names: Vec<&str> = resolved.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"review"), "requested skill must resolve");
+        assert!(names.contains(&"filesystem"), "needs dep must auto-load");
+        assert!(names.contains(&"developer"), "needs dep must auto-load");
+    }
+
+    #[test]
+    fn resolve_with_needs_deduplicates_circular() {
+        let skills = vec![
+            skill_with_needs("a", "a", "a", vec!["b"]),
+            skill_with_needs("b", "b", "b", vec!["a"]),
+        ];
+        let resolved = super::resolve_with_needs(&["a".to_string(), "b".to_string()], &skills);
+        assert_eq!(resolved.len(), 2, "circular needs must not duplicate");
+    }
+
+    #[test]
+    fn resolve_with_needs_empty_for_unknown() {
+        let skills = vec![skill("a", "a", "a")];
+        let resolved = super::resolve_with_needs(&["nonexistent".to_string()], &skills);
+        assert!(resolved.is_empty());
     }
 }

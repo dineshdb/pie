@@ -70,29 +70,6 @@ struct LoadSkillsInput {
     skills: Vec<String>,
 }
 
-/// Resolve skill names to skills, including their `needs` dependencies.
-fn resolve_with_needs<'a>(names: &[String], skills: &'a [Skill]) -> Vec<&'a Skill> {
-    let mut resolved = Vec::new();
-    let mut seen = HashSet::new();
-
-    for name in names {
-        if let Some(skill) = skills.iter().find(|s| s.name == *name) {
-            if seen.insert(skill.name.clone()) {
-                resolved.push(skill);
-                // Auto-load needs deps
-                for need in &skill.needs {
-                    if seen.insert(need.clone()) {
-                        if let Some(dep) = skills.iter().find(|s| s.name == *need) {
-                            resolved.push(dep);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    resolved
-}
-
 /// Load one or more skills by name. Auto-resolves `needs` dependencies.
 pub fn load_skills_tool(skills: Vec<Skill>) -> Tool {
     let skills = Arc::new(skills);
@@ -115,7 +92,7 @@ pub fn load_skills_tool(skills: Vec<Skill>) -> Tool {
                 return Err("skills parameter must be a non-empty array of skill names".to_string());
             }
 
-            let resolved = resolve_with_needs(&names, &skills);
+            let resolved = prompt::resolve_with_needs(&names, &skills);
 
             if resolved.is_empty() {
                 return Err("No skills found matching the requested names".to_string());
@@ -243,7 +220,13 @@ pub fn subagent_tool(model: Model, skills: Vec<Skill>, sandbox_settings: PathBuf
                 let (date, pwd) = crate::core::prompt::context_vars();
                 let sys = prompt::subagent_prompt(prompt::git_repo_root());
 
+                // Auto-load the target skill and its needs deps
+                let query_with_skill = format!("/{} {}", skill_name, query);
                 let mut user_content = String::new();
+                if let Some(skills_msg) = prompt::mentioned_skills_message(&skills, &[&query_with_skill]) {
+                    user_content.push_str(&skills_msg);
+                    user_content.push_str("\n\n");
+                }
                 user_content.push_str(&format!("Date: {date} Working directory: {pwd}\n\n"));
                 user_content.push_str(&format!("Query: {query}"));
 
@@ -273,70 +256,4 @@ pub fn subagent_tool(model: Model, skills: Vec<Skill>, sandbox_settings: PathBuf
         }))
         .build()
         .unwrap()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn resolve_with_needs_basic() {
-        let skills = vec![
-            Skill {
-                name: "review".into(),
-                description: "code review".into(),
-                content: "content".into(),
-                needs: vec!["filesystem".into(), "developer".into()],
-            },
-            Skill {
-                name: "filesystem".into(),
-                description: "file ops".into(),
-                content: "content".into(),
-                needs: vec![],
-            },
-            Skill {
-                name: "developer".into(),
-                description: "dev workflow".into(),
-                content: "content".into(),
-                needs: vec![],
-            },
-        ];
-        let resolved = resolve_with_needs(&["review".to_string()], &skills);
-        let names: Vec<&str> = resolved.iter().map(|s| s.name.as_str()).collect();
-        assert!(names.contains(&"review"), "requested skill must resolve");
-        assert!(names.contains(&"filesystem"), "needs dep must auto-load");
-        assert!(names.contains(&"developer"), "needs dep must auto-load");
-    }
-
-    #[test]
-    fn resolve_with_needs_deduplicates() {
-        let skills = vec![
-            Skill {
-                name: "a".into(),
-                description: "a".into(),
-                content: "a".into(),
-                needs: vec!["b".into()],
-            },
-            Skill {
-                name: "b".into(),
-                description: "b".into(),
-                content: "b".into(),
-                needs: vec!["a".into()],
-            },
-        ];
-        let resolved = resolve_with_needs(&["a".to_string(), "b".to_string()], &skills);
-        assert_eq!(resolved.len(), 2, "circular needs must not duplicate");
-    }
-
-    #[test]
-    fn resolve_with_needs_empty_for_unknown() {
-        let skills = vec![Skill {
-            name: "a".into(),
-            description: "a".into(),
-            content: "a".into(),
-            needs: vec![],
-        }];
-        let resolved = resolve_with_needs(&["nonexistent".to_string()], &skills);
-        assert!(resolved.is_empty());
-    }
 }
