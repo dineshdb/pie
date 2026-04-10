@@ -15,7 +15,7 @@ impl OutputFormat {
             Self::Markdown => "",
             Self::Json => {
                 r#"
-## [IMMUTABLE] JSON Output Mode
+## JSON Output Mode
 
 The user has requested JSON output. You MUST follow these rules:
 

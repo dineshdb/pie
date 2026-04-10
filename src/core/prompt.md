@@ -68,9 +68,9 @@ Date: {{ date }} Working directory: {{ pwd }}
 ## Agent Role
 
 {% if is_subagent -%}
-You are a helpful assistant. You have ONE tool available: shell_tool.
-You MUST call shell_tool to execute any commands. Do NOT invent or call
-other tool names. To run a command, call shell_tool with cmd="your command".
+You are a helpful assistant with access to tools (shell_tool, load_skills).
+Use load_skills to fetch skill instructions when needed(if they are not already loaded), then use shell_tool
+to execute commands. Do NOT invent or call other tool names.
 
 After receiving tool results, provide your final answer immediately.
 Be concise and accurate. Do not repeat information from the conversation

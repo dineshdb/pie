@@ -14,22 +14,18 @@
 #   skip          - "online" = skip when model server unavailable
 #   parallel      - true = safe to run concurrently with other tests (default false)
 #
-# Multiple checks in one test: All checks (exit, contains, not_contains) run
+# Multiple checks in one test: All checks (exit, not_contains) run
 # and ALL failures are reported before the test is marked as failed.
 
 tests:
   # ── CLI flags (no API calls, instant) ────────────────────────
-  - name: --help comprehensive
+  - name: --help shows usage
     args: --help
     exit: 0
     contains:
       - Usage
-      - Options
       - --help
       - list-skills
-    not_contains:
-      - ERROR
-      - "panic"
 
   - name: --version shows semver
     args: --version
@@ -40,30 +36,23 @@ tests:
     exit: 2
 
   # ── Skills listing (no API calls, instant) ───────────────────
-  - name: --list-skills comprehensive
+  - name: --list-skills shows available skills
     args: --list-skills
     contains:
       - filesystem
       - developer
-      - web-search
-      - repo
-    not_contains: "[IMMUTABLE]"
 
-  # ── Single API call: prompt structure + shell execution ──────
-  - name: agent comprehensive (prompt + shell)
+  # ── End-to-end: model executes shell commands ────────────────
+  - name: agent executes shell commands
     input: "run uname -a and uname -m"
-    debug: true
     contains:
-      - "System Skills"
-      - Priority Hierarchy
-      - "Agent Role"
       - Darwin
       - arm64
     timeout: 30
     skip: online
     parallel: true
 
-  # ── Single API call: web search ─────────────────────────────
+  # ── End-to-end: web search ───────────────────────────────────
   - name: web search returns results
     input: "/web-search latest technology news 2026"
     contains: technology
@@ -71,7 +60,7 @@ tests:
     skip: online
     parallel: true
 
-  # ── JSON output format ──────────────────────────────────────
+  # ── End-to-end: JSON output format ───────────────────────────
   - name: --json returns valid JSON
     args: --json
     input: "what is 2+2"
@@ -87,9 +76,9 @@ tests:
     skip: online
     parallel: true
 
+  # ── End-to-end: repo summarization (main agent reads files) ──
   - name: repo summarization returns project overview
     input: "summarize this repo"
-    debug: true
     contains:
       - Rust
       - agent

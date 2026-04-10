@@ -165,6 +165,7 @@ pub fn subagent_tool(model: Model, skills: Vec<Skill>, sandbox_settings: PathBuf
                     .system(sys)
                     .messages(messages)
                     .with_tool(shell_tool((*sandbox_ref).clone()))
+                    .with_tool(load_skills_tool((*skills).clone()))
                     .stop_when(step_count_is(5))
                     .build();
                 match req.generate_text().await {
