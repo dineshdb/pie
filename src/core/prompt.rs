@@ -122,12 +122,12 @@ pub fn resolve_with_needs<'a>(names: &[String], skills: &'a [Skill]) -> Vec<&'a 
 /// Single pass — does NOT scan skill content for further mentions.
 /// Also auto-resolves explicit `needs` dependencies from resolved skills.
 pub fn resolve_mentioned<'a>(sources: &[&str], skills: &'a [Skill]) -> Vec<&'a Skill> {
+    let patterns: Vec<String> = skills.iter().map(|s| format!("/{}", s.name)).collect();
     let mentioned_names: Vec<String> = skills
         .iter()
-        .filter(|skill| {
-            sources.iter().any(|s| s.contains(&format!("/{}", skill.name)))
-        })
-        .map(|s| s.name.clone())
+        .zip(&patterns)
+        .filter(|(_, pat)| sources.iter().any(|s| s.contains(pat.as_str())))
+        .map(|(skill, _)| skill.name.clone())
         .collect();
 
     resolve_with_needs(&mentioned_names, skills)
@@ -535,7 +535,12 @@ mod tests {
     #[test]
     fn resolve_with_needs_auto_loads_deps() {
         let skills = vec![
-            skill_with_needs("review", "code review", "content", vec!["filesystem", "developer"]),
+            skill_with_needs(
+                "review",
+                "code review",
+                "content",
+                vec!["filesystem", "developer"],
+            ),
             skill("filesystem", "file ops", "fs content"),
             skill("developer", "dev workflow", "dev content"),
         ];
