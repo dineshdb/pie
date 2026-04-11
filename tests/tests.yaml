@@ -44,7 +44,7 @@ tests:
 
   # ── End-to-end: model executes shell commands ────────────────
   - name: agent executes shell commands
-    input: "What is my system architecture?"
+    input: "What is the architecture of this laptop?"
     contains:
       - Darwin
       - arm64

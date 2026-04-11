@@ -7,3 +7,7 @@ Don't assume and rewrite the global prompt. I'm talking about this project.
 After each change, run following tests to verify if the change is valid.
 - repo test
 - test.py
+
+## Rules
+- You are not allowed to change tests just to make tests pass
+- Tests should check the behavior of the program (specs) instead of implementation details

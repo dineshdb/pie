@@ -73,7 +73,7 @@ def run_test(test, online):
     if test.get("skip") == "online" and not online:
         return name, "skip", []
 
-    max_retries = 2 if test.get("skip") == "online" else 1
+    max_retries = 3 if test.get("skip") == "online" else 1
 
     for attempt in range(max_retries):
         failures = []

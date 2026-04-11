@@ -15,6 +15,20 @@ Adapts to the project's language and build system automatically.
 3. Only proceed to deeper exploration (Steps 3-6) if more context is needed
 4. Do NOT explore further when the overview suffices
 
+## repo CLI
+
+Quick project operations via `repo` CLI:
+
+```bash
+repo context    # Gather full project context in one call
+repo build      # Build all detected projects
+repo test       # Run all tests
+repo lint       # Run all linters
+repo fmt        # Format code
+```
+
+Run `repo --help` for all options.
+
 ## Step 1: Detect Environment
 
 ```bash

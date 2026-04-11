@@ -121,14 +121,25 @@ pub fn resolve_with_needs<'a>(names: &[String], skills: &'a [Skill]) -> Vec<&'a 
 /// Resolve skills mentioned as `/skill-name` in the given sources (user messages, queries).
 /// Single pass — does NOT scan skill content for further mentions.
 /// Also auto-resolves explicit `needs` dependencies from resolved skills.
+/// Auto-detects common patterns (e.g. "summarize repo" → explore) for small models.
 pub fn resolve_mentioned<'a>(sources: &[&str], skills: &'a [Skill]) -> Vec<&'a Skill> {
     let patterns: Vec<String> = skills.iter().map(|s| format!("/{}", s.name)).collect();
-    let mentioned_names: Vec<String> = skills
+    let mut mentioned_names: Vec<String> = skills
         .iter()
         .zip(&patterns)
         .filter(|(_, pat)| sources.iter().any(|s| s.contains(pat.as_str())))
         .map(|(skill, _)| skill.name.clone())
         .collect();
+
+    // Auto-detect repo exploration patterns → load explore skill
+    let text: String = sources.join(" ").to_lowercase();
+    let repo_words = ["repo", "repository", "project", "codebase"];
+    let explore_words = ["summarize", "summary", "explore", "analyze", "overview"];
+    let has_repo = repo_words.iter().any(|w| text.contains(w));
+    let has_explore = explore_words.iter().any(|w| text.contains(w));
+    if has_repo && has_explore && !mentioned_names.iter().any(|n| n == "explore") {
+        mentioned_names.push("explore".to_string());
+    }
 
     resolve_with_needs(&mentioned_names, skills)
 }
