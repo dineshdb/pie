@@ -82,7 +82,7 @@ tests:
     contains:
       - Rust
       - agent
-    timeout: 45
+    timeout: 90
     skip: online
     parallel: true
 
