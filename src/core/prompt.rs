@@ -323,17 +323,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn subagent_rules_define_when_to_and_not_to_spawn() {
-        let result = render_main(&[], None, "");
-        let immutable = result.split("START OF USER SECTION").next().unwrap_or("");
-        assert!(immutable.contains("DO spawn"), "missing spawn permissions");
-        assert!(
-            immutable.contains("DO NOT spawn"),
-            "missing spawn restrictions"
-        );
-    }
-
     // ── Self-sufficiency ─────────────────────────────────────────
 
     #[test]

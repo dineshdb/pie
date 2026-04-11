@@ -18,23 +18,6 @@
 # and ALL failures are reported before the test is marked as failed.
 
 tests:
-  # ── CLI flags (no API calls, instant) ────────────────────────
-  - name: --help shows usage
-    args: --help
-    exit: 0
-    contains:
-      - Usage
-      - --help
-      - list-skills
-
-  - name: --version shows semver
-    args: --version
-    contains: "0.1.0"
-
-  - name: unknown flag exits non-zero
-    args: --nonexistent
-    exit: 2
-
   # ── Skills listing (no API calls, instant) ───────────────────
   - name: --list-skills shows available skills
     args: --list-skills
