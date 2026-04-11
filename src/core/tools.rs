@@ -159,14 +159,10 @@ pub fn load_references_tool(loaded_refs: Arc<Mutex<HashSet<String>>>) -> Tool {
                 }
             }
 
-            // Resolve skill directory once
-            let dir = match crate::core::skill::skill_dir(&skill_name) {
-                Some(d) => d,
-                None => return Err(format!(
-                    "Skill '{}' has no filesystem directory",
-                    skill_name
-                )),
-            };
+            // Check that the skill exists (filesystem or embedded)
+            if !crate::core::skill::skill_exists(&skill_name) {
+                return Err(format!("Skill '{}' not found", skill_name));
+            }
 
             let mut output = String::new();
             for ref_name in &ref_names {
@@ -181,18 +177,17 @@ pub fn load_references_tool(loaded_refs: Arc<Mutex<HashSet<String>>>) -> Tool {
                         continue;
                     }
                 }
-                match std::fs::read_to_string(dir.join(ref_name)) {
-                    Ok(content) => {
+                match crate::core::skill::load_reference(&skill_name, ref_name) {
+                    Some(content) => {
                         output.push_str(&format!(
                             "### Reference: {}\n{}\n---\n",
                             key, content
                         ));
                         loaded_refs.lock().unwrap().insert(key);
                     }
-                    Err(e) => {
+                    None => {
                         output.push_str(&format!(
-                            "Error loading reference {}: {}\n",
-                            ref_name, e
+                            "Error: reference '{ref_name}' not found for skill '{skill_name}'\n"
                         ));
                     }
                 }

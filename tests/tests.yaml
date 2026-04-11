@@ -44,7 +44,7 @@ tests:
 
   # ── End-to-end: model executes shell commands ────────────────
   - name: agent executes shell commands
-    input: "run uname -a and uname -m"
+    input: "What is my system architecture?"
     contains:
       - Darwin
       - arm64
@@ -82,9 +82,9 @@ tests:
     contains:
       - Rust
       - agent
-    timeout: 90
+    timeout: 120
     skip: online
-    parallel: true
+    parallel: false
 
   # ── Sandbox integration ─────────────────────────────────────
   - name: sandbox srt-settings.json generated

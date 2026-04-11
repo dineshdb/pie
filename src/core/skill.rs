@@ -1,3 +1,4 @@
+use include_dir::{Dir, include_dir};
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
@@ -16,12 +17,7 @@ fn skills_root() -> PathBuf {
     crate::core::config::pie_home().join("skills")
 }
 
-const EMBEDDED_SKILLS: &[&str] = &[
-    include_str!("../../.pie/skills/filesystem/SKILL.md"),
-    include_str!("../../.pie/skills/developer/SKILL.md"),
-    include_str!("../../.pie/skills/explore/SKILL.md"),
-    include_str!("../../.pie/skills/review/SKILL.md"),
-];
+static EMBEDDED_SKILLS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/skills");
 
 /// Parse a raw markdown string with `---` frontmatter into a Skill.
 fn parse_skill(raw: &str) -> Option<Skill> {
@@ -55,10 +51,20 @@ fn parse_list_field(value: Option<&str>) -> Vec<String> {
 
 /// List all skills: embedded + filesystem. Filesystem skills override embedded ones with the same name.
 pub fn get_all_skills() -> Vec<Skill> {
-    let mut skills: Vec<Skill> = EMBEDDED_SKILLS
-        .iter()
-        .filter_map(|s| parse_skill(s))
-        .collect();
+    let mut skills: Vec<Skill> = Vec::new();
+
+    // Load embedded skills: iterate subdirectories and find SKILL.md in each
+    for dir in EMBEDDED_SKILLS_DIR.dirs() {
+        for file in dir.files() {
+            if file.path().ends_with("SKILL.md")
+                && let Some(content) = file.contents_utf8()
+                && let Some(skill) = parse_skill(content)
+            {
+                skills.push(skill);
+            }
+        }
+    }
+
     let mut names: HashSet<String> = skills.iter().map(|s| s.name.clone()).collect();
 
     let root = skills_root();
@@ -100,6 +106,31 @@ pub fn skill_dir(name: &str) -> Option<PathBuf> {
     } else {
         None
     }
+}
+
+/// Load a reference file for a skill. Checks filesystem skills first (user overrides),
+/// then falls back to embedded skills. Returns None if not found in either.
+pub fn load_reference(skill_name: &str, ref_name: &str) -> Option<String> {
+    // Filesystem override first
+    if let Some(dir) = skill_dir(skill_name)
+        && let Ok(content) = fs::read_to_string(dir.join(ref_name))
+    {
+        return Some(content);
+    }
+    // Fall back to embedded: find the child dir and iterate its files
+    let full_path = format!("{}/{}", skill_name, ref_name);
+    let path = std::path::Path::new(&full_path);
+    EMBEDDED_SKILLS_DIR
+        .dirs()
+        .find(|d| d.path() == std::path::Path::new(skill_name))
+        .and_then(|dir| dir.files().find(|f| f.path() == path))
+        .and_then(|file| file.contents_utf8())
+        .map(|s| s.to_string())
+}
+
+/// Check whether a skill exists (embedded or filesystem).
+pub fn skill_exists(name: &str) -> bool {
+    skill_dir(name).is_some() || EMBEDDED_SKILLS_DIR.get_dir(name).is_some()
 }
 
 /// Split raw markdown into (frontmatter key-value map, body content).

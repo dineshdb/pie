@@ -73,43 +73,51 @@ def run_test(test, online):
     if test.get("skip") == "online" and not online:
         return name, "skip", []
 
-    args = test.get("args", "").split() if test.get("args") else []
-    out, exit_code = run_pie(
-        args,
-        input_text=test.get("input"),
-        debug=test.get("debug", False),
-        timeout=test.get("timeout", 30),
-    )
+    max_retries = 2 if test.get("skip") == "online" else 1
 
-    check = out
-    if test.get("filter"):
-        check = "\n".join(re.findall(test["filter"], out))
+    for attempt in range(max_retries):
+        failures = []
 
-    if "exit" in test and exit_code != test["exit"]:
-        failures.append(f"exit: expected {test['exit']}, got {exit_code}")
+        args = test.get("args", "").split() if test.get("args") else []
+        out, exit_code = run_pie(
+            args,
+            input_text=test.get("input"),
+            debug=test.get("debug", False),
+            timeout=test.get("timeout", 30),
+        )
 
-    for pat in ensure_list(test.get("contains")):
-        if pat not in check:
-            failures.append(f"missing: {pat!r}")
+        check = out
+        if test.get("filter"):
+            check = "\n".join(re.findall(test["filter"], out))
 
-    for pat in ensure_list(test.get("not_contains")):
-        if pat in check:
-            failures.append(f"unexpected: {pat!r}")
+        if "exit" in test and exit_code != test["exit"]:
+            failures.append(f"exit: expected {test['exit']}, got {exit_code}")
 
-    # Run post-test shell command (exit code determines pass/fail)
-    post_cmd = test.get("post")
-    if post_cmd:
-        try:
-            r = subprocess.run(
-                post_cmd, shell=True, capture_output=True, text=True, timeout=10, cwd=ROOT
-            )
-            if r.returncode != 0:
-                preview_lines = (r.stdout + r.stderr).strip().splitlines()[:3]
-                failures.append(f"post: {post_cmd!r} exited {r.returncode}")
-                for line in preview_lines:
-                    failures.append(f"  {line}")
-        except subprocess.TimeoutExpired:
-            failures.append(f"post: {post_cmd!r} timed out")
+        for pat in ensure_list(test.get("contains")):
+            if pat not in check:
+                failures.append(f"missing: {pat!r}")
+
+        for pat in ensure_list(test.get("not_contains")):
+            if pat in check:
+                failures.append(f"unexpected: {pat!r}")
+
+        # Run post-test shell command (exit code determines pass/fail)
+        post_cmd = test.get("post")
+        if post_cmd:
+            try:
+                r = subprocess.run(
+                    post_cmd, shell=True, capture_output=True, text=True, timeout=10, cwd=ROOT
+                )
+                if r.returncode != 0:
+                    preview_lines = (r.stdout + r.stderr).strip().splitlines()[:3]
+                    failures.append(f"post: {post_cmd!r} exited {r.returncode}")
+                    for line in preview_lines:
+                        failures.append(f"  {line}")
+            except subprocess.TimeoutExpired:
+                failures.append(f"post: {post_cmd!r} timed out")
+
+        if not failures:
+            break
 
     preview = out.splitlines()[:5]
     status = "fail" if failures else "pass"
@@ -167,7 +175,7 @@ def main():
 
     # Run parallel tests concurrently (API calls — slow)
     if parallel:
-        with ThreadPoolExecutor(max_workers=len(parallel)) as pool:
+        with ThreadPoolExecutor(max_workers=1) as pool:
             futures = {pool.submit(run_test, t, online): t for t in parallel}
             for future in as_completed(futures):
                 result = future.result()

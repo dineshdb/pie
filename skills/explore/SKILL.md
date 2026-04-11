@@ -8,6 +8,13 @@ description: Explore and understand a codebase — project type, structure, depe
 Gather comprehensive context about a project before modifying or reviewing it.
 Adapts to the project's language and build system automatically.
 
+## How to use
+
+1. Run `repo context` first (Step 2) to get a project overview
+2. Review the output — if it answers the user's question, respond immediately
+3. Only proceed to deeper exploration (Steps 3-6) if more context is needed
+4. Do NOT explore further when the overview suffices
+
 ## Step 1: Detect Environment
 
 ```bash
