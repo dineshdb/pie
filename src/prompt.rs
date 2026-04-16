@@ -1,7 +1,7 @@
-use crate::core::agent::{resolve_mentioned_agents, Agent};
-use crate::core::config::pie_home;
-use crate::core::skill::Skill;
-use crate::core::utils::{find_upward_in_repo, load_file};
+use crate::agent::{Agent, resolve_mentioned_agents};
+use crate::config::pie_home;
+use crate::skill::Skill;
+use crate::utils::{find_upward_in_repo, load_file};
 use minijinja::Environment;
 use std::collections::HashSet;
 
@@ -33,31 +33,12 @@ pub fn context_vars() -> (String, String) {
     (date, pwd)
 }
 
-/// Find the git repo root by walking up from cwd looking for `.git`.
-/// Stops at the user's home directory to avoid scanning system paths.
-pub fn git_repo_root() -> Option<String> {
-    let home = dirs::home_dir();
-    let mut dir = std::env::current_dir().ok()?;
-    for _ in 0..32 {
-        if dir.join(".git").exists() {
-            return Some(dir.display().to_string());
-        }
-        if home.as_ref().is_some_and(|h| dir == *h) {
-            return None;
-        }
-        if !dir.pop() {
-            return None;
-        }
-    }
-    None
-}
-
 /// Render the full system prompt as a single message.
 pub fn system_prompt(skills: &[Skill], agents: &[Agent], format_instructions: &str) -> String {
     let global_agents_md = load_file(pie_home().join("AGENTS.md"));
     let local_agents_md = find_upward_in_repo("AGENTS.md");
     let (date, pwd) = context_vars();
-    let repo_root = git_repo_root();
+    let repo_root = crate::utils::git_repo_root();
 
     tracing::debug!(repo_root = ?repo_root, "system prompt context");
 
@@ -229,8 +210,8 @@ pub fn build_agent_skills_message(
 
 #[cfg(test)]
 mod test_helpers {
-    use crate::core::agent::Agent;
-    use crate::core::skill::Skill;
+    use crate::agent::Agent;
+    use crate::skill::Skill;
 
     pub fn skill(name: &str, desc: &str, content: &str) -> Skill {
         Skill {
@@ -338,8 +319,8 @@ mod test_helpers {
 
 #[cfg(test)]
 mod tests {
-    use super::test_helpers::*;
     use super::Agent;
+    use super::test_helpers::*;
 
     #[test]
     fn main_agent_has_all_tools() {
@@ -656,12 +637,27 @@ mod tests {
             skill("explore", "explore codebase", "explore content"),
             skill("review", "code review", "review content"),
         ];
-        let agents = vec![agent("reviewer", "code reviewer", vec!["explore", "review"], "Be thorough.")];
-        let result = super::build_agent_skills_message(&skills, &agents, &["/reviewer check this"]).unwrap();
-        assert!(result.contains("Agent: reviewer"), "agent section must appear");
+        let agents = vec![agent(
+            "reviewer",
+            "code reviewer",
+            vec!["explore", "review"],
+            "Be thorough.",
+        )];
+        let result =
+            super::build_agent_skills_message(&skills, &agents, &["/reviewer check this"]).unwrap();
+        assert!(
+            result.contains("Agent: reviewer"),
+            "agent section must appear"
+        );
         assert!(result.contains("Be thorough."), "agent content must appear");
-        assert!(result.contains("Skill: explore"), "agent skill must auto-load");
-        assert!(result.contains("Skill: review"), "agent skill must auto-load");
+        assert!(
+            result.contains("Skill: explore"),
+            "agent skill must auto-load"
+        );
+        assert!(
+            result.contains("Skill: review"),
+            "agent skill must auto-load"
+        );
     }
 
     #[test]
@@ -669,7 +665,10 @@ mod tests {
         let skills = vec![skill("review", "code review", "review content")];
         let agents: Vec<Agent> = vec![];
         let result = super::build_agent_skills_message(&skills, &agents, &["/review this"]);
-        assert!(result.is_some(), "should still resolve skills without agents");
+        assert!(
+            result.is_some(),
+            "should still resolve skills without agents"
+        );
         assert!(result.unwrap().contains("Skill: review"));
     }
 

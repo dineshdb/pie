@@ -1,4 +1,4 @@
-use crate::core::config::pie_home;
+use crate::config::pie_home;
 use anyhow::Result;
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
@@ -7,7 +7,7 @@ pub type DbPool = Pool<SqliteConnectionManager>;
 
 mod embedded {
     use refinery::embed_migrations;
-    embed_migrations!("./src/core/db/migrations");
+    embed_migrations!("./src/db/migrations");
 }
 
 pub fn create_pool() -> Result<DbPool> {

@@ -1,10 +1,20 @@
-mod core;
+mod agent;
+mod cmd;
+mod config;
+mod db;
+mod handler;
+mod output;
+mod prompt;
 mod providers;
+mod sandbox;
+mod session;
+mod skill;
+mod tools;
 mod ui;
+mod utils;
 
-use crate::core::output::OutputFormat;
-use crate::core::sandbox;
-use crate::core::{db::DbPool, session::Session};
+use crate::output::OutputFormat;
+use crate::{db::DbPool, session::Session};
 use clap::Parser;
 use std::io::{self, IsTerminal, Read};
 use std::sync::Arc;
@@ -55,7 +65,7 @@ fn resolve_session(pool: Arc<DbPool>, resume: bool) -> anyhow::Result<Session> {
     if resume && let Some(session) = Session::find_latest_for_cwd(pool.clone(), &cwd)? {
         return Ok(session);
     }
-    core::session::Session::create(pool)
+    Session::create(pool)
 }
 
 #[tokio::main]
@@ -81,12 +91,12 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if cli.list_skills {
-        core::agent::handle_list_skills();
+        cmd::handle_list_skills();
         return Ok(());
     }
 
     // Sandbox: required — exits if srt is not installed
-    let sandbox_settings = sandbox::prepare(&sandbox::load_config())?;
+    let sandbox_settings = crate::sandbox::prepare(&crate::sandbox::load_config())?;
 
     let mut model = providers::build_model(
         cli.model.as_deref(),
@@ -94,7 +104,7 @@ async fn main() -> anyhow::Result<()> {
         cli.api_key.as_deref(),
     )?;
 
-    let pool = Arc::new(core::db::create_pool()?);
+    let pool = Arc::new(db::create_pool()?);
 
     let piped_stdin = read_piped_stdin();
 
@@ -108,7 +118,7 @@ async fn main() -> anyhow::Result<()> {
     if cli.query.is_empty() && cli.skill.is_none() {
         if let Some(stdin_content) = piped_stdin {
             let mut session = resolve_session(pool, cli.r#continue)?;
-            return core::agent::handle_query(
+            return handler::handle_query(
                 &mut model,
                 &stdin_content,
                 &mut session,
@@ -134,7 +144,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let mut session = resolve_session(pool, cli.r#continue)?;
-    core::agent::handle_query(
+    handler::handle_query(
         &mut model,
         &full_query,
         &mut session,

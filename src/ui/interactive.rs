@@ -1,8 +1,9 @@
 use tracing::info;
 
-use crate::core::agent::{handle_list_skills, handle_query_streaming};
-use crate::core::session::Session;
+use crate::cmd::handle_list_skills;
+use crate::handler::handle_query_streaming;
 use crate::providers::Model;
+use crate::session::Session;
 use std::io::{self, Write};
 use std::path::PathBuf;
 

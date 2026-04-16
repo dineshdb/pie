@@ -14,7 +14,7 @@ pub struct Skill {
 }
 
 fn skills_root() -> PathBuf {
-    crate::core::config::pie_home().join("skills")
+    crate::config::pie_home().join("skills")
 }
 
 static EMBEDDED_PIE_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/.pie");
@@ -22,11 +22,6 @@ static EMBEDDED_PIE_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/.pie")
 /// Embedded skills directory (from .pie/skills/ in the crate root).
 fn embedded_skills_dir() -> Option<&'static Dir<'static>> {
     EMBEDDED_PIE_DIR.get_dir("skills")
-}
-
-/// Embedded agents directory (from .pie/agents/ in the crate root).
-pub fn embedded_agents_dir() -> Option<&'static Dir<'static>> {
-    EMBEDDED_PIE_DIR.get_dir("agents")
 }
 
 /// Parse a raw markdown string with `---` frontmatter into a Skill.
@@ -132,21 +127,19 @@ pub fn load_reference(skill_name: &str, ref_name: &str) -> Option<String> {
     // Fall back to embedded: find the child dir and iterate its files
     let full_path = format!("{}/{}", skill_name, ref_name);
     let path = std::path::Path::new(&full_path);
-    embedded_skills_dir()
-        .and_then(|dir| {
-            dir.dirs()
-                .find(|d| d.path() == std::path::Path::new(skill_name))
-                .and_then(|skill_dir| skill_dir.files().find(|f| f.path() == path))
-                .and_then(|file| file.contents_utf8())
-                .map(|s| s.to_string())
-        })
+    embedded_skills_dir().and_then(|dir| {
+        dir.dirs()
+            .find(|d| d.path() == std::path::Path::new(skill_name))
+            .and_then(|skill_dir| skill_dir.files().find(|f| f.path() == path))
+            .and_then(|file| file.contents_utf8())
+            .map(|s| s.to_string())
+    })
 }
 
 /// Check whether a skill exists (embedded or filesystem).
 pub fn skill_exists(name: &str) -> bool {
     skill_dir(name).is_some()
-        || embedded_skills_dir()
-            .is_some_and(|dir| dir.get_dir(name).is_some())
+        || embedded_skills_dir().is_some_and(|dir| dir.get_dir(name).is_some())
 }
 
 /// Split raw markdown into (frontmatter key-value map, body content).

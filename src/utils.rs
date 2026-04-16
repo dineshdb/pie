@@ -23,3 +23,22 @@ pub fn find_upward_in_repo(name: &str) -> Option<String> {
     }
     None
 }
+
+/// Find the git repo root by walking up from cwd looking for `.git`.
+/// Stops at the user's home directory to avoid scanning system paths.
+pub fn git_repo_root() -> Option<String> {
+    let home = dirs::home_dir();
+    let mut dir = std::env::current_dir().ok()?;
+    for _ in 0..32 {
+        if dir.join(".git").exists() {
+            return Some(dir.display().to_string());
+        }
+        if home.as_ref().is_some_and(|h| dir == *h) {
+            return None;
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+    None
+}

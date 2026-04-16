@@ -1,4 +1,4 @@
-use crate::core::config::pie_home;
+use crate::config::pie_home;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;

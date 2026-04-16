@@ -1,4 +1,4 @@
-use crate::core::db::DbPool;
+use crate::db::DbPool;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use strum::{AsRefStr, EnumString, IntoStaticStr};
@@ -166,7 +166,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::db;
+    use crate::db;
 
     fn pool() -> Arc<DbPool> {
         Arc::new(db::create_test_pool())

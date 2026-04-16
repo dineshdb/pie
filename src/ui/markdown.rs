@@ -1,13 +1,13 @@
 use std::io::{self, IsTerminal, Write};
 use std::time::Instant;
 
+use termimad::MadSkin;
 use termimad::crossterm::{
     cursor::{MoveUp, Show as CursorShow},
     execute, queue,
     style::Print,
     terminal::{Clear, ClearType},
 };
-use termimad::MadSkin;
 
 const RENDER_THROTTLE: std::time::Duration = std::time::Duration::from_millis(60);
 
