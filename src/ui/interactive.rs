@@ -1,7 +1,6 @@
 use tracing::info;
 
-use crate::core::agent::{handle_list_skills, handle_query};
-use crate::core::output::OutputFormat;
+use crate::core::agent::{handle_list_skills, handle_query_streaming};
 use crate::core::session::Session;
 use crate::providers::Model;
 use std::io::{self, Write};
@@ -55,14 +54,9 @@ pub async fn start_interactive_mode(
                 handle_list_skills();
             }
             _ => {
-                if let Err(e) = handle_query(
-                    model,
-                    input,
-                    &mut session,
-                    OutputFormat::default(),
-                    sandbox_settings.clone(),
-                )
-                .await
+                if let Err(e) =
+                    handle_query_streaming(model, input, &mut session, sandbox_settings.clone())
+                        .await
                 {
                     tracing::error!("Error: {e}");
                 }

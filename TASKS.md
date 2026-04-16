@@ -1,10 +1,10 @@
 # TASKS
 
-- [ ] Add support for markdown rendering in the interactive tui
-- [ ] Improve internal skills
-- [ ] dogfooding
-  - [ ] for reviews
-  - [ ] for implementing features
+- [x] Add support for markdown rendering in the interactive tui
+- [ ] Add .pie/agents/ support that defines what each agent does. This splits skills as composable and agents as runnable.
+- [ ] Batching the tool calls for faster iterations.
+- [ ] TUI
+  - [ ] History
 - [ ] Implement File Registry: Track read files, line counts, and key symbols to
       prevent redundant context loading.
 - [ ] Implement Adaptive Compaction: Replace large, old tool outputs (e.g.,

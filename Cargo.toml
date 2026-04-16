@@ -21,6 +21,7 @@ strum = { version = "0.28", features = ["derive"] }
 chrono = { version = "0.4.44", features = ["serde"] }
 minijinja = "2"
 include_dir = "0.7"
+termimad = "0.34"
 
 rusqlite = { version = "0.37", features = ["bundled"] }
 r2d2 = "0.8"
