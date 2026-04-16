@@ -1,3 +1,4 @@
+use crate::core::agent::{resolve_mentioned_agents, Agent};
 use crate::core::config::pie_home;
 use crate::core::skill::Skill;
 use crate::core::utils::{find_upward_in_repo, load_file};
@@ -52,7 +53,7 @@ pub fn git_repo_root() -> Option<String> {
 }
 
 /// Render the full system prompt as a single message.
-pub fn system_prompt(skills: &[Skill], format_instructions: &str) -> String {
+pub fn system_prompt(skills: &[Skill], agents: &[Agent], format_instructions: &str) -> String {
     let global_agents_md = load_file(pie_home().join("AGENTS.md"));
     let local_agents_md = find_upward_in_repo("AGENTS.md");
     let (date, pwd) = context_vars();
@@ -66,6 +67,7 @@ pub fn system_prompt(skills: &[Skill], format_instructions: &str) -> String {
         minijinja::context! {
             is_subagent => false,
             skills,
+            agents,
             global_agents_md,
             local_agents_md,
             date,
@@ -79,12 +81,14 @@ pub fn system_prompt(skills: &[Skill], format_instructions: &str) -> String {
 pub fn subagent_prompt(repo_root: Option<String>) -> String {
     let (date, pwd) = context_vars();
     let empty: &[Skill] = &[];
+    let empty_agents: &[Agent] = &[];
     render_template(
         "system_prompt",
         SYSTEM_PROMPT_TEMPLATE,
         minijinja::context! {
             is_subagent => true,
             skills => empty,
+            agents => empty_agents,
             global_agents_md => String::new(),
             local_agents_md => String::new(),
             date,
@@ -163,10 +167,69 @@ pub fn mentioned_skills_message(skills: &[Skill], scan_sources: &[&str]) -> Opti
     ))
 }
 
+/// Build the user message that includes agent + skill context.
+/// This is called from agent.rs after resolving mentions.
+pub fn build_agent_skills_message(
+    skills: &[Skill],
+    agents: &[Agent],
+    scan_sources: &[&str],
+) -> Option<String> {
+    let mentioned_agents = resolve_mentioned_agents(scan_sources, agents);
+    if mentioned_agents.is_empty() {
+        return mentioned_skills_message(skills, scan_sources);
+    }
+
+    // Auto-load skills from mentioned agents
+    let mut skill_names: Vec<String> = mentioned_agents
+        .iter()
+        .flat_map(|a| a.skills.clone())
+        .collect();
+
+    // Also resolve directly mentioned skills
+    let mentioned_skills = resolve_mentioned(scan_sources, skills);
+    for skill in &mentioned_skills {
+        skill_names.push(skill.name.clone());
+    }
+
+    let mut parts = Vec::new();
+
+    // Agent overrides
+    let mut agent_section = String::new();
+    for agent in &mentioned_agents {
+        agent_section.push_str(&format!(
+            "## Agent: {}\n{}\n---\n",
+            agent.name, agent.content
+        ));
+    }
+    parts.push(agent_section);
+
+    // Skills (from agent auto-load + direct mentions)
+    if !skill_names.is_empty() {
+        let resolved = resolve_with_needs(&skill_names, skills);
+        if !resolved.is_empty() {
+            let mut skill_section = String::new();
+            for skill in &resolved {
+                skill_section.push_str(&format!(
+                    "## Skill: {}\n{}\n---\n",
+                    skill.name, skill.content
+                ));
+            }
+            parts.push(skill_section);
+        }
+    }
+
+    if parts.is_empty() {
+        return None;
+    }
+
+    Some(parts.join("\n"))
+}
+
 // ── Helpers for deterministic test rendering ──────────────────────────
 
 #[cfg(test)]
 mod test_helpers {
+    use crate::core::agent::Agent;
     use crate::core::skill::Skill;
 
     pub fn skill(name: &str, desc: &str, content: &str) -> Skill {
@@ -184,6 +247,17 @@ mod test_helpers {
             description: desc.to_string(),
             content: content.to_string(),
             needs: needs.into_iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    pub fn agent(name: &str, desc: &str, skills: Vec<&str>, content: &str) -> Agent {
+        Agent {
+            name: name.to_string(),
+            description: desc.to_string(),
+            skills: skills.into_iter().map(|s| s.to_string()).collect(),
+            model: None,
+            temperature: None,
+            content: content.to_string(),
         }
     }
 
@@ -206,6 +280,7 @@ mod test_helpers {
             minijinja::context! {
                 is_subagent => false,
                 skills,
+                agents => Vec::<Agent>::new(),
                 global_agents_md => String::new(),
                 local_agents_md => String::new(),
                 date => "2026-04-10",
@@ -219,12 +294,14 @@ mod test_helpers {
     /// Render the subagent prompt with deterministic values.
     pub fn render_sub(repo_root: Option<&str>) -> String {
         let empty: &[Skill] = &[];
+        let empty_agents: &[Agent] = &[];
         super::render_template(
             "system_prompt",
             super::SYSTEM_PROMPT_TEMPLATE,
             minijinja::context! {
                 is_subagent => true,
                 skills => empty,
+                agents => empty_agents,
                 global_agents_md => String::new(),
                 local_agents_md => String::new(),
                 date => "2026-04-10",
@@ -236,14 +313,16 @@ mod test_helpers {
     }
 
     /// Render with global/local agents md.
-    pub fn render_with_agents(global_agents_md: &str, local_agents_md: &str) -> String {
+    pub fn render_with_agents_md(global_agents_md: &str, local_agents_md: &str) -> String {
         let empty: &[Skill] = &[];
+        let empty_agents: &[Agent] = &[];
         super::render_template(
             "system_prompt",
             super::SYSTEM_PROMPT_TEMPLATE,
             minijinja::context! {
                 is_subagent => false,
                 skills => empty,
+                agents => empty_agents,
                 global_agents_md,
                 local_agents_md,
                 date => "2026-04-10",
@@ -260,6 +339,7 @@ mod test_helpers {
 #[cfg(test)]
 mod tests {
     use super::test_helpers::*;
+    use super::Agent;
 
     #[test]
     fn main_agent_has_all_tools() {
@@ -390,9 +470,9 @@ mod tests {
 
     #[test]
     fn agents_md_sections_appear_only_when_provided() {
-        let with_global = render_with_agents("use rustfmt", "");
-        let with_local = render_with_agents("", "test first");
-        let with_neither = render_with_agents("", "");
+        let with_global = render_with_agents_md("use rustfmt", "");
+        let with_local = render_with_agents_md("", "test first");
+        let with_neither = render_with_agents_md("", "");
         assert!(
             with_global.contains("use rustfmt"),
             "global config must appear"
@@ -566,5 +646,39 @@ mod tests {
         let skills = vec![skill("a", "a", "a")];
         let resolved = super::resolve_with_needs(&["nonexistent".to_string()], &skills);
         assert!(resolved.is_empty());
+    }
+
+    // ── Agent + skill integration ──────────────────────────────────
+
+    #[test]
+    fn agent_auto_loads_its_skills() {
+        let skills = vec![
+            skill("explore", "explore codebase", "explore content"),
+            skill("review", "code review", "review content"),
+        ];
+        let agents = vec![agent("reviewer", "code reviewer", vec!["explore", "review"], "Be thorough.")];
+        let result = super::build_agent_skills_message(&skills, &agents, &["/reviewer check this"]).unwrap();
+        assert!(result.contains("Agent: reviewer"), "agent section must appear");
+        assert!(result.contains("Be thorough."), "agent content must appear");
+        assert!(result.contains("Skill: explore"), "agent skill must auto-load");
+        assert!(result.contains("Skill: review"), "agent skill must auto-load");
+    }
+
+    #[test]
+    fn no_agents_falls_back_to_skills_only() {
+        let skills = vec![skill("review", "code review", "review content")];
+        let agents: Vec<Agent> = vec![];
+        let result = super::build_agent_skills_message(&skills, &agents, &["/review this"]);
+        assert!(result.is_some(), "should still resolve skills without agents");
+        assert!(result.unwrap().contains("Skill: review"));
+    }
+
+    #[test]
+    fn no_mentions_returns_none() {
+        let skills = vec![skill("review", "code review", "content")];
+        let agents = vec![agent("reviewer", "reviewer", vec![], "content")];
+        assert!(
+            super::build_agent_skills_message(&skills, &agents, &["nothing relevant"]).is_none()
+        );
     }
 }

@@ -1,7 +1,7 @@
 # TASKS
 
 - [x] Add support for markdown rendering in the interactive tui
-- [ ] Add .pie/agents/ support that defines what each agent does. This splits skills as composable and agents as runnable.
+- [-] Add .pie/agents/ support that defines what each agent does. This splits skills as composable and agents as runnable.
 - [ ] Batching the tool calls for faster iterations.
 - [ ] TUI
   - [ ] History
