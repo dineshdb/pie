@@ -32,11 +32,34 @@ fn agents_root_local() -> Option<PathBuf> {
         .filter(|p| p.is_dir())
 }
 
-/// Parse a raw markdown string with frontmatter into an Agent.
-fn parse_agent(raw: &str) -> Option<Agent> {
+/// Parse a raw markdown string with optional frontmatter into an Agent.
+/// When frontmatter is absent or incomplete, falls back to:
+///   - name from the filename (stem, without extension)
+///   - description from the first non-empty line of the body
+fn parse_agent(raw: &str, filename: &str) -> Option<Agent> {
     let (meta, content) = parse_frontmatter(raw);
-    let name = meta.get("name")?.trim().to_string();
-    let description = meta.get("description")?.trim().to_string();
+    let name = meta
+        .get("name")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| {
+            std::path::Path::new(filename)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default()
+        });
+    if name.is_empty() {
+        return None;
+    }
+    let description = meta
+        .get("description")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| {
+            content
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .map(|l| l.trim().to_string())
+                .unwrap_or_default()
+        });
     let skills = parse_list_field(meta.get("skills").map(|s| s.as_str()));
     let model = meta.get("model").map(|s| s.trim().to_string());
     let temperature = meta
@@ -64,7 +87,8 @@ fn load_agents_from_dir(dir: &std::path::Path) -> Vec<Agent> {
         })
         .filter_map(|e| {
             let raw = std::fs::read_to_string(e.path()).ok()?;
-            parse_agent(&raw)
+            let filename = e.file_name().to_string_lossy().to_string();
+            parse_agent(&raw, &filename)
         })
         .collect()
 }
@@ -78,7 +102,8 @@ fn load_embedded_agents() -> Vec<Agent> {
         .filter(|f| f.path().extension().is_some_and(|ext| ext == "md"))
         .filter_map(|f| {
             let raw = f.contents_utf8()?;
-            parse_agent(raw)
+            let filename = f.path().file_name()?.to_string_lossy().to_string();
+            parse_agent(raw, &filename)
         })
         .collect()
 }
@@ -135,7 +160,7 @@ mod tests {
     #[test]
     fn parse_agent_full() {
         let raw = "---\nname: reviewer\ndescription: code reviewer\nskills: [explore, review]\nmodel: llama3\ntemperature: 0.3\n---\nBe direct and thorough.";
-        let agent = parse_agent(raw).unwrap();
+        let agent = parse_agent(raw, "reviewer.md").unwrap();
         assert_eq!(agent.name, "reviewer");
         assert_eq!(agent.description, "code reviewer");
         assert_eq!(agent.skills, vec!["explore", "review"]);
@@ -147,11 +172,35 @@ mod tests {
     #[test]
     fn parse_agent_minimal() {
         let raw = "---\nname: helper\ndescription: helps\n---\nContent";
-        let agent = parse_agent(raw).unwrap();
+        let agent = parse_agent(raw, "helper.md").unwrap();
         assert_eq!(agent.name, "helper");
         assert!(agent.skills.is_empty());
         assert!(agent.model.is_none());
         assert!(agent.temperature.is_none());
+    }
+
+    #[test]
+    fn parse_agent_no_frontmatter() {
+        let raw = "You are a codebase analyst.\nReport findings concisely.";
+        let agent = parse_agent(raw, "explore.md").unwrap();
+        assert_eq!(agent.name, "explore");
+        assert_eq!(agent.description, "You are a codebase analyst.");
+        assert!(agent.skills.is_empty());
+        assert_eq!(
+            agent.content,
+            "You are a codebase analyst.\nReport findings concisely."
+        );
+    }
+
+    #[test]
+    fn parse_agent_no_frontmatter_empty_file() {
+        let raw = "";
+        let agent = parse_agent(raw, "empty.md");
+        // Empty file with no frontmatter still parses (name from filename)
+        // but is functionally useless — content is empty.
+        let a = agent.unwrap();
+        assert_eq!(a.name, "empty");
+        assert!(a.content.is_empty());
     }
 
     #[test]

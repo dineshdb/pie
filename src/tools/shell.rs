@@ -32,7 +32,7 @@ pub fn shell_tool(sandbox_settings: PathBuf) -> Tool {
                     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
                     let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
                     let exit_code = out.status.code().unwrap_or(-1);
-                    tracing::debug!(exit_code, stdout_len = stdout.len(), "shell_tool done");
+                    tracing::debug!(exit_code, stdout_len = stdout.len(), out = %stdout, "shell:");
                     json!({
                         "cmd": cmd,
                         "exitCode": exit_code,

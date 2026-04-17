@@ -156,7 +156,7 @@ pub fn is_srt_available() -> bool {
 
 /// Build a sandboxed command using `srt`.
 pub fn build_command(cmd: &str, settings_path: &PathBuf) -> Command {
-    tracing::debug!(settings = %settings_path.display(), cmd, "sandbox:");
+    tracing::debug!(settings = %settings_path.display(), %cmd, "sandbox:");
     let mut c = Command::new("srt");
     c.arg("--settings")
         .arg(settings_path)
