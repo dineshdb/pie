@@ -67,6 +67,10 @@ struct Cli {
     #[arg(long)]
     json: bool,
 
+    /// Output response in Markdown format
+    #[arg(long)]
+    md: bool,
+
     /// Model name (e.g. llama3, gpt-4o, claude-3.5-sonnet)
     #[arg(short, long)]
     model: Option<String>,
@@ -144,50 +148,52 @@ async fn main() -> anyhow::Result<()> {
 
     let piped_stdin = read_piped_stdin();
 
-    // No query args and no skill -> interactive mode (or use piped stdin as query)
     let format = if cli.json {
         OutputFormat::Json
-    } else {
+    } else if cli.md {
         OutputFormat::Markdown
+    } else {
+        OutputFormat::Default
     };
 
-    if cli.query.is_empty() && cli.skill.is_none() {
-        if let Some(stdin_content) = piped_stdin {
-            let mut session = resolve_session(pool, cli.r#continue)?;
-            return handler::handle_query(
-                &mut model,
-                &stdin_content,
-                &mut session,
-                format,
-                sandbox_settings,
-            )
-            .await;
+    // --md or --json → single-shot mode (no session persistence)
+    // Otherwise → interactive mode (session-backed)
+    if format.is_explicit() {
+        let cli_query = cli.query.join(" ");
+        let query = if cli_query.is_empty() {
+            piped_stdin.as_deref().unwrap_or_default().to_string()
+        } else {
+            cli_query
+        };
+
+        if cli.skill.is_some() && query.is_empty() {
+            anyhow::bail!("Usage: pie -s <skill> '<query>'");
         }
-        let session = resolve_session(pool, cli.r#continue)?;
-        return ui::interactive::start_interactive_mode(&mut model, session, sandbox_settings)
-            .await;
+
+        let full_query = match (&piped_stdin, query.is_empty()) {
+            (Some(stdin), false) => format!("## Stdin\n```\n{stdin}\n```\n\n{query}"),
+            (Some(stdin), true) => stdin.clone(),
+            (_, false) => query,
+            (_, true) => anyhow::bail!(
+                "No query provided. Use `pie` for interactive mode or pass a query with --md or --json."
+            ),
+        };
+
+        let mem_pool = Arc::new(db::create_pool(false)?);
+        let mut session = Session::create(mem_pool)?;
+        return handler::handle_query(
+            &mut model,
+            &full_query,
+            &mut session,
+            format,
+            sandbox_settings,
+        )
+        .await;
     }
 
-    let query = cli.query.join(" ");
-    if cli.skill.is_some() && query.is_empty() && piped_stdin.is_none() {
-        anyhow::bail!("Usage: pie -s <skill> '<query>'");
-    }
-
-    let full_query = match piped_stdin {
-        Some(stdin) if !query.is_empty() => format!("## Stdin\n```\n{stdin}\n```\n\n{query}"),
-        Some(stdin) => stdin,
-        None => query,
-    };
-
-    let mut session = resolve_session(pool, cli.r#continue)?;
-    handler::handle_query(
-        &mut model,
-        &full_query,
-        &mut session,
-        format,
-        sandbox_settings,
-    )
-    .await
+    // Interactive mode: session-based REPL with persistence
+    let session = resolve_session(pool, cli.r#continue)?;
+    ui::interactive::start_interactive_mode(&mut model, session, sandbox_settings).await
 }
 
 /// Read piped stdin. Returns None if stdin is a terminal or empty.

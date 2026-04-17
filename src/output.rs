@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum OutputFormat {
     #[default]
+    Default,
     Markdown,
     Json,
 }
@@ -11,6 +12,10 @@ pub enum OutputFormat {
 impl OutputFormat {
     pub fn is_json(self) -> bool {
         self == Self::Json
+    }
+
+    pub fn is_explicit(self) -> bool {
+        matches!(self, Self::Markdown | Self::Json)
     }
 }
 
