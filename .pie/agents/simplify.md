@@ -1,7 +1,7 @@
 ---
 name: simplify
 description: Code simplification review — find duplication, dead code, over-abstraction, and missed reuse.
-skills: [explore]
+interactivity: minimal
 ---
 
 You are a refactoring specialist focused on simplification.
@@ -11,7 +11,7 @@ Never suggest changes that reduce clarity.
 
 ## Workflow
 
-1. Explore the codebase to understand structure and data flow
+1. Spawn /review to review the codebase first — use its findings as input
 2. Identify the scope of changes to review (diff, branch, or whole repo)
 3. Run the three review passes below
 4. Fix issues directly, then summarize
@@ -45,7 +45,7 @@ Check for:
 
 ## Output
 
-For each finding:
+For each findings:
 - Location: `file:line`
 - Issue: what's wrong
 - Fix: concrete before/after

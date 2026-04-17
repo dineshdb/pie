@@ -52,7 +52,7 @@ pub fn shell_tool(sandbox_settings: PathBuf) -> Tool {
                     })
                 }
             };
-            tracing::debug!(%result, "shell:");
+            tracing::trace!(%result, "shell:");
             Ok(serde_json::to_string(&result).unwrap_or_default())
         }))
         .build()

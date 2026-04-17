@@ -1,4 +1,5 @@
 use include_dir::{Dir, include_dir};
+use serde::Deserialize;
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
@@ -8,9 +9,16 @@ pub struct Skill {
     pub name: String,
     pub description: String,
     pub content: String,
-    /// Explicit dependencies declared via `needs` in frontmatter.
-    /// These are auto-loaded alongside this skill.
     pub needs: Vec<String>,
+}
+
+/// Serde-deserializable frontmatter for skill files.
+#[derive(Debug, Deserialize)]
+struct SkillFrontmatter {
+    name: String,
+    description: String,
+    #[serde(default)]
+    needs: Vec<String>,
 }
 
 fn skills_root() -> PathBuf {
@@ -26,32 +34,14 @@ fn embedded_skills_dir() -> Option<&'static Dir<'static>> {
 
 /// Parse a raw markdown string with `---` frontmatter into a Skill.
 fn parse_skill(raw: &str) -> Option<Skill> {
-    let (meta, content) = parse_frontmatter(raw);
-    let name = meta.get("name")?.trim().to_string();
-    let description = meta.get("description")?.trim().to_string();
-    let needs = parse_list_field(meta.get("needs").map(|s| s.as_str()));
+    let (yaml, content) = split_frontmatter(raw);
+    let meta: SkillFrontmatter = serde_yml::from_str(&yaml).ok()?;
     Some(Skill {
-        name,
-        description,
+        name: meta.name.trim().to_string(),
+        description: meta.description.trim().to_string(),
         content,
-        needs,
+        needs: meta.needs,
     })
-}
-
-/// Parse a frontmatter list field like `[a, b, c]` into a Vec of strings.
-pub fn parse_list_field(value: Option<&str>) -> Vec<String> {
-    let Some(value) = value else {
-        return Vec::new();
-    };
-    let trimmed = value.trim().trim_start_matches('[').trim_end_matches(']');
-    if trimmed.is_empty() {
-        return Vec::new();
-    }
-    trimmed
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
 }
 
 /// List all skills: embedded + filesystem. Filesystem skills override embedded ones with the same name.
@@ -142,62 +132,30 @@ pub fn skill_exists(name: &str) -> bool {
         || embedded_skills_dir().is_some_and(|dir| dir.get_dir(name).is_some())
 }
 
-/// Split raw markdown into (frontmatter key-value map, body content).
-pub fn parse_frontmatter(raw: &str) -> (std::collections::HashMap<&str, String>, String) {
-    let mut meta = std::collections::HashMap::new();
+/// Split raw markdown into (frontmatter YAML string, body content).
+/// Returns ("", trimmed_body) when no frontmatter delimiters are found.
+pub fn split_frontmatter(raw: &str) -> (String, String) {
     let lines: Vec<&str> = raw.lines().collect();
-
     let mut i = 0;
     if i < lines.len() && lines[i].trim() == "---" {
         i += 1;
+        let start = i;
         while i < lines.len() && lines[i].trim() != "---" {
-            if let Some((key, value)) = lines[i].split_once(':') {
-                meta.insert(key.trim(), value.trim().to_string());
-            }
             i += 1;
         }
+        let yaml = lines[start..i].join("\n");
         if i < lines.len() {
             i += 1; // skip closing ---
         }
+        let body = lines[i..].join("\n").trim().to_string();
+        return (yaml, body);
     }
-
-    let body = lines[i..].join("\n").trim().to_string();
-    (meta, body)
+    (String::new(), raw.trim().to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_list_field_handles_bracketed_list() {
-        let result = parse_list_field(Some("[a, b, c]"));
-        assert_eq!(result, vec!["a", "b", "c"]);
-    }
-
-    #[test]
-    fn parse_list_field_handles_single_item() {
-        let result = parse_list_field(Some("[filesystem]"));
-        assert_eq!(result, vec!["filesystem"]);
-    }
-
-    #[test]
-    fn parse_list_field_returns_empty_for_none() {
-        let result = parse_list_field(None);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn parse_list_field_returns_empty_for_empty_brackets() {
-        let result = parse_list_field(Some("[]"));
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn parse_list_field_trims_whitespace() {
-        let result = parse_list_field(Some("[ a , b , c ]"));
-        assert_eq!(result, vec!["a", "b", "c"]);
-    }
 
     #[test]
     fn skill_dir_returns_none_for_unknown() {
@@ -218,5 +176,20 @@ mod tests {
         let raw = "---\nname: bash\ndescription: run commands\n---\nContent";
         let skill = parse_skill(raw).unwrap();
         assert!(skill.needs.is_empty());
+    }
+
+    #[test]
+    fn split_frontmatter_no_frontmatter() {
+        let (yaml, body) = split_frontmatter("Just body text");
+        assert!(yaml.is_empty());
+        assert_eq!(body, "Just body text");
+    }
+
+    #[test]
+    fn split_frontmatter_with_frontmatter() {
+        let raw = "---\nname: foo\n---\nBody content";
+        let (yaml, body) = split_frontmatter(raw);
+        assert_eq!(yaml, "name: foo");
+        assert_eq!(body, "Body content");
     }
 }

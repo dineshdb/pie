@@ -5,7 +5,7 @@ use crate::utils::{find_upward_in_repo, load_file};
 use minijinja::Environment;
 use std::collections::HashSet;
 
-const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("./prompt.md");
+const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../.pie/SYSTEM.md");
 
 /// Render a MiniJinja template with context, falling back to raw template on error.
 fn render_template(template_name: &str, template: &str, ctx: minijinja::Value) -> String {
@@ -61,6 +61,7 @@ pub fn system_prompt_with_loaded(
             pwd,
             repo_root,
             json_output,
+            interactivity => "none",
         },
     )
 }
@@ -78,6 +79,10 @@ pub fn subagent_prompt(
             .find(|a| a.name == name)
             .map(|a| a.content.as_str())
     });
+    let interactivity = agent_name
+        .and_then(|name| agents.iter().find(|a| a.name == name))
+        .map(|a| a.interactivity.as_ref())
+        .unwrap_or("none");
     let (date, pwd) = context_vars();
     render_template(
         "system_prompt",
@@ -94,6 +99,7 @@ pub fn subagent_prompt(
             pwd,
             repo_root,
             json_output => false,
+            interactivity,
         },
     )
 }
@@ -148,22 +154,27 @@ pub fn resolve_mentioned<'a>(sources: &[&str], skills: &'a [Skill]) -> Vec<&'a S
 }
 
 /// Resolve all skills that should be pre-loaded: directly mentioned skills
-/// plus skills auto-loaded from mentioned agents (with needs deps).
+/// plus skills mentioned inside mentioned agents' content.
 pub fn resolve_preloaded_skills<'a>(
     skills: &'a [Skill],
     agents: &[Agent],
     scan_sources: &[&str],
 ) -> Vec<&'a Skill> {
     let mentioned_agents = resolve_mentioned_agents(scan_sources, agents);
-    let mut skill_names: Vec<String> = mentioned_agents
+
+    // Scan mentioned agents' content for skill references (/skill-name)
+    let agent_contents: Vec<&str> = mentioned_agents
         .iter()
-        .flat_map(|a| a.skills.clone())
+        .map(|a| a.content.as_str())
         .collect();
+    let agent_skills = resolve_mentioned(&agent_contents, skills);
 
     let mentioned_skills = resolve_mentioned(scan_sources, skills);
-    for skill in &mentioned_skills {
-        skill_names.push(skill.name.clone());
-    }
+    let skill_names: Vec<String> = mentioned_skills
+        .iter()
+        .chain(agent_skills.iter())
+        .map(|s| s.name.clone())
+        .collect();
 
     resolve_with_needs(&skill_names, skills)
 }
@@ -172,7 +183,7 @@ pub fn resolve_preloaded_skills<'a>(
 
 #[cfg(test)]
 mod test_helpers {
-    use crate::agent::Agent;
+    use crate::agent::{Agent, Interactivity};
     use crate::skill::Skill;
 
     pub fn skill(name: &str, desc: &str, content: &str) -> Skill {
@@ -193,11 +204,11 @@ mod test_helpers {
         }
     }
 
-    pub fn agent(name: &str, desc: &str, skills: Vec<&str>, content: &str) -> Agent {
+    pub fn agent(name: &str, desc: &str, content: &str) -> Agent {
         Agent {
             name: name.to_string(),
             description: desc.to_string(),
-            skills: skills.into_iter().map(|s| s.to_string()).collect(),
+            interactivity: Interactivity::None,
             model: None,
             temperature: None,
             content: content.to_string(),
@@ -228,6 +239,7 @@ mod test_helpers {
                 pwd => "/test/project",
                 repo_root => repo_root.map(|s| s.to_string()),
                 json_output,
+                interactivity => "none",
             },
         )
     }
@@ -251,6 +263,7 @@ mod test_helpers {
                 pwd => "/test/project",
                 repo_root => repo_root.map(|s| s.to_string()),
                 json_output => false,
+                interactivity => "none",
             },
         )
     }
@@ -274,6 +287,7 @@ mod test_helpers {
                 pwd => "/test/project",
                 repo_root => Option::<String>::None,
                 json_output => false,
+                interactivity => "none",
             },
         )
     }
@@ -287,14 +301,15 @@ mod tests {
     use super::test_helpers::*;
 
     #[test]
-    fn main_agent_has_all_tools() {
+    fn main_agent_instructs_tool_use() {
         let result = render_main(&[], None, false);
         assert!(
-            result.contains("shell_tool")
-                && result.contains("load_skills")
-                && result.contains("load_references")
-                && result.contains("subagent"),
-            "main agent must have shell_tool, load_skills, load_references, and subagent"
+            result.contains("shell_tool"),
+            "main agent must reference shell_tool"
+        );
+        assert!(
+            result.contains("load_skills"),
+            "main agent prompt must reference load_skills in skills section"
         );
     }
 
@@ -578,7 +593,7 @@ mod tests {
     // ── Agent + skill integration ──────────────────────────────────
 
     #[test]
-    fn resolve_preloaded_skills_auto_loads_from_agents() {
+    fn resolve_preloaded_skills_auto_loads_from_agent_content() {
         let skills = vec![
             skill("explore", "explore codebase", "explore content"),
             skill("review", "code review", "review content"),
@@ -586,18 +601,17 @@ mod tests {
         let agents = vec![agent(
             "reviewer",
             "code reviewer",
-            vec!["explore", "review"],
-            "Be thorough.",
+            "Use /explore and /review to check this code.",
         )];
         let resolved = super::resolve_preloaded_skills(&skills, &agents, &["/reviewer check this"]);
         let names: Vec<&str> = resolved.iter().map(|s| s.name.as_str()).collect();
         assert!(
             names.contains(&"explore"),
-            "agent skill must auto-load via resolve_preloaded_skills"
+            "skill mentioned in agent content must auto-load"
         );
         assert!(
             names.contains(&"review"),
-            "agent skill must auto-load via resolve_preloaded_skills"
+            "skill mentioned in agent content must auto-load"
         );
     }
 
@@ -616,7 +630,7 @@ mod tests {
     #[test]
     fn no_agents_no_mentions_returns_empty() {
         let skills = vec![skill("review", "code review", "content")];
-        let agents = vec![agent("reviewer", "reviewer", vec![], "content")];
+        let agents = vec![agent("reviewer", "reviewer", "content")];
         let resolved = super::resolve_preloaded_skills(&skills, &agents, &["nothing relevant"]);
         assert!(resolved.is_empty(), "no mentions should resolve to empty");
     }

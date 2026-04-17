@@ -58,6 +58,10 @@ struct Cli {
     /// Continue the last session for this directory
     #[arg(short, long)]
     r#continue: bool,
+
+    /// Use persistent file-backed database instead of in-memory
+    #[arg(long)]
+    persistent: bool,
 }
 
 fn resolve_session(pool: Arc<DbPool>, resume: bool) -> anyhow::Result<Session> {
@@ -104,7 +108,8 @@ async fn main() -> anyhow::Result<()> {
         cli.api_key.as_deref(),
     )?;
 
-    let pool = Arc::new(db::create_pool()?);
+    let persistent = cli.persistent || std::env::var("PERSISTENT").is_ok();
+    let pool = Arc::new(db::create_pool(persistent)?);
 
     let piped_stdin = read_piped_stdin();
 

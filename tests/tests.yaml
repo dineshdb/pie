@@ -24,7 +24,7 @@ tests:
     contains:
       - Darwin
       - arm64
-    timeout: 30
+    timeout: 60
     skip: online
 
   # ── End-to-end: web search ───────────────────────────────────
@@ -49,11 +49,17 @@ tests:
     timeout: 30
     skip: online
 
-  # ── End-to-end: repo summarization (main agent reads files) ──
-  - name: repo summarization returns project overview
-    input: "summarize this repo"
+  - name: /explore this repo
+    input: "/explore this project"
     contains:
       - Rust
       - agent
+    timeout: 120
+    skip: online
+
+  - name: /review agent performs code review
+    input: "/review this repo for bugs"
+    contains:
+      - "ummary"
     timeout: 120
     skip: online

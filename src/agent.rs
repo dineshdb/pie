@@ -1,7 +1,9 @@
-use crate::skill::{parse_frontmatter, parse_list_field};
+use crate::skill::split_frontmatter;
 use include_dir::{Dir, include_dir};
+use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::PathBuf;
+use strum::{AsRefStr, EnumString};
 
 static EMBEDDED_PIE_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/.pie");
 
@@ -10,16 +12,51 @@ pub fn embedded_agents_dir() -> Option<&'static Dir<'static>> {
     EMBEDDED_PIE_DIR.get_dir("agents")
 }
 
+// ── Interactivity ─────────────────────────────────────────────────
+
+/// Controls whether and how an agent may ask the user questions.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    AsRefStr,
+    EnumString,
+)]
+#[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
+pub enum Interactivity {
+    #[default]
+    None,
+    Minimal,
+    Interactive,
+}
+
 // ── Agent Definition ──────────────────────────────────────────────
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Agent {
     pub name: String,
     pub description: String,
-    pub skills: Vec<String>,
+    pub interactivity: Interactivity,
     pub model: Option<String>,
     pub temperature: Option<f32>,
     pub content: String,
+}
+
+/// Serde-deserializable frontmatter for agent files.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct AgentFrontmatter {
+    name: Option<String>,
+    description: Option<String>,
+    interactivity: Interactivity,
+    model: Option<String>,
+    temperature: Option<f32>,
 }
 
 fn agents_root_global() -> PathBuf {
@@ -37,21 +74,23 @@ fn agents_root_local() -> Option<PathBuf> {
 ///   - name from the filename (stem, without extension)
 ///   - description from the first non-empty line of the body
 fn parse_agent(raw: &str, filename: &str) -> Option<Agent> {
-    let (meta, content) = parse_frontmatter(raw);
-    let name = meta
-        .get("name")
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| {
-            std::path::Path::new(filename)
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default()
-        });
+    let (yaml, content) = split_frontmatter(raw);
+    let meta: AgentFrontmatter = if yaml.is_empty() {
+        AgentFrontmatter::default()
+    } else {
+        serde_yml::from_str(&yaml).unwrap_or_default()
+    };
+    let name = meta.name.map(|s| s.trim().to_string()).unwrap_or_else(|| {
+        std::path::Path::new(filename)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default()
+    });
     if name.is_empty() {
         return None;
     }
     let description = meta
-        .get("description")
+        .description
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| {
             content
@@ -60,17 +99,12 @@ fn parse_agent(raw: &str, filename: &str) -> Option<Agent> {
                 .map(|l| l.trim().to_string())
                 .unwrap_or_default()
         });
-    let skills = parse_list_field(meta.get("skills").map(|s| s.as_str()));
-    let model = meta.get("model").map(|s| s.trim().to_string());
-    let temperature = meta
-        .get("temperature")
-        .and_then(|s| s.trim().parse::<f32>().ok());
     Some(Agent {
         name,
         description,
-        skills,
-        model,
-        temperature,
+        interactivity: meta.interactivity,
+        model: meta.model,
+        temperature: meta.temperature,
         content,
     })
 }
@@ -158,11 +192,11 @@ mod tests {
 
     #[test]
     fn parse_agent_full() {
-        let raw = "---\nname: reviewer\ndescription: code reviewer\nskills: [explore, review]\nmodel: llama3\ntemperature: 0.3\n---\nBe direct and thorough.";
+        let raw = "---\nname: reviewer\ndescription: code reviewer\ninteractivity: minimal\nmodel: llama3\ntemperature: 0.3\n---\nBe direct and thorough.";
         let agent = parse_agent(raw, "reviewer.md").unwrap();
         assert_eq!(agent.name, "reviewer");
         assert_eq!(agent.description, "code reviewer");
-        assert_eq!(agent.skills, vec!["explore", "review"]);
+        assert_eq!(agent.interactivity, Interactivity::Minimal);
         assert_eq!(agent.model.as_deref(), Some("llama3"));
         assert!((agent.temperature.unwrap() - 0.3).abs() < f32::EPSILON);
         assert_eq!(agent.content, "Be direct and thorough.");
@@ -173,9 +207,22 @@ mod tests {
         let raw = "---\nname: helper\ndescription: helps\n---\nContent";
         let agent = parse_agent(raw, "helper.md").unwrap();
         assert_eq!(agent.name, "helper");
-        assert!(agent.skills.is_empty());
+        assert_eq!(agent.interactivity, Interactivity::None);
         assert!(agent.model.is_none());
         assert!(agent.temperature.is_none());
+    }
+
+    #[test]
+    fn parse_agent_interactivity_values() {
+        for (val, expected) in [
+            ("none", Interactivity::None),
+            ("minimal", Interactivity::Minimal),
+            ("interactive", Interactivity::Interactive),
+        ] {
+            let raw = format!("---\nname: t\ninteractivity: {val}\n---\ncontent");
+            let agent = parse_agent(&raw, "t.md").unwrap();
+            assert_eq!(agent.interactivity, expected, "failed for {val}");
+        }
     }
 
     #[test]
@@ -184,7 +231,7 @@ mod tests {
         let agent = parse_agent(raw, "explore.md").unwrap();
         assert_eq!(agent.name, "explore");
         assert_eq!(agent.description, "You are a codebase analyst.");
-        assert!(agent.skills.is_empty());
+        assert_eq!(agent.interactivity, Interactivity::None);
         assert_eq!(
             agent.content,
             "You are a codebase analyst.\nReport findings concisely."
@@ -195,8 +242,6 @@ mod tests {
     fn parse_agent_no_frontmatter_empty_file() {
         let raw = "";
         let agent = parse_agent(raw, "empty.md");
-        // Empty file with no frontmatter still parses (name from filename)
-        // but is functionally useless — content is empty.
         let a = agent.unwrap();
         assert_eq!(a.name, "empty");
         assert!(a.content.is_empty());
@@ -208,7 +253,7 @@ mod tests {
             Agent {
                 name: "reviewer".into(),
                 description: "reviews code".into(),
-                skills: vec!["explore".into(), "review".into()],
+                interactivity: Interactivity::Minimal,
                 model: None,
                 temperature: None,
                 content: "Be thorough.".into(),
@@ -216,7 +261,7 @@ mod tests {
             Agent {
                 name: "planner".into(),
                 description: "plans tasks".into(),
-                skills: vec![],
+                interactivity: Interactivity::Interactive,
                 model: None,
                 temperature: None,
                 content: "Think step by step.".into(),
@@ -232,7 +277,7 @@ mod tests {
         let agents = vec![Agent {
             name: "reviewer".into(),
             description: "reviews".into(),
-            skills: vec![],
+            interactivity: Interactivity::None,
             model: None,
             temperature: None,
             content: String::new(),

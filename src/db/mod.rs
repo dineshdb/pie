@@ -10,13 +10,30 @@ mod embedded {
     embed_migrations!("./src/db/migrations");
 }
 
-pub fn create_pool() -> Result<DbPool> {
+/// Run migrations on a connection.
+fn migrate(conn: &mut rusqlite::Connection) -> Result<(), refinery::Error> {
+    embedded::migrations::runner().run(conn)?;
+    Ok(())
+}
+
+/// Create an in-memory database (default).
+pub fn create_memory_pool() -> Result<DbPool> {
+    let manager = SqliteConnectionManager::memory().with_init(|conn| {
+        migrate(conn).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        Ok(())
+    });
+    let pool = Pool::builder().max_size(4).build(manager)?;
+    Ok(pool)
+}
+
+/// Create a persistent file-backed database.
+pub fn create_persistent_pool() -> Result<DbPool> {
     let home = pie_home();
     let db_path = home.join("pie.db");
     std::fs::create_dir_all(&home)?;
 
     let mut conn = rusqlite::Connection::open(&db_path)?;
-    embedded::migrations::runner().run(&mut conn)?;
+    migrate(&mut conn).map_err(|e| anyhow::anyhow!("migration failed: {e}"))?;
     drop(conn);
 
     let manager = SqliteConnectionManager::file(&db_path);
@@ -24,13 +41,16 @@ pub fn create_pool() -> Result<DbPool> {
     Ok(pool)
 }
 
+/// Create database pool. Uses in-memory unless `persistent` is true.
+pub fn create_pool(persistent: bool) -> Result<DbPool> {
+    if persistent {
+        create_persistent_pool()
+    } else {
+        create_memory_pool()
+    }
+}
+
 #[cfg(test)]
 pub fn create_test_pool() -> DbPool {
-    let manager = SqliteConnectionManager::memory().with_init(|conn| {
-        embedded::migrations::runner()
-            .run(conn)
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-        Ok(())
-    });
-    Pool::builder().max_size(1).build(manager).unwrap()
+    create_memory_pool().unwrap()
 }

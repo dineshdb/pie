@@ -89,9 +89,25 @@ fn extract_output_text(
     text: &str,
     tool_results: &Option<Vec<aisdk::core::ToolResultInfo>>,
 ) -> String {
+    // If the LLM produced text, prefer it — unless the last tool call was
+    // a subagent, in which case the subagent's structured output is the answer.
     if !text.is_empty() {
+        let subagent_result = tool_results
+            .as_ref()
+            .and_then(|results| {
+                results
+                    .iter()
+                    .rfind(|r| r.tool.name == "subagent")
+                    .and_then(|r| r.output.as_ref().ok())
+                    .and_then(|v| v.as_str())
+            })
+            .unwrap_or("");
+        if !subagent_result.is_empty() {
+            return subagent_result.to_string();
+        }
         return text.to_string();
     }
+    // No text — fall back to last tool result
     if let Some(results) = tool_results {
         results
             .iter()

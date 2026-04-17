@@ -51,6 +51,8 @@ impl rusqlite::types::FromSql for Role {
     }
 }
 
+// ── Session ────────────────────────────────────────────────────────
+
 pub struct Session {
     pub id: Uuid,
     pool: Arc<DbPool>,
