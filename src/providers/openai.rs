@@ -6,7 +6,8 @@ use aisdk::core::capabilities::{
     VideoInputSupport, VideoOutputSupport,
 };
 use aisdk::core::language_model::{
-    LanguageModel, LanguageModelOptions, LanguageModelResponse, ProviderStream,
+    LanguageModel, LanguageModelOptions, LanguageModelResponse, LanguageModelResponseContentType,
+    ProviderStream,
 };
 use aisdk::providers::OpenAICompatible;
 use anyhow::{Context, Result};
@@ -47,6 +48,19 @@ impl LanguageModel for Model {
         options: LanguageModelOptions,
     ) -> aisdk::error::Result<LanguageModelResponse> {
         let response = self.inner.generate_text(options).await?;
+        for content in &response.contents {
+            match content {
+                LanguageModelResponseContentType::Text(t) => {
+                    tracing::debug!(text = %t, "raw model response text");
+                }
+                LanguageModelResponseContentType::ToolCall(info) => {
+                    tracing::debug!(tool = %info.tool.name, input = ?info.input, "raw model tool call");
+                }
+                other => {
+                    tracing::debug!(?other, "raw model response other");
+                }
+            }
+        }
         Ok(post_process_response(response))
     }
 

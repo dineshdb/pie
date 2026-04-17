@@ -1,24 +1,13 @@
 use aisdk::core::language_model::{LanguageModelResponse, LanguageModelResponseContentType};
 use aisdk::core::tools::ToolCallInfo;
 
-const KNOWN_TOOLS: &[&str] = &["subagent", "shell_tool"];
-
-/// If `name` is a known tool (subagent, shell_tool), return it unchanged.
-/// Otherwise remap it to a subagent call with the original name as skill_name.
+/// Pass through tool calls as-is. If the tool name doesn't match a registered
+/// tool, `ToolList::execute` returns "Tool not found" and the model self-corrects
+/// to use `shell_tool` directly (since skill content is already in the system prompt).
 fn normalize_tool_call(name: &str, input: serde_json::Value) -> LanguageModelResponseContentType {
-    if KNOWN_TOOLS.contains(&name) {
-        let mut info = ToolCallInfo::new(name);
-        info.input(input);
-        LanguageModelResponseContentType::ToolCall(info)
-    } else {
-        let query = input.get("query").and_then(|v| v.as_str()).unwrap_or("");
-        let mut info = ToolCallInfo::new("subagent");
-        info.input(serde_json::json!({
-            "skill_name": name,
-            "query": query,
-        }));
-        LanguageModelResponseContentType::ToolCall(info)
-    }
+    let mut info = ToolCallInfo::new(name);
+    info.input(input);
+    LanguageModelResponseContentType::ToolCall(info)
 }
 
 /// Post-process a language model response to extract inline tool calls.
@@ -46,13 +35,8 @@ pub fn post_process_response(mut response: LanguageModelResponse) -> LanguageMod
                 }
                 new_contents.push(content);
             }
-            LanguageModelResponseContentType::ToolCall(ref info) => {
-                let name = info.tool.name.as_str();
-                if KNOWN_TOOLS.contains(&name) {
-                    new_contents.push(content);
-                } else {
-                    new_contents.push(normalize_tool_call(name, info.input.clone()));
-                }
+            LanguageModelResponseContentType::ToolCall(_) => {
+                new_contents.push(content);
             }
             other => new_contents.push(other),
         }
@@ -205,13 +189,12 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_remaps_skill_name_to_subagent() {
+    fn test_extract_passes_through_skill_name() {
         let text = r#"<|tool_call>call:web-search{query:<|"|>current prime minister of Nepal<|"|>}<tool_call|><eos>"#;
         let calls = extract_inline_tool_calls(text).unwrap();
 
         if let LanguageModelResponseContentType::ToolCall(info) = &calls[0] {
-            assert_eq!(info.tool.name, "subagent");
-            assert_eq!(info.input["skill_name"], "web-search");
+            assert_eq!(info.tool.name, "web-search");
             assert_eq!(info.input["query"], "current prime minister of Nepal");
         } else {
             panic!("expected ToolCall");
@@ -260,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn test_post_process_remaps_structured_skill_tool_call() {
+    fn test_post_process_passes_through_structured_tool_call() {
         let mut info = ToolCallInfo::new("repo");
         info.input(serde_json::json!({"query": "context"}));
         let response = LanguageModelResponse {
@@ -269,10 +252,9 @@ mod tests {
         };
         let processed = post_process_response(response);
         assert_eq!(processed.contents.len(), 1);
-        if let LanguageModelResponseContentType::ToolCall(remapped) = &processed.contents[0] {
-            assert_eq!(remapped.tool.name, "subagent");
-            assert_eq!(remapped.input["skill_name"], "repo");
-            assert_eq!(remapped.input["query"], "context");
+        if let LanguageModelResponseContentType::ToolCall(passed) = &processed.contents[0] {
+            assert_eq!(passed.tool.name, "repo");
+            assert_eq!(passed.input["query"], "context");
         } else {
             panic!("expected ToolCall");
         }
