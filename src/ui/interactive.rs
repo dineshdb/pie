@@ -12,7 +12,6 @@ use reedline::{
     Signal,
 };
 use std::path::PathBuf;
-use tracing::info;
 
 const HELP_TEXT: &str = r"
 pie - Interactive Mode
@@ -130,7 +129,7 @@ pub async fn start_interactive_mode(
     mut session: Session,
     sandbox_settings: PathBuf,
 ) -> anyhow::Result<()> {
-    info!("Welcome to pie! Type '/help' for usage or '/exit' to quit.\n");
+    println!("Welcome to pie! Type '/help' for usage or '/exit' to quit.\n");
 
     let history_dir = pie_home().join("history");
     std::fs::create_dir_all(&history_dir)?;
@@ -182,11 +181,11 @@ pub async fn start_interactive_mode(
 
             match input {
                 "/exit" | "/quit" | "/q" => {
-                    info!("Goodbye!");
+                    println!("Goodbye!");
                     return Ok(());
                 }
                 "/help" | "/h" => {
-                    info!("{HELP_TEXT}");
+                    println!("{HELP_TEXT}");
                 }
                 "/list-skills" | "/ls" => {
                     handle_list_skills();
