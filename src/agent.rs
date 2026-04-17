@@ -80,25 +80,28 @@ fn parse_agent(raw: &str, filename: &str) -> Option<Agent> {
     } else {
         serde_yml::from_str(&yaml).unwrap_or_default()
     };
-    let name = meta.name.map(|s| s.trim().to_string()).unwrap_or_else(|| {
-        std::path::Path::new(filename)
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default()
-    });
+    let name = meta.name.map_or_else(
+        || {
+            std::path::Path::new(filename)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default()
+        },
+        |s| s.trim().to_string(),
+    );
     if name.is_empty() {
         return None;
     }
-    let description = meta
-        .description
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| {
+    let description = meta.description.map_or_else(
+        || {
             content
                 .lines()
                 .find(|l| !l.trim().is_empty())
                 .map(|l| l.trim().to_string())
                 .unwrap_or_default()
-        });
+        },
+        |s| s.trim().to_string(),
+    );
     Some(Agent {
         name,
         description,
@@ -189,46 +192,56 @@ pub fn resolve_mentioned_agents<'a>(sources: &[&str], agents: &'a [Agent]) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Result;
 
     #[test]
-    fn parse_agent_full() {
+    fn parse_agent_full() -> Result<()> {
         let raw = "---\nname: reviewer\ndescription: code reviewer\ninteractivity: minimal\nmodel: llama3\ntemperature: 0.3\n---\nBe direct and thorough.";
-        let agent = parse_agent(raw, "reviewer.md").unwrap();
+        let agent =
+            parse_agent(raw, "reviewer.md").ok_or_else(|| anyhow::anyhow!("parse failed"))?;
         assert_eq!(agent.name, "reviewer");
         assert_eq!(agent.description, "code reviewer");
         assert_eq!(agent.interactivity, Interactivity::Minimal);
         assert_eq!(agent.model.as_deref(), Some("llama3"));
-        assert!((agent.temperature.unwrap() - 0.3).abs() < f32::EPSILON);
+        let temp = agent
+            .temperature
+            .ok_or_else(|| anyhow::anyhow!("expected temperature"))?;
+        assert!((temp - 0.3).abs() < f32::EPSILON);
         assert_eq!(agent.content, "Be direct and thorough.");
+        Ok(())
     }
 
     #[test]
-    fn parse_agent_minimal() {
+    fn parse_agent_minimal() -> Result<()> {
         let raw = "---\nname: helper\ndescription: helps\n---\nContent";
-        let agent = parse_agent(raw, "helper.md").unwrap();
+        let agent = parse_agent(raw, "helper.md").ok_or_else(|| anyhow::anyhow!("parse failed"))?;
         assert_eq!(agent.name, "helper");
         assert_eq!(agent.interactivity, Interactivity::None);
         assert!(agent.model.is_none());
         assert!(agent.temperature.is_none());
+        Ok(())
     }
 
     #[test]
-    fn parse_agent_interactivity_values() {
+    fn parse_agent_interactivity_values() -> Result<()> {
         for (val, expected) in [
             ("none", Interactivity::None),
             ("minimal", Interactivity::Minimal),
             ("interactive", Interactivity::Interactive),
         ] {
             let raw = format!("---\nname: t\ninteractivity: {val}\n---\ncontent");
-            let agent = parse_agent(&raw, "t.md").unwrap();
+            let agent = parse_agent(&raw, "t.md")
+                .ok_or_else(|| anyhow::anyhow!("parse failed for {val}"))?;
             assert_eq!(agent.interactivity, expected, "failed for {val}");
         }
+        Ok(())
     }
 
     #[test]
-    fn parse_agent_no_frontmatter() {
+    fn parse_agent_no_frontmatter() -> Result<()> {
         let raw = "You are a codebase analyst.\nReport findings concisely.";
-        let agent = parse_agent(raw, "explore.md").unwrap();
+        let agent =
+            parse_agent(raw, "explore.md").ok_or_else(|| anyhow::anyhow!("parse failed"))?;
         assert_eq!(agent.name, "explore");
         assert_eq!(agent.description, "You are a codebase analyst.");
         assert_eq!(agent.interactivity, Interactivity::None);
@@ -236,19 +249,20 @@ mod tests {
             agent.content,
             "You are a codebase analyst.\nReport findings concisely."
         );
+        Ok(())
     }
 
     #[test]
-    fn parse_agent_no_frontmatter_empty_file() {
+    fn parse_agent_no_frontmatter_empty_file() -> Result<()> {
         let raw = "";
-        let agent = parse_agent(raw, "empty.md");
-        let a = agent.unwrap();
-        assert_eq!(a.name, "empty");
-        assert!(a.content.is_empty());
+        let agent = parse_agent(raw, "empty.md").ok_or_else(|| anyhow::anyhow!("parse failed"))?;
+        assert_eq!(agent.name, "empty");
+        assert!(agent.content.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn resolve_mentioned_agents_from_query() {
+    fn resolve_mentioned_agents_from_query() -> Result<()> {
         let agents = vec![
             Agent {
                 name: "reviewer".into(),
@@ -269,7 +283,14 @@ mod tests {
         ];
         let mentioned = resolve_mentioned_agents(&["/reviewer check this"], &agents);
         assert_eq!(mentioned.len(), 1);
-        assert_eq!(mentioned[0].name, "reviewer");
+        assert_eq!(
+            mentioned
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("expected match"))?
+                .name,
+            "reviewer"
+        );
+        Ok(())
     }
 
     #[test]

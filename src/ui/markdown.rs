@@ -54,6 +54,7 @@ impl MarkdownRenderer {
         self.last_render = Instant::now();
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     fn render_terminal(&mut self) {
         let stdout = io::stdout();
         let mut handle = stdout.lock();

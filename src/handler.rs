@@ -85,15 +85,11 @@ fn strip_control_tokens(text: &str) -> String {
 }
 
 /// Extract the output text from a response (handles both text and tool results).
-fn extract_output_text(
-    text: &str,
-    tool_results: &Option<Vec<aisdk::core::ToolResultInfo>>,
-) -> String {
+fn extract_output_text(text: &str, tool_results: Option<&[aisdk::core::ToolResultInfo]>) -> String {
     // If the LLM produced text, prefer it — unless the last tool call was
     // a subagent, in which case the subagent's structured output is the answer.
     if !text.is_empty() {
         let subagent_result = tool_results
-            .as_ref()
             .and_then(|results| {
                 results
                     .iter()
@@ -133,7 +129,7 @@ pub async fn handle_query(
 
     let response = req.generate_text().await.context("generate_text failed")?;
     let assistant_text = response.text().unwrap_or_default();
-    let output = extract_output_text(&assistant_text, &response.tool_results());
+    let output = extract_output_text(&assistant_text, response.tool_results().as_deref());
     let output = strip_control_tokens(&output);
 
     if !output.is_empty() {
@@ -188,7 +184,7 @@ pub async fn handle_query_streaming(
     let accumulated = renderer.finish();
 
     let tool_results = response.tool_results().await;
-    let output = extract_output_text(&accumulated, &tool_results);
+    let output = extract_output_text(&accumulated, tool_results.as_deref());
     let output = strip_control_tokens(&output);
 
     session.add_user(query)?;

@@ -51,6 +51,6 @@ pub fn create_pool(persistent: bool) -> Result<DbPool> {
 }
 
 #[cfg(test)]
-pub fn create_test_pool() -> DbPool {
-    create_memory_pool().unwrap()
+pub fn create_test_pool() -> Result<DbPool> {
+    create_memory_pool()
 }

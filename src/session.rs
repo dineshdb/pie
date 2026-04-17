@@ -170,110 +170,133 @@ mod tests {
     use super::*;
     use crate::db;
 
-    fn pool() -> Arc<DbPool> {
-        Arc::new(db::create_test_pool())
+    fn pool() -> anyhow::Result<Arc<DbPool>> {
+        Ok(Arc::new(db::create_test_pool()?))
     }
 
     #[test]
-    fn create_session() {
-        let pool = pool();
-        let session = Session::create(pool.clone()).unwrap();
+    fn create_session() -> anyhow::Result<()> {
+        let pool = pool()?;
+        let session = Session::create(pool.clone())?;
         assert!(session.history_entries().is_empty());
+        Ok(())
     }
 
     #[test]
-    fn load_existing_session() {
-        let pool = pool();
-        let session = Session::create(pool.clone()).unwrap();
-        let loaded = Session::load(pool, session.id).unwrap();
+    fn load_existing_session() -> anyhow::Result<()> {
+        let pool = pool()?;
+        let session = Session::create(pool.clone())?;
+        let loaded = Session::load(pool, session.id)?;
         assert!(loaded.history_entries().is_empty());
+        Ok(())
     }
 
     #[test]
-    fn load_nonexistent_session() {
-        let pool = pool();
+    fn load_nonexistent_session() -> anyhow::Result<()> {
+        let pool = pool()?;
         let result = Session::load(pool, Uuid::now_v7());
         assert!(result.is_err());
+        Ok(())
     }
 
     #[test]
-    fn find_latest_for_cwd_returns_most_recent() {
-        let pool = pool();
+    fn find_latest_for_cwd_returns_most_recent() -> anyhow::Result<()> {
+        let pool = pool()?;
         let cwd = "/test/path";
 
         // Insert sessions with explicit timestamps to guarantee ordering
-        let conn = pool.get().unwrap();
+        let conn = pool.get()?;
         let id1 = Uuid::now_v7().to_string();
         conn.execute(
             "INSERT INTO sessions (id, cwd, created_at, updated_at) VALUES (?, ?, 1000, 1000)",
             rusqlite::params![id1, cwd],
-        )
-        .unwrap();
+        )?;
 
         let id2 = Uuid::now_v7().to_string();
         conn.execute(
             "INSERT INTO sessions (id, cwd, created_at, updated_at) VALUES (?, ?, 2000, 2000)",
             rusqlite::params![id2, cwd],
-        )
-        .unwrap();
+        )?;
         drop(conn);
 
-        let found = Session::find_latest_for_cwd(pool, cwd).unwrap().unwrap();
-        assert_eq!(found.id, Uuid::parse_str(&id2).unwrap());
+        let found = Session::find_latest_for_cwd(pool, cwd)?
+            .ok_or_else(|| anyhow::anyhow!("no session found"))?;
+        assert_eq!(found.id, Uuid::parse_str(&id2)?);
+        Ok(())
     }
 
     #[test]
-    fn find_latest_for_cwd_returns_none_when_empty() {
-        let pool = pool();
-        let result = Session::find_latest_for_cwd(pool, "/nonexistent").unwrap();
+    fn find_latest_for_cwd_returns_none_when_empty() -> anyhow::Result<()> {
+        let pool = pool()?;
+        let result = Session::find_latest_for_cwd(pool, "/nonexistent")?;
         assert!(result.is_none());
+        Ok(())
     }
 
     #[test]
-    fn add_user_and_assistant() {
-        let pool = pool();
-        let mut session = Session::create(pool.clone()).unwrap();
-        session.add_user("hello").unwrap();
-        session.add_assistant("hi there").unwrap();
+    fn add_user_and_assistant() -> anyhow::Result<()> {
+        let pool = pool()?;
+        let mut session = Session::create(pool.clone())?;
+        session.add_user("hello")?;
+        session.add_assistant("hi there")?;
 
         let entries = session.history_entries();
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].role, Role::User);
-        assert_eq!(entries[0].content, "hello");
-        assert_eq!(entries[1].role, Role::Assistant);
-        assert_eq!(entries[1].content, "hi there");
+        let first = entries
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("no entry 0"))?;
+        assert_eq!(first.role, Role::User);
+        assert_eq!(first.content, "hello");
+        let second = entries
+            .get(1)
+            .ok_or_else(|| anyhow::anyhow!("no entry 1"))?;
+        assert_eq!(second.role, Role::Assistant);
+        assert_eq!(second.content, "hi there");
+        Ok(())
     }
 
     #[test]
-    fn history_persists_after_load() {
-        let pool = pool();
+    fn history_persists_after_load() -> anyhow::Result<()> {
+        let pool = pool()?;
         let id = {
-            let mut session = Session::create(pool.clone()).unwrap();
-            session.add_user("first").unwrap();
-            session.add_assistant("second").unwrap();
+            let mut session = Session::create(pool.clone())?;
+            session.add_user("first")?;
+            session.add_assistant("second")?;
             session.id
         };
 
-        let loaded = Session::load(pool, id).unwrap();
+        let loaded = Session::load(pool, id)?;
         let entries = loaded.history_entries();
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].content, "first");
-        assert_eq!(entries[1].content, "second");
+        let first = entries
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("no entry 0"))?;
+        assert_eq!(first.content, "first");
+        let second = entries
+            .get(1)
+            .ok_or_else(|| anyhow::anyhow!("no entry 1"))?;
+        assert_eq!(second.content, "second");
+        Ok(())
     }
 
     #[test]
-    fn cache_rebuilt_after_rebuild_cache() {
-        let pool = pool();
-        let mut session = Session::create(pool.clone()).unwrap();
-        session.add_user("msg").unwrap();
+    fn cache_rebuilt_after_rebuild_cache() -> anyhow::Result<()> {
+        let pool = pool()?;
+        let mut session = Session::create(pool.clone())?;
+        session.add_user("msg")?;
         assert_eq!(session.history_entries().len(), 1);
 
         // Manually clear cache and rebuild
         session.cache.clear();
         assert!(session.history_entries().is_empty());
 
-        session.rebuild_cache().unwrap();
+        session.rebuild_cache()?;
         assert_eq!(session.history_entries().len(), 1);
-        assert_eq!(session.history_entries()[0].content, "msg");
+        let first = session
+            .history_entries()
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("no entry 0"))?;
+        assert_eq!(first.content, "msg");
+        Ok(())
     }
 }

@@ -2,11 +2,13 @@ use crate::prompt;
 use crate::skill::{self, Skill};
 use aisdk::core::tools::{Tool, ToolExecute};
 use std::collections::HashSet;
+use std::fmt::Write;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 struct LoadSkillsInput {
-    /// List of skill names to load (e.g. ["filesystem", "developer"])
+    /// List of skill names to load (e.g. [`"filesystem"`, `"developer"`])
     skills: Vec<String>,
 }
 
@@ -14,6 +16,7 @@ struct LoadSkillsInput {
 ///
 /// When `loaded` is `Some`, already-loaded skills are skipped with a message
 /// and newly loaded ones are recorded.
+#[allow(clippy::unwrap_used)]
 pub fn load_skills_tool(skills: Vec<Skill>, loaded: Option<Arc<Mutex<HashSet<String>>>>) -> Tool {
     let skills = Arc::new(skills);
     Tool::builder()
@@ -29,7 +32,7 @@ pub fn load_skills_tool(skills: Vec<Skill>, loaded: Option<Arc<Mutex<HashSet<Str
                 .and_then(|v| v.as_array())
                 .map(|arr| {
                     arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .filter_map(|v| v.as_str().map(ToString::to_string))
                         .collect()
                 })
                 .unwrap_or_default();
@@ -47,20 +50,21 @@ pub fn load_skills_tool(skills: Vec<Skill>, loaded: Option<Arc<Mutex<HashSet<Str
             let mut output = String::new();
             for skill in &resolved {
                 if let Some(ref loaded) = loaded {
-                    let mut guard = loaded.lock().unwrap();
+                    let mut guard = loaded
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     if guard.contains(&skill.name) {
-                        output.push_str(&format!(
-                            "Skill '{}' is already loaded — skipping.\n",
+                        writeln!(
+                            output,
+                            "Skill '{}' is already loaded — skipping.",
                             skill.name
-                        ));
+                        )
+                        .ok();
                         continue;
                     }
                     guard.insert(skill.name.clone());
                 }
-                output.push_str(&format!(
-                    "## Skill: {}\n{}\n---\n",
-                    skill.name, skill.content
-                ));
+                write!(output, "## Skill: {}\n{}\n---\n", skill.name, skill.content).ok();
             }
             Ok(output)
         }))
@@ -72,12 +76,13 @@ pub fn load_skills_tool(skills: Vec<Skill>, loaded: Option<Arc<Mutex<HashSet<Str
 struct LoadReferencesInput {
     /// Skill name whose references to load.
     skill: String,
-    /// Reference filenames to load (e.g. ["checklist.md"]).
+    /// Reference filenames to load (e.g. [`"checklist.md"`]).
     /// Already-loaded references are skipped automatically.
     references: Vec<String>,
 }
 
 /// Load reference files from a skill directory. Tracks what's already loaded.
+#[allow(clippy::unwrap_used)]
 pub fn load_references_tool(loaded_refs: Arc<Mutex<HashSet<String>>>) -> Tool {
     Tool::builder()
         .name("load_references")
@@ -94,7 +99,7 @@ pub fn load_references_tool(loaded_refs: Arc<Mutex<HashSet<String>>>) -> Tool {
                 .and_then(|v| v.as_array())
                 .map(|arr| {
                     arr.iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .filter_map(|v| v.as_str().map(ToString::to_string))
                         .collect()
                 })
                 .unwrap_or_default();
@@ -106,47 +111,43 @@ pub fn load_references_tool(loaded_refs: Arc<Mutex<HashSet<String>>>) -> Tool {
             for name in &ref_names {
                 if name.contains("..") || name.starts_with('/') || name.starts_with('.') {
                     return Err(format!(
-                        "Invalid reference '{}': path traversal, absolute paths, and hidden files are not allowed",
-                        name
+                        "Invalid reference '{name}': path traversal, absolute paths, and hidden files are not allowed"
                     ));
                 }
-                if !name.ends_with(".md") {
+                if !Path::new(name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+                {
                     return Err(format!(
-                        "Invalid reference '{}': only .md files are allowed",
-                        name
+                        "Invalid reference '{name}': only .md files are allowed"
                     ));
                 }
             }
 
             if !skill::skill_exists(&skill_name) {
-                return Err(format!("Skill '{}' not found", skill_name));
+                return Err(format!("Skill '{skill_name}' not found"));
             }
 
             let mut output = String::new();
             for ref_name in &ref_names {
-                let key = format!("{}/{}", skill_name, ref_name);
+                let key = format!("{skill_name}/{ref_name}");
                 {
-                    let loaded = loaded_refs.lock().unwrap();
+                    let loaded = loaded_refs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     if loaded.contains(&key) {
-                        output.push_str(&format!(
-                            "Reference {} already loaded — skipping.\n",
-                            key
-                        ));
+                        writeln!(output, "Reference {key} already loaded — skipping.").ok();
                         continue;
                     }
                 }
                 match skill::load_reference(&skill_name, ref_name) {
                     Some(content) => {
-                        output.push_str(&format!(
-                            "### Reference: {}\n{}\n---\n",
-                            key, content
-                        ));
-                        loaded_refs.lock().unwrap().insert(key);
+                        write!(output, "### Reference: {key}\n{content}\n---\n").ok();
+                        loaded_refs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key);
                     }
                     None => {
-                        output.push_str(&format!(
-                            "Error: reference '{ref_name}' not found for skill '{skill_name}'\n"
-                        ));
+                        writeln!(
+                            output,
+                            "Error: reference '{ref_name}' not found for skill '{skill_name}'"
+                        ).ok();
                     }
                 }
             }

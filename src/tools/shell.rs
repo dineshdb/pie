@@ -10,6 +10,7 @@ struct ShellInput {
 }
 
 /// Execute a shell command inside the sandbox and return its stdout, stderr, and exit code.
+#[allow(clippy::unwrap_used)]
 pub fn shell_tool(sandbox_settings: PathBuf) -> Tool {
     let sandbox_settings = Arc::new(sandbox_settings);
     Tool::builder()

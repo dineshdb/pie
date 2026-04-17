@@ -153,7 +153,9 @@ fn normalize_tool_args(s: &str) -> String {
             buffer.push(ch);
             while let Some(&next) = chars.peek() {
                 if next.is_alphanumeric() || next == '_' {
-                    buffer.push(chars.next().unwrap());
+                    if let Some(c) = chars.next() {
+                        buffer.push(c);
+                    }
                 } else {
                     break;
                 }
@@ -180,25 +182,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_extract_inline_tool_call_basic() {
+    fn test_extract_inline_tool_call_basic() -> anyhow::Result<()> {
         let text = r#"<|tool_call>call:subagent{skill_name:<|"|>web-search<|"|>,query:<|"|>current prime minister of Nepal<|"|>}<tool_call|><eos>"#;
         let result = extract_inline_tool_calls(text);
         assert!(result.is_some());
-        let calls = result.unwrap();
+        let calls = result.ok_or_else(|| anyhow::anyhow!("expected Some"))?;
         assert_eq!(calls.len(), 1);
+        Ok(())
     }
 
     #[test]
-    fn test_extract_passes_through_skill_name() {
+    fn test_extract_passes_through_skill_name() -> anyhow::Result<()> {
         let text = r#"<|tool_call>call:web-search{query:<|"|>current prime minister of Nepal<|"|>}<tool_call|><eos>"#;
-        let calls = extract_inline_tool_calls(text).unwrap();
+        let calls =
+            extract_inline_tool_calls(text).ok_or_else(|| anyhow::anyhow!("expected Some"))?;
 
-        if let LanguageModelResponseContentType::ToolCall(info) = &calls[0] {
-            assert_eq!(info.tool.name, "web-search");
-            assert_eq!(info.input["query"], "current prime minister of Nepal");
-        } else {
-            panic!("expected ToolCall");
-        }
+        let LanguageModelResponseContentType::ToolCall(info) =
+            calls.first().ok_or_else(|| anyhow::anyhow!("no calls"))?
+        else {
+            anyhow::bail!("expected ToolCall")
+        };
+        assert_eq!(info.tool.name, "web-search");
+        assert_eq!(
+            info.input.get("query").and_then(|v| v.as_str()),
+            Some("current prime minister of Nepal")
+        );
+        Ok(())
     }
 
     #[test]
@@ -227,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn test_post_process_leaves_normal_response_untouched() {
+    fn test_post_process_leaves_normal_response_untouched() -> anyhow::Result<()> {
         let response = LanguageModelResponse {
             contents: vec![LanguageModelResponseContentType::Text(
                 "Hello, world!".to_string(),
@@ -236,14 +245,19 @@ mod tests {
         };
         let processed = post_process_response(response);
         assert_eq!(processed.contents.len(), 1);
+        let first = processed
+            .contents
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("no contents"))?;
         assert!(matches!(
-            &processed.contents[0],
+            first,
             LanguageModelResponseContentType::Text(t) if t == "Hello, world!"
         ));
+        Ok(())
     }
 
     #[test]
-    fn test_post_process_passes_through_structured_tool_call() {
+    fn test_post_process_passes_through_structured_tool_call() -> anyhow::Result<()> {
         let mut info = ToolCallInfo::new("repo");
         info.input(serde_json::json!({"query": "context"}));
         let response = LanguageModelResponse {
@@ -252,11 +266,18 @@ mod tests {
         };
         let processed = post_process_response(response);
         assert_eq!(processed.contents.len(), 1);
-        if let LanguageModelResponseContentType::ToolCall(passed) = &processed.contents[0] {
-            assert_eq!(passed.tool.name, "repo");
-            assert_eq!(passed.input["query"], "context");
-        } else {
-            panic!("expected ToolCall");
-        }
+        let LanguageModelResponseContentType::ToolCall(passed) = processed
+            .contents
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("no contents"))?
+        else {
+            anyhow::bail!("expected ToolCall")
+        };
+        assert_eq!(passed.tool.name, "repo");
+        assert_eq!(
+            passed.input.get("query").and_then(|v| v.as_str()),
+            Some("context")
+        );
+        Ok(())
     }
 }

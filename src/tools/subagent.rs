@@ -41,14 +41,17 @@ impl Subagent {
     }
 
     pub fn preload_skills(&self, names: &[String]) {
-        let mut loaded = self.loaded_skills.lock().unwrap();
+        let mut loaded = self
+            .loaded_skills
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for name in names {
             loaded.insert(name.clone());
         }
     }
 
     fn build_user_message(&self, name: &str, query: &str) -> String {
-        let query_with_mention = format!("/{} {}", name, query);
+        let query_with_mention = format!("/{name} {query}");
         let resolved = prompt::resolve_mentioned(&[&query_with_mention], &self.skills);
         let resolved_names: Vec<String> = resolved.iter().map(|s| s.name.clone()).collect();
         self.preload_skills(&resolved_names);
@@ -66,7 +69,11 @@ impl Subagent {
     }
 
     fn build_system_prompt(&self, name: &str) -> String {
-        let loaded_names = self.loaded_skills.lock().unwrap().clone();
+        let loaded_names = self
+            .loaded_skills
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         let loaded: Vec<&Skill> = self
             .skills
             .iter()
@@ -161,6 +168,7 @@ struct SubagentInput {
 
 // ── Tool creation ──────────────────────────────────────────────────
 
+#[allow(clippy::unwrap_used)]
 fn make_subagent_tool(
     model: Model,
     skills: Vec<Skill>,
@@ -180,8 +188,16 @@ fn make_subagent_tool(
         })
         .input_schema(schemars::schema_for!(SubagentInput))
         .execute(ToolExecute::from_async(move |_ctx, params| {
-            let name = params["name"].as_str().unwrap_or_default().to_string();
-            let query = params["query"].as_str().unwrap_or_default().to_string();
+            let name = params
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let query = params
+                .get("query")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
             let subagent = Subagent::new(
                 model.clone(),
                 skills.clone(),
@@ -230,120 +246,153 @@ mod tests {
         }
     }
 
-    fn dummy_model() -> Model {
+    fn dummy_model() -> anyhow::Result<Model> {
         Model::test_dummy()
     }
 
-    fn new_subagent(skills: Vec<Skill>, agents: Vec<Agent>) -> Subagent {
-        Subagent::new(dummy_model(), skills, agents, PathBuf::from("/tmp"))
+    fn new_subagent(skills: Vec<Skill>, agents: Vec<Agent>) -> anyhow::Result<Subagent> {
+        Ok(Subagent::new(
+            dummy_model()?,
+            skills,
+            agents,
+            PathBuf::from("/tmp"),
+        ))
     }
 
     // ── Validation ──────────────────────────────────────────────────
 
     #[test]
-    fn execute_rejects_empty_name() {
-        let sub = new_subagent(vec![], vec![]);
-        let rt = tokio::runtime::Runtime::new().unwrap();
+    fn execute_rejects_empty_name() -> anyhow::Result<()> {
+        let sub = new_subagent(vec![], vec![])?;
+        let rt = tokio::runtime::Runtime::new()?;
         let result = rt.block_on(sub.execute("", "query", 0, None));
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("required"));
+        let Err(e) = result else {
+            anyhow::bail!("expected error")
+        };
+        assert!(e.contains("required"));
+        Ok(())
     }
 
     #[test]
-    fn execute_rejects_empty_query() {
-        let sub = new_subagent(vec![], vec![]);
-        let rt = tokio::runtime::Runtime::new().unwrap();
+    fn execute_rejects_empty_query() -> anyhow::Result<()> {
+        let sub = new_subagent(vec![], vec![])?;
+        let rt = tokio::runtime::Runtime::new()?;
         let result = rt.block_on(sub.execute("name", "", 0, None));
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("required"));
+        let Err(e) = result else {
+            anyhow::bail!("expected error")
+        };
+        assert!(e.contains("required"));
+        Ok(())
     }
 
     #[test]
-    fn execute_rejects_unknown_name() {
+    fn execute_rejects_unknown_name() -> anyhow::Result<()> {
         let sub = new_subagent(
             vec![skill("bash", "commands", "content")],
             vec![agent("explore", "explorer", "content")],
-        );
-        let rt = tokio::runtime::Runtime::new().unwrap();
+        )?;
+        let rt = tokio::runtime::Runtime::new()?;
         let result = rt.block_on(sub.execute("nonexistent", "query", 0, None));
-        assert!(result.is_ok());
-        assert!(result.unwrap().contains("not found"));
+        let val = result.map_err(|e| anyhow::anyhow!("{e}"))?;
+        assert!(val.contains("not found"));
+        Ok(())
     }
 
     #[test]
-    fn execute_accepts_skill_name() {
+    fn execute_accepts_skill_name() -> anyhow::Result<()> {
         // Can't actually execute (no model server), but we can verify validation passes
         // by checking the error isn't "not found"
-        let sub = new_subagent(vec![skill("bash", "commands", "content")], vec![]);
-        let rt = tokio::runtime::Runtime::new().unwrap();
+        let sub = new_subagent(vec![skill("bash", "commands", "content")], vec![])?;
+        let rt = tokio::runtime::Runtime::new()?;
         let result = rt.block_on(sub.execute("bash", "run ls", 0, None));
         // Will fail because there's no model server, but NOT with "not found"
         assert!(result.is_err());
-        let err = result.unwrap_err();
+        let Err(err) = result else {
+            anyhow::bail!("expected error")
+        };
         assert!(
             !err.contains("not found"),
             "should not say 'not found': {err}"
         );
+        Ok(())
     }
 
     #[test]
-    fn execute_accepts_agent_name() {
+    fn execute_accepts_agent_name() -> anyhow::Result<()> {
         let sub = new_subagent(
             vec![],
             vec![agent("explore", "explorer", "explore content")],
-        );
-        let rt = tokio::runtime::Runtime::new().unwrap();
+        )?;
+        let rt = tokio::runtime::Runtime::new()?;
         let result = rt.block_on(sub.execute("explore", "analyze this", 0, None));
         assert!(result.is_err());
-        let err = result.unwrap_err();
+        let Err(err) = result else {
+            anyhow::bail!("expected error")
+        };
         assert!(
             !err.contains("not found"),
             "should not say 'not found': {err}"
         );
+        Ok(())
     }
 
     // ── Preloading ──────────────────────────────────────────────────
 
     #[test]
-    fn preload_skills_tracks_names() {
-        let sub = new_subagent(vec![skill("bash", "commands", "content")], vec![]);
+    fn preload_skills_tracks_names() -> anyhow::Result<()> {
+        let sub = new_subagent(vec![skill("bash", "commands", "content")], vec![])?;
         sub.preload_skills(&["bash".to_string()]);
-        let loaded = sub.loaded_skills.lock().unwrap();
+        let loaded = sub
+            .loaded_skills
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(loaded.contains("bash"));
+        Ok(())
     }
 
     #[test]
-    fn preload_skills_deduplicates() {
-        let sub = new_subagent(vec![], vec![]);
+    fn preload_skills_deduplicates() -> anyhow::Result<()> {
+        let sub = new_subagent(vec![], vec![])?;
         sub.preload_skills(&["bash".to_string(), "bash".to_string()]);
-        let loaded = sub.loaded_skills.lock().unwrap();
+        let loaded = sub
+            .loaded_skills
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(loaded.len(), 1);
+        Ok(())
     }
 
     // ── User message building ──────────────────────────────────────
 
     #[test]
-    fn build_user_message_includes_query() {
-        let sub = new_subagent(vec![], vec![]);
+    fn build_user_message_includes_query() -> anyhow::Result<()> {
+        let sub = new_subagent(vec![], vec![])?;
         let msg = sub.build_user_message("explore", "analyze this");
         assert!(msg.contains("analyze this"));
         assert!(msg.contains("Date:"));
         assert!(msg.contains("Working directory:"));
+        Ok(())
     }
 
     #[test]
-    fn build_user_message_preloads_mentioned_skills() {
-        let sub = new_subagent(vec![skill("bash", "commands", "content")], vec![]);
+    fn build_user_message_preloads_mentioned_skills() -> anyhow::Result<()> {
+        let sub = new_subagent(vec![skill("bash", "commands", "content")], vec![])?;
         sub.build_user_message("bash", "run something");
-        let loaded = sub.loaded_skills.lock().unwrap();
+        let loaded = sub
+            .loaded_skills
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(
             loaded.contains("bash"),
             "skill mentioned via /bash must be preloaded"
         );
+        Ok(())
     }
 
     #[test]
-    fn build_user_message_preloads_skills_from_agent_content() {
+    fn build_user_message_preloads_skills_from_agent_content() -> anyhow::Result<()> {
         let skills = vec![
             skill("explore", "explorer", "explore content"),
             skill("filesystem", "files", "fs content"),
@@ -353,9 +402,12 @@ mod tests {
             "reviewer",
             "Use /explore and /filesystem to analyze code.",
         )];
-        let sub = new_subagent(skills, agents);
+        let sub = new_subagent(skills, agents)?;
         sub.build_user_message("review", "check this code");
-        let loaded = sub.loaded_skills.lock().unwrap();
+        let loaded = sub
+            .loaded_skills
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(
             loaded.contains("explore"),
             "skills from agent content must be preloaded"
@@ -364,14 +416,15 @@ mod tests {
             loaded.contains("filesystem"),
             "skills from agent content must be preloaded"
         );
+        Ok(())
     }
 
     // ── System prompt building ─────────────────────────────────────
 
     #[test]
-    fn build_system_prompt_with_agent_name() {
+    fn build_system_prompt_with_agent_name() -> anyhow::Result<()> {
         let agents = vec![agent("explore", "explorer", "You explore code.")];
-        let sub = new_subagent(vec![], agents);
+        let sub = new_subagent(vec![], agents)?;
         let prompt = sub.build_system_prompt("explore");
         assert!(
             prompt.contains("explore"),
@@ -381,22 +434,24 @@ mod tests {
             prompt.contains("You explore code."),
             "agent content must appear in prompt"
         );
+        Ok(())
     }
 
     #[test]
-    fn build_system_prompt_without_agent_name() {
-        let sub = new_subagent(vec![], vec![]);
+    fn build_system_prompt_without_agent_name() -> anyhow::Result<()> {
+        let sub = new_subagent(vec![], vec![])?;
         let prompt = sub.build_system_prompt("bash");
         assert!(
             !prompt.contains("specialized agent running as"),
             "no agent persona for skill-only"
         );
+        Ok(())
     }
 
     #[test]
-    fn build_system_prompt_includes_preloaded_skills() {
+    fn build_system_prompt_includes_preloaded_skills() -> anyhow::Result<()> {
         let skills = vec![skill("bash", "commands", "run commands")];
-        let sub = new_subagent(skills, vec![]);
+        let sub = new_subagent(skills, vec![])?;
         sub.preload_skills(&["bash".to_string()]);
         let prompt = sub.build_system_prompt("something");
         assert!(prompt.contains("bash"), "preloaded skill must appear");
@@ -404,13 +459,14 @@ mod tests {
             prompt.contains("run commands"),
             "preloaded skill content must appear"
         );
+        Ok(())
     }
 
     // ── Tool building ──────────────────────────────────────────────
 
     #[test]
-    fn build_tools_has_core_tools_at_all_depths() {
-        let sub = new_subagent(vec![], vec![]);
+    fn build_tools_has_core_tools_at_all_depths() -> anyhow::Result<()> {
+        let sub = new_subagent(vec![], vec![])?;
         for depth in 0..=2 {
             let tools = sub.build_tools(depth, None);
             let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
@@ -427,11 +483,12 @@ mod tests {
                 "depth {depth}: must have load_references"
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn build_tools_includes_subagent_below_max_depth() {
-        let sub = new_subagent(vec![], vec![]);
+    fn build_tools_includes_subagent_below_max_depth() -> anyhow::Result<()> {
+        let sub = new_subagent(vec![], vec![])?;
         let tools_0 = sub.build_tools(0, None);
         let tools_1 = sub.build_tools(1, None);
         let tools_2 = sub.build_tools(2, None);
@@ -447,38 +504,42 @@ mod tests {
             !tools_2.iter().any(|t| t.name == "subagent"),
             "depth 2 must NOT have subagent"
         );
+        Ok(())
     }
 
     // ── SubagentInput schema ────────────────────────────────────────
 
     #[test]
-    fn subagent_input_deserializes() {
+    fn subagent_input_deserializes() -> anyhow::Result<()> {
         let json = r#"{"name": "explore", "query": "analyze this"}"#;
-        let input: SubagentInput = serde_json::from_str(json).unwrap();
+        let input: SubagentInput = serde_json::from_str(json)?;
         assert_eq!(input.name, "explore");
         assert_eq!(input.query, "analyze this");
+        Ok(())
     }
 
     #[test]
-    fn subagent_input_schema_has_name_and_query() {
+    fn subagent_input_schema_has_name_and_query() -> anyhow::Result<()> {
         let schema = schemars::schema_for!(SubagentInput);
-        let json = serde_json::to_string(&schema).unwrap();
+        let json = serde_json::to_string(&schema)?;
         assert!(json.contains("name"), "schema must have 'name' field");
         assert!(json.contains("query"), "schema must have 'query' field");
+        Ok(())
     }
 
     // ── Tool creation ───────────────────────────────────────────────
 
     #[test]
-    fn subagent_tool_has_correct_name() {
-        let tool = subagent_tool(dummy_model(), vec![], vec![], PathBuf::from("/tmp"));
+    fn subagent_tool_has_correct_name() -> anyhow::Result<()> {
+        let tool = subagent_tool(dummy_model()?, vec![], vec![], PathBuf::from("/tmp"));
         assert_eq!(tool.name, "subagent");
+        Ok(())
     }
 
     #[test]
-    fn make_subagent_tool_description_changes_with_depth() {
+    fn make_subagent_tool_description_changes_with_depth() -> anyhow::Result<()> {
         let tool_0 = make_subagent_tool(
-            dummy_model(),
+            dummy_model()?,
             vec![],
             vec![],
             PathBuf::from("/tmp"),
@@ -486,7 +547,7 @@ mod tests {
             0,
         );
         let tool_1 = make_subagent_tool(
-            dummy_model(),
+            dummy_model()?,
             vec![],
             vec![],
             PathBuf::from("/tmp"),
@@ -501,5 +562,6 @@ mod tests {
             tool_0.description.contains("agent or skill"),
             "depth 0 mentions agent or skill"
         );
+        Ok(())
     }
 }

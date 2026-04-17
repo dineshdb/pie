@@ -21,15 +21,15 @@ pub struct Model {
 
 #[cfg(test)]
 impl Model {
-    pub fn test_dummy() -> Self {
-        Self {
+    pub fn test_dummy() -> Result<Self> {
+        Ok(Self {
             inner: OpenAICompatible::<DynamicModel>::builder()
                 .model_name("test")
                 .base_url("http://localhost:1")
                 .api_key("test")
                 .build()
-                .unwrap(),
-        }
+                .map_err(|e| anyhow::anyhow!("failed to build test model: {e}"))?,
+        })
     }
 }
 
@@ -95,19 +95,19 @@ pub fn build_model(
     api_key: Option<&str>,
 ) -> Result<Model> {
     let model_name = model
-        .map(|s| s.to_string())
+        .map(ToString::to_string)
         .or_else(|| std::env::var("OPENAI_MODEL").ok())
         .context("model name is required (set --model or OPENAI_MODEL)")?;
 
     let base_url = base_url
-        .map(|s| s.to_string())
+        .map(ToString::to_string)
         .or_else(|| std::env::var("OPENAI_BASE_URL").ok())
         .or_else(|| std::env::var("OPENAI_API_BASE").ok())
         .or_else(|| ollama_default(&model_name))
         .context("base URL is required (set --base-url, OPENAI_BASE_URL, or OPENAI_API_BASE)")?;
 
     let api_key = api_key
-        .map(|s| s.to_string())
+        .map(ToString::to_string)
         .or_else(|| std::env::var("OPENAI_API_KEY").ok())
         .or_else(|| local_placeholder(&base_url))
         .context("API key is required (set --api-key or OPENAI_API_KEY)")?;

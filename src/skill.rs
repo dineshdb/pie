@@ -115,14 +115,14 @@ pub fn load_reference(skill_name: &str, ref_name: &str) -> Option<String> {
         return Some(content);
     }
     // Fall back to embedded: find the child dir and iterate its files
-    let full_path = format!("{}/{}", skill_name, ref_name);
+    let full_path = format!("{skill_name}/{ref_name}");
     let path = std::path::Path::new(&full_path);
     embedded_skills_dir().and_then(|dir| {
         dir.dirs()
             .find(|d| d.path() == std::path::Path::new(skill_name))
             .and_then(|skill_dir| skill_dir.files().find(|f| f.path() == path))
             .and_then(|file| file.contents_utf8())
-            .map(|s| s.to_string())
+            .map(ToString::to_string)
     })
 }
 
@@ -133,22 +133,25 @@ pub fn skill_exists(name: &str) -> bool {
 }
 
 /// Split raw markdown into (frontmatter YAML string, body content).
-/// Returns ("", trimmed_body) when no frontmatter delimiters are found.
+/// Returns ("", `trimmed_body`) when no frontmatter delimiters are found.
 pub fn split_frontmatter(raw: &str) -> (String, String) {
     let lines: Vec<&str> = raw.lines().collect();
     let mut i = 0;
-    if i < lines.len() && lines[i].trim() == "---" {
+    if lines.get(i).is_some_and(|l| l.trim() == "---") {
         i += 1;
         let start = i;
-        while i < lines.len() && lines[i].trim() != "---" {
+        while lines.get(i).is_some_and(|l| l.trim() != "---") {
             i += 1;
         }
-        let yaml = lines[start..i].join("\n");
-        if i < lines.len() {
-            i += 1; // skip closing ---
+        let yaml = lines
+            .get(start..i)
+            .map(|s| s.join("\n"))
+            .unwrap_or_default();
+        if lines.get(i).is_some() {
+            i += 1;
         }
-        let body = lines[i..].join("\n").trim().to_string();
-        return (yaml, body);
+        let body = lines.get(i..).map(|s| s.join("\n")).unwrap_or_default();
+        return (yaml, body.trim().to_string());
     }
     (String::new(), raw.trim().to_string())
 }
@@ -163,19 +166,21 @@ mod tests {
     }
 
     #[test]
-    fn parse_skill_with_needs() {
+    fn parse_skill_with_needs() -> anyhow::Result<()> {
         let raw = "---\nname: review\ndescription: code review\nneeds: [filesystem, developer]\n---\nContent here";
-        let skill = parse_skill(raw).unwrap();
+        let skill = parse_skill(raw).ok_or_else(|| anyhow::anyhow!("parse failed"))?;
         assert_eq!(skill.name, "review");
         assert_eq!(skill.needs, vec!["filesystem", "developer"]);
         assert_eq!(skill.content, "Content here");
+        Ok(())
     }
 
     #[test]
-    fn parse_skill_without_needs() {
+    fn parse_skill_without_needs() -> anyhow::Result<()> {
         let raw = "---\nname: bash\ndescription: run commands\n---\nContent";
-        let skill = parse_skill(raw).unwrap();
+        let skill = parse_skill(raw).ok_or_else(|| anyhow::anyhow!("parse failed"))?;
         assert!(skill.needs.is_empty());
+        Ok(())
     }
 
     #[test]

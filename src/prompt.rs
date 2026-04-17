@@ -7,7 +7,8 @@ use std::collections::HashSet;
 
 const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../.pie/SYSTEM.md");
 
-/// Render a MiniJinja template with context, falling back to raw template on error.
+/// Render a `MiniJinja` template with context, falling back to raw template on error.
+#[allow(clippy::panic, clippy::unwrap_used)]
 fn render_template(template_name: &str, template: &str, ctx: minijinja::Value) -> String {
     let mut env = Environment::new();
     env.add_template(template_name, template)
@@ -66,6 +67,7 @@ pub fn system_prompt_with_loaded(
     )
 }
 
+#[allow(clippy::needless_pass_by_value)]
 pub fn subagent_prompt(
     repo_root: Option<String>,
     skills: &[Skill],
@@ -81,8 +83,7 @@ pub fn subagent_prompt(
     });
     let interactivity = agent_name
         .and_then(|name| agents.iter().find(|a| a.name == name))
-        .map(|a| a.interactivity.as_ref())
-        .unwrap_or("none");
+        .map_or("none", |a| a.interactivity.as_ref());
     let (date, pwd) = context_vars();
     render_template(
         "system_prompt",
@@ -200,7 +201,7 @@ mod test_helpers {
             name: name.to_string(),
             description: desc.to_string(),
             content: content.to_string(),
-            needs: needs.into_iter().map(|s| s.to_string()).collect(),
+            needs: needs.into_iter().map(ToString::to_string).collect(),
         }
     }
 
@@ -237,7 +238,7 @@ mod test_helpers {
                 local_agents_md => String::new(),
                 date => "2026-04-10",
                 pwd => "/test/project",
-                repo_root => repo_root.map(|s| s.to_string()),
+                repo_root => repo_root.map(ToString::to_string),
                 json_output,
                 interactivity => "none",
             },
@@ -261,7 +262,7 @@ mod test_helpers {
                 local_agents_md => String::new(),
                 date => "2026-04-10",
                 pwd => "/test/project",
-                repo_root => repo_root.map(|s| s.to_string()),
+                repo_root => repo_root.map(ToString::to_string),
                 json_output => false,
                 interactivity => "none",
             },

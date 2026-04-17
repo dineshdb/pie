@@ -1,3 +1,33 @@
+#![warn(
+    // Correctness
+    future_incompatible,
+    nonstandard_style,
+    rust_2024_compatibility,
+    // Strictness
+    missing_debug_implementations,
+    missing_copy_implementations,
+    trivial_casts,
+    trivial_numeric_casts,
+    unsafe_op_in_unsafe_fn,
+    unused_import_braces,
+    unused_lifetimes,
+    unused_qualifications,
+    variant_size_differences,
+    // Clippy pedantic (as compiler warnings)
+    clippy::pedantic,
+)]
+#![deny(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+#![allow(
+    clippy::module_name_repetitions,
+    clippy::multiple_crate_versions,
+    clippy::future_not_send
+)]
+
 mod agent;
 mod cmd;
 mod config;
@@ -24,6 +54,7 @@ use tracing_subscriber::EnvFilter;
 #[derive(Parser)]
 #[command(name = "pie", version = "0.1.0")]
 #[command(about = "Minimal Pi-like agent using Apple on-device AI or OpenAI-compatible providers")]
+#[allow(clippy::struct_excessive_bools)]
 struct Cli {
     /// Explicitly use a specific skill
     #[arg(short, long)]
@@ -100,7 +131,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Sandbox: required — exits if srt is not installed
-    let sandbox_settings = crate::sandbox::prepare(&crate::sandbox::load_config())?;
+    let sandbox_settings = sandbox::prepare(&sandbox::load_config())?;
 
     let mut model = providers::build_model(
         cli.model.as_deref(),

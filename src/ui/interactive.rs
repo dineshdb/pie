@@ -14,7 +14,7 @@ use reedline::{
 use std::path::PathBuf;
 use tracing::info;
 
-const HELP_TEXT: &str = r#"
+const HELP_TEXT: &str = r"
 pie - Interactive Mode
 Usage:
   <query>              Ask a question using auto-detected skills
@@ -27,7 +27,7 @@ Examples:
   How do I create a new git branch?
   /search latest TypeScript features
   /list-skills
-"#;
+";
 
 fn build_completions() -> Vec<String> {
     let mut commands: Vec<String> = vec![
@@ -88,7 +88,12 @@ impl Hinter for PieHinter {
                 ))
                 .ok()
                 .and_then(|entries| entries.first().cloned())
-                .and_then(|entry| entry.command_line.get(line.len()..).map(|s| s.to_string()));
+                .and_then(|entry| {
+                    entry
+                        .command_line
+                        .get(line.len()..)
+                        .map(ToString::to_string)
+                });
 
             if let Some(hint) = history_hint {
                 hint
@@ -132,7 +137,7 @@ pub async fn start_interactive_mode(
     let history_path = history_dir.join(format!("{}.txt", session.id));
     let history = Box::new(
         FileBackedHistory::with_file(1000, history_path)
-            .expect("Error configuring history with file"),
+            .map_err(|e| anyhow::anyhow!("Error configuring history with file: {e}"))?,
     );
 
     let completions = build_completions();
@@ -169,48 +174,34 @@ pub async fn start_interactive_mode(
 
     loop {
         let sig = line_editor.read_line(&prompt);
-        match sig {
-            Ok(Signal::Success(buffer)) => {
-                let input = buffer.trim();
-                if input.is_empty() {
-                    continue;
-                }
-
-                match input {
-                    "/exit" | "/quit" | "/q" => {
-                        info!("Goodbye!");
-                        return Ok(());
-                    }
-                    "/help" | "/h" => {
-                        info!("{HELP_TEXT}");
-                    }
-                    "/list-skills" | "/ls" => {
-                        handle_list_skills();
-                    }
-                    _ => {
-                        // Strip leading / for query if it's a bare command
-                        let query = input.strip_prefix('/').unwrap_or(input);
-                        if let Err(e) = handle_query_streaming(
-                            model,
-                            query,
-                            &mut session,
-                            sandbox_settings.clone(),
-                        )
-                        .await
-                        {
-                            tracing::error!("Error: {e}");
-                        }
-                    }
-                }
-            }
-            Ok(Signal::CtrlC) => {
+        if let Ok(Signal::Success(buffer)) = sig {
+            let input = buffer.trim();
+            if input.is_empty() {
                 continue;
             }
-            Ok(Signal::CtrlD) => {
-                info!("Goodbye!");
-                return Ok(());
+
+            match input {
+                "/exit" | "/quit" | "/q" => {
+                    info!("Goodbye!");
+                    return Ok(());
+                }
+                "/help" | "/h" => {
+                    info!("{HELP_TEXT}");
+                }
+                "/list-skills" | "/ls" => {
+                    handle_list_skills();
+                }
+                _ => {
+                    // Strip leading / for query if it's a bare command
+                    let query = input.strip_prefix('/').unwrap_or(input);
+                    if let Err(e) =
+                        handle_query_streaming(model, query, &mut session, sandbox_settings.clone())
+                            .await
+                    {
+                        tracing::error!("Error: {e}");
+                    }
+                }
             }
-            _ => {}
         }
     }
 }

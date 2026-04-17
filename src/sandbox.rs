@@ -175,13 +175,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_config_serializes_to_srt_format() {
+    fn default_config_serializes_to_srt_format() -> anyhow::Result<()> {
         let cfg = SandboxConfig::default();
         let settings = SrtSettings::from(&cfg);
-        let json = serde_json::to_string_pretty(&settings).unwrap();
+        let json = serde_json::to_string_pretty(&settings)?;
         assert!(json.contains("allowedDomains"));
         assert!(json.contains("denyRead"));
         assert!(json.contains("allowWrite"));
+        Ok(())
     }
 
     #[test]
