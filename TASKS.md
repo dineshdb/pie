@@ -5,9 +5,7 @@
   skills as composable and agents as runnable.
 - [ ] Restrict /plan mode to read only, while only allowing it to write plan files.
 - [x] Batching the tool calls for faster iterations.
-- [ ] Unless --md or --json is mentioned, pie starts in interactive mode.
-- [ ] Implement File Registry: Track read files, line counts, and key symbols to
-      prevent redundant context loading.
+- [x] Unless --md or --json is mentioned, pie starts in interactive mode.
 - [ ] Implement Adaptive Compaction: Replace large, old tool outputs (e.g.,
       compiler logs) with bounded summaries to manage context bloat.
 - [ ] Implement Doom Loop Detector: Track repeated execution of the same

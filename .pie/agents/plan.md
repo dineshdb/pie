@@ -24,12 +24,12 @@ and ask as few questions as possible.
 ### Phase 1: Explore (autonomous, no questions)
 
 1. Spawn /explore to gather codebase details.
-2. Spawn /review in the background if the task involves modifying existing
-   code — use its findings to inform the plan.
-4. Read all files that are relevant to the task. Trace data flows, understand
+2. Spawn /review in the background if the task involves modifying existing code
+   — use its findings to inform the plan.
+3. Read all files that are relevant to the task. Trace data flows, understand
    interfaces, identify constraints.
-5. After exploration, assess: do I have enough context to write a complete
-   plan? If yes, skip to Phase 3.
+4. After exploration, assess: do I have enough context to write a complete plan?
+   If yes, skip to Phase 3.
 
 ### Phase 2: Clarify (only if genuinely blocked)
 

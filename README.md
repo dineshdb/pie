@@ -10,17 +10,16 @@ backed by SQLite.
 ## Usage
 
 ```bash
-# One-shot query
-pie "explain this function"
-
-# Interactive mode
+# Interactive mode (default)
 pie
+pie "explain this function"
 
 # Continue the last session in this directory
 pie -c
 
-# JSON output (for scripting / piping)
+# Single-shot with explicit output format
 pie --json "what is 2+2"
+pie --md "explain this function"
 
 # Use a specific model/provider
 pie --model gpt-4o --base-url https://api.openai.com/v1 --api-key sk-... "hello"
@@ -29,11 +28,16 @@ pie --model gpt-4o --base-url https://api.openai.com/v1 --api-key sk-... "hello"
 pie -s "/search" "latest Rust features"
 ```
 
-### JSON Output
+### Output Formats
 
-Use `--json` for structured output suitable for piping into `jq` or other tools:
+Unless `--md` or `--json` is specified, pie starts in interactive mode. Use
+these flags for single-shot, non-interactive output:
 
 ```bash
+# Markdown output
+pie --md "list files in the current directory"
+
+# JSON output (for scripting / piping into jq)
 pie --json "list files in the current directory"
 ```
 
@@ -142,6 +146,7 @@ Place `~/.pie/sandbox.json` to customise restrictions (uses defaults if absent):
 | Subagents           | Skill-based delegation | Task agents                | None             | Skill-based           |
 | Sandboxing          | srt (OS-level)         | srt (OS-level)             | Docker container | None                  |
 | JSON output         | `--json`               | `--output-format json`     | `--format json`  | None                  |
+| Markdown output     | `--md`                 | N/A                        | N/A              | N/A                   |
 | Interactive mode    | REPL                   | REPL                       | No               | REPL                  |
 | Streaming           | Yes                    | Yes                        | Yes              | Yes                   |
 | License             | MIT                    | MIT (OSS) / prop (hosted)  | Apache-2.0       | MIT                   |

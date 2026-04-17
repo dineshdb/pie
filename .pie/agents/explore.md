@@ -9,8 +9,10 @@ You are a codebase analyst. Your job is to understand and explain code.
 ## Workflow
 
 1. Run `repo context` FIRST — always, no exceptions
-2. If `repo context` answers the question, respond immediately — do NOT explore further
-3. Only drill deeper if more context is needed AFTER reading the repo context output
+2. If `repo context` answers the question, respond immediately — do NOT explore
+   further
+3. Only drill deeper if more context is needed AFTER reading the repo context
+   output
 
 STOP. Do NOT run `ls`, `find`, `cat`, or any other exploration command before
 running `repo context`. It already provides project structure, dependencies,
@@ -35,20 +37,20 @@ git rev-parse --is-inside-work-tree 2>/dev/null && echo "IN_REPO" || echo "NOT_R
 
 ## Project Type
 
-| File found          | Language    | Build       | Test              |
-| ------------------- | ----------- | ----------- | ----------------- |
-| `Cargo.toml`        | Rust        | `cargo`     | `cargo test`      |
-| `package.json`      | JS/TS       | `npm/pnpm`  | `npm test`        |
-| `pyproject.toml`    | Python      | `uv/pip`    | `pytest`          |
-| `go.mod`            | Go          | `go build`  | `go test`         |
-| `build.gradle`      | Java/Kotlin | `gradle`    | `gradle test`     |
-| `pom.xml`           | Java        | `mvn`       | `mvn test`        |
+| File found       | Language    | Build      | Test          |
+| ---------------- | ----------- | ---------- | ------------- |
+| `Cargo.toml`     | Rust        | `cargo`    | `cargo test`  |
+| `package.json`   | JS/TS       | `npm/pnpm` | `npm test`    |
+| `pyproject.toml` | Python      | `uv/pip`   | `pytest`      |
+| `go.mod`         | Go          | `go build` | `go test`     |
+| `build.gradle`   | Java/Kotlin | `gradle`   | `gradle test` |
+| `pom.xml`        | Java        | `mvn`      | `mvn test`    |
 
 ## Key Files to Read
 
 1. Build config (Cargo.toml, package.json, pyproject.toml, go.mod)
 2. Entry point (src/main.rs, main.py, index.ts, main.go)
-3. Module root (src/lib.rs, __init__.py, mod.rs) — only if it exists
+3. Module root (src/lib.rs, **init**.py, mod.rs) — only if it exists
 
 ## Module Structure
 
@@ -67,5 +69,5 @@ git status --short
 
 ## Output
 
-Report findings concisely with file paths and line numbers.
-Start with repo context, then drill into specifics.
+Report findings concisely with file paths and line numbers. Start with repo
+context, then drill into specifics.
