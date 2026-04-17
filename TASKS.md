@@ -1,12 +1,12 @@
 # TASKS
 
 - [x] Add support for markdown rendering in the interactive tui
-- [-] Add .pie/agents/ support that defines what each agent does. This splits
+- [x] Add .pie/agents/ support that defines what each agent does. This splits
   skills as composable and agents as runnable.
 - [ ] Restrict /plan mode to read only, while only allowing it to write plan files.
 - [ ] Batching the tool calls for faster iterations.
 - [ ] TUI
-  - [ ] History
+  - [-] History
 - [ ] Implement File Registry: Track read files, line counts, and key symbols to
       prevent redundant context loading.
 - [ ] Implement Adaptive Compaction: Replace large, old tool outputs (e.g.,
