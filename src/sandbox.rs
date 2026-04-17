@@ -137,6 +137,10 @@ pub fn prepare(cfg: &SandboxConfig) -> anyhow::Result<PathBuf> {
         );
     }
     let path = srt_settings_path();
+    if path.exists() {
+        tracing::debug!(path = %path.display(), "srt settings already exist — skipping write");
+        return Ok(path);
+    }
     let settings = SrtSettings::from(cfg);
     let json = serde_json::to_string_pretty(&settings)
         .map_err(|e| anyhow::anyhow!("Failed to serialize srt settings: {e}"))?;

@@ -9,27 +9,6 @@ pub enum OutputFormat {
 }
 
 impl OutputFormat {
-    /// System instructions for the model based on the output format.
-    pub fn to_instructions(self) -> &'static str {
-        match self {
-            Self::Markdown => "",
-            Self::Json => {
-                r#"
-## JSON Output Mode
-
-The user has requested JSON output. You MUST follow these rules:
-
-- Respond with ONLY valid JSON. No markdown fences, no preamble, no commentary.
-- The response must be a JSON object with this schema:
-  { "response": "<your answer here>" }
-- Do NOT wrap the JSON in ```json``` code blocks.
-- Keep the response value as plain text — no nested JSON, no markdown within the value.
-- If the answer naturally involves structured data, put it all inside the "response" string value.
-"#
-            }
-        }
-    }
-
     pub fn is_json(self) -> bool {
         self == Self::Json
     }

@@ -1,7 +1,8 @@
 use crate::prompt;
 use crate::skill::Skill;
 use aisdk::core::tools::{Tool, ToolExecute};
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 struct LoadSkillsInput {
@@ -10,11 +11,18 @@ struct LoadSkillsInput {
 }
 
 /// Load one or more skills by name. Auto-resolves `needs` dependencies.
-pub fn load_skills_tool(skills: Vec<Skill>) -> Tool {
+///
+/// When `loaded` is `Some`, already-loaded skills are skipped with a message
+/// and newly loaded ones are recorded. Pass `None` for the main agent (no
+/// tracking).
+pub fn load_skills_tool(skills: Vec<Skill>, loaded: Option<Arc<Mutex<HashSet<String>>>>) -> Tool {
     let skills = Arc::new(skills);
     Tool::builder()
         .name("load_skills")
-        .description("Load skill instructions by name. Auto-resolves needs dependencies. Use this when you need skill knowledge to answer directly, without delegating to a subagent.")
+        .description(
+            "Load skill instructions by name. Auto-resolves needs dependencies. \
+             Already-loaded skills are skipped with a message.",
+        )
         .input_schema(schemars::schema_for!(LoadSkillsInput))
         .execute(ToolExecute::from_sync(move |_ctx, params| {
             let names: Vec<String> = params
@@ -39,7 +47,21 @@ pub fn load_skills_tool(skills: Vec<Skill>) -> Tool {
 
             let mut output = String::new();
             for skill in &resolved {
-                output.push_str(&format!("## Skill: {}\n{}\n---\n", skill.name, skill.content));
+                if let Some(ref loaded) = loaded {
+                    let mut guard = loaded.lock().unwrap();
+                    if guard.contains(&skill.name) {
+                        output.push_str(&format!(
+                            "Skill '{}' is already loaded — skipping.\n",
+                            skill.name
+                        ));
+                        continue;
+                    }
+                    guard.insert(skill.name.clone());
+                }
+                output.push_str(&format!(
+                    "## Skill: {}\n{}\n---\n",
+                    skill.name, skill.content
+                ));
             }
             Ok(output)
         }))

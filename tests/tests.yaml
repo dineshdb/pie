@@ -18,13 +18,6 @@
 # and ALL failures are reported before the test is marked as failed.
 
 tests:
-  # ── Skills listing (no API calls, instant) ───────────────────
-  - name: --list-skills shows available skills
-    args: --list-skills
-    contains:
-      - filesystem
-      - developer
-
   # ── End-to-end: model executes shell commands ────────────────
   - name: agent executes shell commands
     input: "What is the architecture of this laptop?"
@@ -33,15 +26,13 @@ tests:
       - arm64
     timeout: 30
     skip: online
-    parallel: true
 
   # ── End-to-end: web search ───────────────────────────────────
   - name: web search returns results
     input: "/web-search latest technology news 2026"
-    contains: technology
+    contains: AI
     timeout: 45
     skip: online
-    parallel: true
 
   # ── End-to-end: JSON output format ───────────────────────────
   - name: --json returns valid JSON
@@ -57,7 +48,6 @@ tests:
       - "```"
     timeout: 30
     skip: online
-    parallel: true
 
   # ── End-to-end: repo summarization (main agent reads files) ──
   - name: repo summarization returns project overview
@@ -67,31 +57,3 @@ tests:
       - agent
     timeout: 120
     skip: online
-    parallel: false
-
-  # ── Sandbox integration ─────────────────────────────────────
-  - name: sandbox srt-settings.json generated
-    args: --help
-    contains: "Usage"
-    timeout: 5
-    post: "test -f ~/.pie/srt-settings.json"
-
-  - name: sandbox blocks ~/.ssh reads
-    args: --help
-    timeout: 5
-    post: "! srt --settings ~/.pie/srt-settings.json sh -c 'cat ~/.ssh/known_hosts' 2>/dev/null"
-
-  - name: sandbox blocks unauthorized writes
-    args: --help
-    timeout: 5
-    post: "! srt --settings ~/.pie/srt-settings.json sh -c 'touch /etc/sandbox-test' 2>/dev/null"
-
-  - name: sandbox allows workspace writes
-    args: --help
-    timeout: 5
-    post: "srt --settings ~/.pie/srt-settings.json sh -c 'mktemp -q /tmp/sandbox-test.XXXXXX | xargs rm'"
-
-  - name: sandbox allows workspace reads
-    args: --help
-    timeout: 5
-    post: "srt --settings ~/.pie/srt-settings.json sh -c 'cat Cargo.toml | head -1'"

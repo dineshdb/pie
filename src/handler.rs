@@ -19,7 +19,7 @@ fn build_request(
     query: &str,
     session: &Session,
     sandbox_settings: PathBuf,
-) -> (LanguageModelRequest<Model>, Arc<Mutex<HashSet<String>>>) {
+) -> LanguageModelRequest<Model> {
     let skills = get_all_skills();
     let history_entries = session.history_entries().to_vec();
 
@@ -32,13 +32,14 @@ fn build_request(
 
     let format = OutputFormat::default();
     let agents = get_all_agents();
-    let system = prompt::system_prompt(&skills, &agents, format.to_instructions());
+
+    // Resolve pre-loaded skills from query/history mentions + agent auto-loads
+    let preloaded = prompt::resolve_preloaded_skills(&skills, &agents, &scan_sources);
+    let preloaded_names: HashSet<String> = preloaded.iter().map(|s| s.name.clone()).collect();
+    let loaded_skills = Arc::new(Mutex::new(preloaded_names));
+    let system = prompt::system_prompt_with_loaded(&skills, &agents, format.is_json(), &preloaded);
 
     let mut messages: Vec<Message> = Vec::new();
-    if let Some(ctx_msg) = prompt::build_agent_skills_message(&skills, &agents, &scan_sources) {
-        messages.push(Message::User(UserMessage::new(ctx_msg)));
-    }
-
     for entry in &history_entries {
         match entry.role {
             Role::User => messages.push(Message::User(UserMessage::new(&entry.content))),
@@ -52,18 +53,35 @@ fn build_request(
 
     tracing::debug!(system = %system, query, "agent:");
     let loaded_refs = Arc::new(Mutex::new(HashSet::new()));
-    let req = LanguageModelRequest::builder()
+    LanguageModelRequest::builder()
         .model(model.clone())
         .system(&system)
         .messages(messages)
         .with_tool(shell_tool(sandbox_settings.clone()))
-        .with_tool(load_skills_tool(skills.clone()))
-        .with_tool(load_references_tool(loaded_refs.clone()))
-        .with_tool(subagent_tool(model.clone(), skills, sandbox_settings))
+        .with_tool(load_skills_tool(
+            skills.clone(),
+            Some(loaded_skills.clone()),
+        ))
+        .with_tool(load_references_tool(loaded_refs))
+        .with_tool(subagent_tool(
+            model.clone(),
+            skills,
+            agents,
+            sandbox_settings,
+        ))
         .stop_when(step_count_is(25))
-        .build();
+        .build()
+}
 
-    (req, loaded_refs)
+/// Strip provider control tokens that leak as text.
+fn strip_control_tokens(text: &str) -> String {
+    if !text.contains('<') {
+        return text.to_string();
+    }
+    text.replace("<eos>", "")
+        .replace("<|end|>", "")
+        .replace("</think_end>", "")
+        .replace("<|end_of_turn|>", "")
 }
 
 /// Extract the output text from a response (handles both text and tool results).
@@ -95,11 +113,12 @@ pub async fn handle_query(
     format: OutputFormat,
     sandbox_settings: PathBuf,
 ) -> Result<()> {
-    let (mut req, _loaded_refs) = build_request(model, query, session, sandbox_settings);
+    let mut req = build_request(model, query, session, sandbox_settings);
 
     let response = req.generate_text().await.context("generate_text failed")?;
     let assistant_text = response.text().unwrap_or_default();
     let output = extract_output_text(&assistant_text, &response.tool_results());
+    let output = strip_control_tokens(&output);
 
     if !output.is_empty() {
         if format.is_json() {
@@ -131,7 +150,7 @@ pub async fn handle_query_streaming(
     use aisdk::core::LanguageModelStreamChunkType;
     use futures::StreamExt;
 
-    let (mut req, _loaded_refs) = build_request(model, query, session, sandbox_settings);
+    let mut req = build_request(model, query, session, sandbox_settings);
 
     let mut response = req.stream_text().await.context("stream_text failed")?;
     let mut renderer = MarkdownRenderer::new();
@@ -139,16 +158,7 @@ pub async fn handle_query_streaming(
     while let Some(chunk) = response.stream.next().await {
         match chunk {
             LanguageModelStreamChunkType::TextDelta(delta) => {
-                // Strip provider control tokens that leak as text
-                let cleaned = if delta.contains('<') {
-                    delta
-                        .replace("<eos>", "")
-                        .replace("<|end|>", "")
-                        .replace("</think_end>", "")
-                        .replace("<|end_of_turn|>", "")
-                } else {
-                    delta
-                };
+                let cleaned = strip_control_tokens(&delta);
                 renderer.push_delta(&cleaned);
             }
             LanguageModelStreamChunkType::Failed(err) => {
@@ -163,6 +173,7 @@ pub async fn handle_query_streaming(
 
     let tool_results = response.tool_results().await;
     let output = extract_output_text(&accumulated, &tool_results);
+    let output = strip_control_tokens(&output);
 
     session.add_user(query)?;
     if !output.is_empty() {

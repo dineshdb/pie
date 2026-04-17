@@ -6,7 +6,6 @@ use minijinja::Environment;
 use std::collections::HashSet;
 
 const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("./prompt.md");
-const SKILL_RULES_TEMPLATE: &str = include_str!("./skill_rules.md");
 
 /// Render a MiniJinja template with context, falling back to raw template on error.
 fn render_template(template_name: &str, template: &str, ctx: minijinja::Value) -> String {
@@ -33,8 +32,13 @@ pub fn context_vars() -> (String, String) {
     (date, pwd)
 }
 
-/// Render the full system prompt as a single message.
-pub fn system_prompt(skills: &[Skill], agents: &[Agent], format_instructions: &str) -> String {
+/// Render the system prompt with pre-loaded skills injected.
+pub fn system_prompt_with_loaded(
+    skills: &[Skill],
+    agents: &[Agent],
+    json_output: bool,
+    loaded: &[&Skill],
+) -> String {
     let global_agents_md = load_file(pie_home().join("AGENTS.md"));
     let local_agents_md = find_upward_in_repo("AGENTS.md");
     let (date, pwd) = context_vars();
@@ -46,36 +50,50 @@ pub fn system_prompt(skills: &[Skill], agents: &[Agent], format_instructions: &s
         "system_prompt",
         SYSTEM_PROMPT_TEMPLATE,
         minijinja::context! {
-            is_subagent => false,
+            agent_name => Option::<String>::None,
+            agent_content => Option::<String>::None,
             skills,
             agents,
+            loaded_skills => loaded,
             global_agents_md,
             local_agents_md,
             date,
             pwd,
             repo_root,
-            format_instructions,
+            json_output,
         },
     )
 }
 
-pub fn subagent_prompt(repo_root: Option<String>) -> String {
+pub fn subagent_prompt(
+    repo_root: Option<String>,
+    skills: &[Skill],
+    agents: &[Agent],
+    agent_name: Option<&str>,
+    loaded: &[&Skill],
+) -> String {
+    let agent_content = agent_name.and_then(|name| {
+        agents
+            .iter()
+            .find(|a| a.name == name)
+            .map(|a| a.content.as_str())
+    });
     let (date, pwd) = context_vars();
-    let empty: &[Skill] = &[];
-    let empty_agents: &[Agent] = &[];
     render_template(
         "system_prompt",
         SYSTEM_PROMPT_TEMPLATE,
         minijinja::context! {
-            is_subagent => true,
-            skills => empty,
-            agents => empty_agents,
+            agent_name,
+            agent_content,
+            skills,
+            agents,
+            loaded_skills => loaded,
             global_agents_md => String::new(),
             local_agents_md => String::new(),
             date,
             pwd,
             repo_root,
-            format_instructions => String::new(),
+            json_output => false,
         },
     )
 }
@@ -129,81 +147,25 @@ pub fn resolve_mentioned<'a>(sources: &[&str], skills: &'a [Skill]) -> Vec<&'a S
     resolve_with_needs(&mentioned_names, skills)
 }
 
-/// Build a skill rules message for skills mentioned in the given sources.
-/// Returns None if no skills are mentioned.
-pub fn mentioned_skills_message(skills: &[Skill], scan_sources: &[&str]) -> Option<String> {
-    let mentioned = resolve_mentioned(scan_sources, skills);
-    if mentioned.is_empty() {
-        return None;
-    }
-    let mentioned_names: HashSet<String> = mentioned.iter().map(|s| s.name.clone()).collect();
-    let available: Vec<&Skill> = skills
-        .iter()
-        .filter(|s| !mentioned_names.contains(&s.name))
-        .collect();
-    Some(render_template(
-        "skill_rules",
-        SKILL_RULES_TEMPLATE,
-        minijinja::context! { mentioned, available },
-    ))
-}
-
-/// Build the user message that includes agent + skill context.
-/// This is called from agent.rs after resolving mentions.
-pub fn build_agent_skills_message(
-    skills: &[Skill],
+/// Resolve all skills that should be pre-loaded: directly mentioned skills
+/// plus skills auto-loaded from mentioned agents (with needs deps).
+pub fn resolve_preloaded_skills<'a>(
+    skills: &'a [Skill],
     agents: &[Agent],
     scan_sources: &[&str],
-) -> Option<String> {
+) -> Vec<&'a Skill> {
     let mentioned_agents = resolve_mentioned_agents(scan_sources, agents);
-    if mentioned_agents.is_empty() {
-        return mentioned_skills_message(skills, scan_sources);
-    }
-
-    // Auto-load skills from mentioned agents
     let mut skill_names: Vec<String> = mentioned_agents
         .iter()
         .flat_map(|a| a.skills.clone())
         .collect();
 
-    // Also resolve directly mentioned skills
     let mentioned_skills = resolve_mentioned(scan_sources, skills);
     for skill in &mentioned_skills {
         skill_names.push(skill.name.clone());
     }
 
-    let mut parts = Vec::new();
-
-    // Agent overrides
-    let mut agent_section = String::new();
-    for agent in &mentioned_agents {
-        agent_section.push_str(&format!(
-            "## Agent: {}\n{}\n---\n",
-            agent.name, agent.content
-        ));
-    }
-    parts.push(agent_section);
-
-    // Skills (from agent auto-load + direct mentions)
-    if !skill_names.is_empty() {
-        let resolved = resolve_with_needs(&skill_names, skills);
-        if !resolved.is_empty() {
-            let mut skill_section = String::new();
-            for skill in &resolved {
-                skill_section.push_str(&format!(
-                    "## Skill: {}\n{}\n---\n",
-                    skill.name, skill.content
-                ));
-            }
-            parts.push(skill_section);
-        }
-    }
-
-    if parts.is_empty() {
-        return None;
-    }
-
-    Some(parts.join("\n"))
+    resolve_with_needs(&skill_names, skills)
 }
 
 // ── Helpers for deterministic test rendering ──────────────────────────
@@ -250,24 +212,22 @@ mod test_helpers {
     }
 
     /// Render the main agent prompt with deterministic values.
-    pub fn render_main(
-        skills: &[Skill],
-        repo_root: Option<&str>,
-        format_instructions: &str,
-    ) -> String {
+    pub fn render_main(skills: &[Skill], repo_root: Option<&str>, json_output: bool) -> String {
         super::render_template(
             "system_prompt",
             super::SYSTEM_PROMPT_TEMPLATE,
             minijinja::context! {
-                is_subagent => false,
+                agent_name => Option::<String>::None,
+                agent_content => Option::<String>::None,
                 skills,
                 agents => Vec::<Agent>::new(),
+                loaded_skills => Vec::<&Skill>::new(),
                 global_agents_md => String::new(),
                 local_agents_md => String::new(),
                 date => "2026-04-10",
                 pwd => "/test/project",
                 repo_root => repo_root.map(|s| s.to_string()),
-                format_instructions,
+                json_output,
             },
         )
     }
@@ -280,15 +240,17 @@ mod test_helpers {
             "system_prompt",
             super::SYSTEM_PROMPT_TEMPLATE,
             minijinja::context! {
-                is_subagent => true,
+                agent_name => Some("test-agent"),
+                agent_content => Some("You are a test agent."),
                 skills => empty,
                 agents => empty_agents,
+                loaded_skills => Vec::<&Skill>::new(),
                 global_agents_md => String::new(),
                 local_agents_md => String::new(),
                 date => "2026-04-10",
                 pwd => "/test/project",
                 repo_root => repo_root.map(|s| s.to_string()),
-                format_instructions => String::new(),
+                json_output => false,
             },
         )
     }
@@ -301,15 +263,17 @@ mod test_helpers {
             "system_prompt",
             super::SYSTEM_PROMPT_TEMPLATE,
             minijinja::context! {
-                is_subagent => false,
+                agent_name => Option::<String>::None,
+                agent_content => Option::<String>::None,
                 skills => empty,
                 agents => empty_agents,
+                loaded_skills => Vec::<&Skill>::new(),
                 global_agents_md,
                 local_agents_md,
                 date => "2026-04-10",
                 pwd => "/test/project",
                 repo_root => Option::<String>::None,
-                format_instructions => String::new(),
+                json_output => false,
             },
         )
     }
@@ -324,7 +288,7 @@ mod tests {
 
     #[test]
     fn main_agent_has_all_tools() {
-        let result = render_main(&[], None, "");
+        let result = render_main(&[], None, false);
         assert!(
             result.contains("shell_tool")
                 && result.contains("load_skills")
@@ -357,7 +321,7 @@ mod tests {
 
     #[test]
     fn immutable_rules_appear_in_both_modes() {
-        let main = render_main(&[], None, "");
+        let main = render_main(&[], None, false);
         let sub = render_sub(None);
         let boundary = "START OF USER SECTION";
         assert!(
@@ -388,7 +352,7 @@ mod tests {
 
     #[test]
     fn main_agent_must_be_self_sufficient() {
-        let result = render_main(&[], None, "");
+        let result = render_main(&[], None, false);
         let role = result.split("Agent Role").nth(1).unwrap_or("");
         assert!(
             role.contains("NEVER ask") || role.contains("use your tools"),
@@ -406,11 +370,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn subagent_with_agent_name_includes_persona() {
+        let result = render_sub(None);
+        let role = result.split("Agent Role").nth(1).unwrap_or("");
+        assert!(
+            role.contains("You are a test agent."),
+            "subagent with agent_name must include agent_content persona"
+        );
+    }
+
     // ── Repo-awareness ─────────────────────────────────────────
 
     #[test]
     fn main_agent_does_not_hardcode_repo_instructions() {
-        let result = render_main(&[], Some("/my/project"), "");
+        let result = render_main(&[], Some("/my/project"), false);
         assert!(
             !result.contains("/my/project"),
             "repo root must not be hardcoded in system prompt"
@@ -419,7 +393,7 @@ mod tests {
 
     #[test]
     fn main_agent_outside_repo_has_no_repo_instructions() {
-        let result = render_main(&[], None, "");
+        let result = render_main(&[], None, false);
         assert!(
             !result.contains("git repo"),
             "should not mention git repo when not in one"
@@ -440,8 +414,8 @@ mod tests {
 
     #[test]
     fn skills_appear_only_when_provided() {
-        let with = render_main(&[skill("my-skill", "desc", "content")], None, "");
-        let without = render_main(&[], None, "");
+        let with = render_main(&[skill("my-skill", "desc", "content")], None, false);
+        let without = render_main(&[], None, false);
         assert!(with.contains("my-skill"), "provided skill must appear");
         assert!(
             !without.contains("my-skill"),
@@ -474,23 +448,22 @@ mod tests {
 
     #[test]
     fn runtime_context_includes_date_and_working_directory() {
-        let result = render_main(&[], None, "");
+        let result = render_main(&[], None, false);
         assert!(result.contains("2026-04-10"), "date must appear");
         assert!(result.contains("/test/project"), "pwd must appear");
     }
 
     #[test]
-    fn format_instructions_injected_when_provided() {
-        let with = render_main(&[], None, "respond in YAML");
-        let without = render_main(&[], None, "");
+    fn json_output_mode_injected_when_enabled() {
+        let with = render_main(&[], None, true);
+        let without = render_main(&[], None, false);
         assert!(
-            with.contains("respond in YAML"),
-            "format instructions must appear"
+            with.contains("JSON Output Mode"),
+            "json output mode must appear when enabled"
         );
-        let trimmed = without.trim();
         assert!(
-            !trimmed.ends_with("format_instructions"),
-            "no dangling format instructions"
+            !without.contains("JSON Output Mode"),
+            "json output mode must not appear when disabled"
         );
     }
 
@@ -501,7 +474,7 @@ mod tests {
         let result = render_main(
             &[skill("bash", "commands", "content")],
             Some("/repo"),
-            "format",
+            false,
         );
         assert!(!result.contains("{%"), "unrendered Jinja block tag");
         assert!(!result.contains("{{"), "unrendered Jinja expression");
@@ -564,33 +537,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn mentioned_skills_message_shows_loaded_and_available() {
-        let skills = vec![
-            skill("review", "code review", "review content"),
-            skill("filesystem", "file ops", "fs content"),
-        ];
-        let result = super::mentioned_skills_message(&skills, &["/review this"]).unwrap();
-        assert!(result.contains("Skill: review"), "loaded skill must appear");
-        assert!(
-            result.contains("Other available skills"),
-            "available section must appear"
-        );
-        assert!(
-            result.contains("filesystem"),
-            "non-loaded skill must be listed as available"
-        );
-    }
-
-    #[test]
-    fn mentioned_skills_returns_none_when_nothing_mentioned() {
-        let skills = vec![skill("review", "code review", "content")];
-        assert!(
-            super::mentioned_skills_message(&skills, &["nothing relevant"]).is_none(),
-            "must return None when no skills mentioned"
-        );
-    }
-
     // ── resolve_with_needs (shared by mention resolution and load_skills) ──
 
     #[test]
@@ -632,7 +578,7 @@ mod tests {
     // ── Agent + skill integration ──────────────────────────────────
 
     #[test]
-    fn agent_auto_loads_its_skills() {
+    fn resolve_preloaded_skills_auto_loads_from_agents() {
         let skills = vec![
             skill("explore", "explore codebase", "explore content"),
             skill("review", "code review", "review content"),
@@ -643,41 +589,35 @@ mod tests {
             vec!["explore", "review"],
             "Be thorough.",
         )];
-        let result =
-            super::build_agent_skills_message(&skills, &agents, &["/reviewer check this"]).unwrap();
+        let resolved = super::resolve_preloaded_skills(&skills, &agents, &["/reviewer check this"]);
+        let names: Vec<&str> = resolved.iter().map(|s| s.name.as_str()).collect();
         assert!(
-            result.contains("Agent: reviewer"),
-            "agent section must appear"
-        );
-        assert!(result.contains("Be thorough."), "agent content must appear");
-        assert!(
-            result.contains("Skill: explore"),
-            "agent skill must auto-load"
+            names.contains(&"explore"),
+            "agent skill must auto-load via resolve_preloaded_skills"
         );
         assert!(
-            result.contains("Skill: review"),
-            "agent skill must auto-load"
+            names.contains(&"review"),
+            "agent skill must auto-load via resolve_preloaded_skills"
         );
     }
 
     #[test]
-    fn no_agents_falls_back_to_skills_only() {
+    fn resolve_preloaded_skills_includes_direct_mentions() {
         let skills = vec![skill("review", "code review", "review content")];
         let agents: Vec<Agent> = vec![];
-        let result = super::build_agent_skills_message(&skills, &agents, &["/review this"]);
+        let resolved = super::resolve_preloaded_skills(&skills, &agents, &["/review this"]);
+        let names: Vec<&str> = resolved.iter().map(|s| s.name.as_str()).collect();
         assert!(
-            result.is_some(),
-            "should still resolve skills without agents"
+            names.contains(&"review"),
+            "directly mentioned skill must resolve"
         );
-        assert!(result.unwrap().contains("Skill: review"));
     }
 
     #[test]
-    fn no_mentions_returns_none() {
+    fn no_agents_no_mentions_returns_empty() {
         let skills = vec![skill("review", "code review", "content")];
         let agents = vec![agent("reviewer", "reviewer", vec![], "content")];
-        assert!(
-            super::build_agent_skills_message(&skills, &agents, &["nothing relevant"]).is_none()
-        );
+        let resolved = super::resolve_preloaded_skills(&skills, &agents, &["nothing relevant"]);
+        assert!(resolved.is_empty(), "no mentions should resolve to empty");
     }
 }

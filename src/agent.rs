@@ -108,14 +108,9 @@ fn load_embedded_agents() -> Vec<Agent> {
         .collect()
 }
 
-/// Load all agents: embedded + global (~/.pie/agents/) + local (.pie/agents/).
-/// Local overrides global, global overrides embedded.
-pub fn get_all_agents() -> Vec<Agent> {
-    let mut agents: Vec<Agent> = load_embedded_agents();
-    let mut names: HashSet<String> = agents.iter().map(|a| a.name.clone()).collect();
-
-    // Global filesystem agents override embedded
-    for agent in load_agents_from_dir(&agents_root_global()) {
+/// Merge agents into the list, overriding by name.
+fn merge_agents(agents: &mut Vec<Agent>, names: &mut HashSet<String>, incoming: Vec<Agent>) {
+    for agent in incoming {
         if names.contains(&agent.name) {
             if let Some(existing) = agents.iter_mut().find(|a| a.name == agent.name) {
                 *existing = agent;
@@ -125,18 +120,22 @@ pub fn get_all_agents() -> Vec<Agent> {
             agents.push(agent);
         }
     }
+}
+
+/// Load all agents: embedded + global (~/.pie/agents/) + local (.pie/agents/).
+/// Local overrides global, global overrides embedded.
+pub fn get_all_agents() -> Vec<Agent> {
+    let mut agents: Vec<Agent> = load_embedded_agents();
+    let mut names: HashSet<String> = agents.iter().map(|a| a.name.clone()).collect();
+
+    merge_agents(
+        &mut agents,
+        &mut names,
+        load_agents_from_dir(&agents_root_global()),
+    );
 
     if let Some(local_dir) = agents_root_local() {
-        for agent in load_agents_from_dir(&local_dir) {
-            if names.contains(&agent.name) {
-                if let Some(existing) = agents.iter_mut().find(|a| a.name == agent.name) {
-                    *existing = agent;
-                }
-            } else {
-                names.insert(agent.name.clone());
-                agents.push(agent);
-            }
-        }
+        merge_agents(&mut agents, &mut names, load_agents_from_dir(&local_dir));
     }
 
     agents
