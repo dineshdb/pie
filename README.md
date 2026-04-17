@@ -1,7 +1,7 @@
 # pie
 
-A minimal AI coding agent written in Rust. Runs on Apple on-device models or any
-OpenAI-compatible provider.
+A minimal AI coding agent written in Rust. Runs on any OpenAI-compatible
+provider.
 
 Pie is a CLI agent that answers questions, runs shell commands, and delegates to
 skill-based subagents. It maintains persistent sessions per working directory
@@ -73,20 +73,11 @@ Fields:
 
 ## Skills
 
+Browse and install skills at [agentskills.io](https://agentskills.io).
+
 Skills are markdown files placed in `~/.pie/skills/<name>/SKILL.md` with YAML
-frontmatter:
-
-```markdown
----
-name: search
-description: Search the web for information
----
-
-Skill instructions here...
-```
-
-Skills are auto-detected from queries mentioning `/<skill-name>` and injected
-into the prompt. Skills can reference other skills, which are resolved
+frontmatter. They are auto-detected from queries mentioning `/<skill-name>` and
+injected into the prompt. Skills can reference other skills, which are resolved
 recursively.
 
 ## Sandboxing
@@ -140,7 +131,6 @@ Place `~/.pie/sandbox.json` to customise restrictions (uses defaults if absent):
 | Language            | Rust                   | TypeScript                 | Rust             | Python                |
 | Runtime             | Single binary          | Node.js                    | Single binary    | Python + venv         |
 | Provider            | Any OpenAI-compatible  | Anthropic only             | OpenAI only      | Any OpenAI-compatible |
-| Apple on-device     | Yes                    | No                         | No               | No                    |
 | Session persistence | SQLite per directory   | JSON per project           | None             | Per conversation      |
 | Skill system        | Markdown + frontmatter | CLAUDE.md + slash commands | None             | Markdown skills       |
 | Subagents           | Skill-based delegation | Task agents                | None             | Skill-based           |

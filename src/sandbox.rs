@@ -154,8 +154,7 @@ pub fn is_srt_available() -> bool {
     Command::new("which")
         .arg("srt")
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success())
 }
 
 /// Build a sandboxed command using `srt`.

@@ -2,8 +2,9 @@
 
 - [x] Add support for markdown rendering in the interactive tui
 - [x] Add .pie/agents/ support that defines what each agent does. This splits
-  skills as composable and agents as runnable.
-- [ ] Restrict /plan mode to read only, while only allowing it to write plan files.
+      skills as composable and agents as runnable.
+- [ ] Restrict /plan mode to read only, while only allowing it to write plan
+      files.
 - [x] Batching the tool calls for faster iterations.
 - [x] Unless --md or --json is mentioned, pie starts in interactive mode.
 - [ ] Implement Adaptive Compaction: Replace large, old tool outputs (e.g.,

@@ -53,7 +53,7 @@ use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(name = "pie", version = "0.1.0")]
-#[command(about = "Minimal Pi-like agent using Apple on-device AI or OpenAI-compatible providers")]
+#[command(about = "Minimal Pi-like agent using OpenAI-compatible providers")]
 #[allow(clippy::struct_excessive_bools)]
 struct Cli {
     /// Explicitly use a specific skill

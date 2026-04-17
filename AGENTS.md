@@ -9,12 +9,14 @@ After each change, run following tests to verify if the change is valid.
 - repo test
 - test.py gives a summary of issues in the codebase based on runtime behavior.
   You should review the response and try to fix the issues.
-- Deterministic tests go to the rust tests, non deterministic tests go to tests.yaml.
+- Deterministic tests go to the rust tests, non deterministic tests go to
+  tests.yaml.
 - You are not allowed to change tests just to make tests pass
 - Tests should check the behavior of the program (specs) instead of
   implementation details
 
 ## Rules
+
 - Always use /simplify at the end of a feature request to find and fix any
   redundancies, extra code, unneeded features, etc.
 - You should always rethink the available codebase in terms of new feature being
