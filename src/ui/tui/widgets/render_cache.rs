@@ -91,5 +91,6 @@ fn role_color(role: Role) -> Color {
         Role::User => Color::White,
         Role::Assistant => Color::Gray,
         Role::System => Color::Yellow,
+        Role::Tool => Color::DarkGray,
     }
 }

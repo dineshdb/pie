@@ -77,6 +77,9 @@ Run separate commands instead.
   read files, explore the repo. If you are inside a repository, /explore to
   gather codebase details first. Ultimately, all skills and agents will run tool
   to fulfill the tasks.
+- BEFORE each tool call, verify the name matches a registered tool. Skills and
+  agents are NOT tools — after loading a skill, use `shell_tool` to run the
+  commands the skill describes. To delegate to an agent, use `subagent`.
 - Verify what skills are already needed and identify which needs to be loaded.
 - Minimize questions. Make reasonable assumptions from context and act. Only ask
   when the task is genuinely ambiguous and the wrong assumption would cause

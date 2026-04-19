@@ -1,6 +1,6 @@
 use crate::config::pie_home;
 use crate::providers::Model;
-use crate::session::Session;
+use crate::session::{Role, Session};
 use crate::ui::tui::command::{self, Command, CommandAction};
 use crate::ui::tui::event::{AppEvent, HandleResult};
 use crate::ui::tui::state::{ChatMessage, StreamState};
@@ -69,9 +69,10 @@ impl AppModel {
         let mut messages = vec![ChatMessage::system("Welcome to pie! Type ? for help.")];
         for entry in session.history_entries() {
             let msg = match entry.role {
-                crate::session::Role::User => ChatMessage::user(&entry.content),
-                crate::session::Role::Assistant => ChatMessage::assistant(&entry.content),
-                crate::session::Role::System => ChatMessage::system(&entry.content),
+                Role::User => ChatMessage::user(&entry.content),
+                Role::Assistant => ChatMessage::assistant(&entry.content),
+                Role::System => ChatMessage::system(&entry.content),
+                Role::Tool => ChatMessage::tool(&entry.content),
             };
             messages.push(msg);
         }
@@ -135,6 +136,28 @@ impl AppModel {
             AppEvent::StreamDelta(delta) => self.append_stream_delta(&delta),
             AppEvent::StreamDone(output) => self.finish_stream(output),
             AppEvent::StreamError(err) => self.stream_error(&err),
+            AppEvent::ToolCallStart { name, params } => {
+                // ToolCallStart fires first (no params), ToolCallAvailable fires
+                // after with params. Update the existing message when params arrive.
+                if params.is_empty() {
+                    self.add_message(ChatMessage::tool(&name));
+                } else if let Some(msg) = self.messages.last_mut()
+                    && msg.role == Role::Tool
+                {
+                    msg.set_content(format!("{name}({params})"));
+                }
+            }
+            AppEvent::ToolCallEnd { output } => {
+                // Append truncated output to the last tool message
+                if let Some(msg) = self.messages.last_mut()
+                    && msg.role == Role::Tool
+                {
+                    let truncated = truncate_tool_output(&output, 120);
+                    if !truncated.is_empty() {
+                        msg.set_content(format!("{} → {}", msg.content, truncated));
+                    }
+                }
+            }
             AppEvent::ScrollUp => self.chat_state.scroll_up(3),
             AppEvent::ScrollDown => self.chat_state.scroll_down(3),
             AppEvent::Key(_) | AppEvent::Resize => {}
@@ -554,6 +577,23 @@ impl AppModel {
             }
             Command::Clear => CommandAction::ClearMessages,
             Command::Send(query) => CommandAction::Stream(query),
+            Command::Invoke {
+                name,
+                query,
+                is_agent,
+            } => {
+                // Rewrite the query so the LLM knows exactly what to do.
+                // /agent-name query → "Use subagent to spawn the /agent-name agent for: query"
+                // /skill-name query → "/skill-name query" (existing skill preloading handles it)
+                let rewritten = if is_agent {
+                    format!("Use the subagent tool with agent_name=\"{name}\" to handle: {query}")
+                } else if query.is_empty() {
+                    format!("/{name}")
+                } else {
+                    format!("/{name} {query}")
+                };
+                CommandAction::Stream(rewritten)
+            }
         }
     }
 
@@ -610,6 +650,16 @@ fn apply_textarea_style(textarea: &mut TextArea<'static>) {
     textarea.set_style(Style::default().fg(Color::White));
 }
 
+/// Collapse multiline output to one line and truncate.
+fn truncate_tool_output(output: &str, max_len: usize) -> String {
+    let single_line: String = output.lines().collect::<Vec<_>>().join(" ");
+    if single_line.len() <= max_len {
+        single_line
+    } else {
+        format!("{}…", &single_line[..max_len])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -636,7 +686,7 @@ mod tests {
         assert_eq!(app.messages.len(), 1, "new session should have welcome");
         assert_eq!(
             app.messages[0].role,
-            crate::session::Role::System,
+            Role::System,
             "first message should be system welcome"
         );
         assert!(
@@ -664,9 +714,9 @@ mod tests {
             app.messages[0].content
         );
         // Then history in order
-        assert_eq!(app.messages[1].role, crate::session::Role::User);
+        assert_eq!(app.messages[1].role, Role::User);
         assert_eq!(app.messages[1].content, "hello");
-        assert_eq!(app.messages[2].role, crate::session::Role::Assistant);
+        assert_eq!(app.messages[2].role, Role::Assistant);
         assert_eq!(app.messages[2].content, "hi there");
     }
 

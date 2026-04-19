@@ -23,6 +23,7 @@ pub enum Role {
     User,
     Assistant,
     System,
+    Tool,
 }
 
 #[derive(Clone)]

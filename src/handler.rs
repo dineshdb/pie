@@ -42,7 +42,7 @@ pub fn build_request(
         let msg = match entry.role {
             Role::User => Message::User(UserMessage::new(&entry.content)),
             Role::Assistant => Message::Assistant(AssistantMessage::from(entry.content.clone())),
-            Role::System => continue,
+            Role::System | Role::Tool => continue,
         };
         messages.push(msg);
     }

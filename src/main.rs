@@ -271,8 +271,6 @@ mod tests {
     #[test]
     fn resolve_session_restores_when_resuming() {
         let pool = Arc::new(db::create_pool(true).unwrap());
-        let _cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
-
         // Create a session with history for current cwd
         let mut original = Session::create(pool.clone()).unwrap();
         original.add_user("hello").unwrap();

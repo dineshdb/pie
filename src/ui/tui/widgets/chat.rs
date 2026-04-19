@@ -118,6 +118,7 @@ fn message_prefix(role: Role, is_latest: bool) -> Span<'static> {
                 .add_modifier(Modifier::BOLD),
         ),
         Role::User => Span::styled("> ", Style::default().fg(Color::DarkGray)),
+        Role::Tool => Span::styled("▸ ", Style::default().fg(Color::Cyan)),
         _ => Span::styled("  ", Style::default().fg(Color::DarkGray)),
     }
 }

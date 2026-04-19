@@ -94,15 +94,13 @@ pub fn cursor_position(area: Rect, cursor_row: usize, cursor_col: usize) -> (u16
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     fn render_input(view: InputView<'_>, width: u16, height: u16) -> Buffer {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| f.render_widget(view, f.area()))
-            .unwrap();
+        terminal.draw(|f| f.render_widget(view, f.area())).unwrap();
         terminal.backend().buffer().clone()
     }
 
@@ -146,14 +144,8 @@ mod tests {
         };
         let buf = render_input(view, 30, 3);
         let content = row(&buf, 1);
-        assert!(
-            content.contains(">"),
-            "non-empty input should show prompt"
-        );
-        assert!(
-            content.contains("hello"),
-            "input should show typed content"
-        );
+        assert!(content.contains(">"), "non-empty input should show prompt");
+        assert!(content.contains("hello"), "input should show typed content");
     }
 
     #[test]

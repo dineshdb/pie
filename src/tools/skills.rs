@@ -33,10 +33,7 @@ pub fn load_skills_tool(skills: Vec<Skill>, loaded: Option<Arc<Mutex<HashSet<Str
     let skills = Arc::new(skills);
     Tool::builder()
         .name("load_skills")
-        .description(
-            "Load skill instructions by name. Auto-resolves needs dependencies. \
-             Already-loaded skills are skipped with a message.",
-        )
+        .description("Load skill knowledge")
         .input_schema(schemars::schema_for!(LoadSkillsInput))
         .execute(ToolExecute::from_sync(move |_ctx, params| {
             let names = extract_string_array(&params, "skills");
@@ -106,7 +103,7 @@ fn validate_ref_name(name: &str) -> Result<(), String> {
 pub fn load_references_tool(loaded_refs: Arc<Mutex<HashSet<String>>>) -> Tool {
     Tool::builder()
         .name("load_references")
-        .description("Load reference files from a skill directory")
+        .description("Load reference files of a skill for extra knowledge")
         .input_schema(schemars::schema_for!(LoadReferencesInput))
         .execute(ToolExecute::from_sync(move |_ctx, params| {
             let Some(skill_name) = params.get("skill").and_then(|v| v.as_str()) else {

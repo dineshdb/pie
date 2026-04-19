@@ -93,7 +93,11 @@ mod tests {
             |p: &(&str, &str)| p.0,
         );
         assert_eq!(items.len(), 2, "override should not increase length");
-        assert_eq!(items.first(), Some(&("a", "v2")), "existing item should be replaced");
+        assert_eq!(
+            items.first(),
+            Some(&("a", "v2")),
+            "existing item should be replaced"
+        );
         assert_eq!(items.get(1), Some(&("b", "v1")), "unrelated item unchanged");
     }
 

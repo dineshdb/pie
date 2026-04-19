@@ -172,13 +172,7 @@ fn make_subagent_tool(
 ) -> Tool {
     Tool::builder()
         .name("subagent")
-        .description(if depth == 0 {
-            "Delegate a task to an agent or skill by name. Add /<mentions>, \
-             requirements, and details to the query."
-        } else {
-            "Delegate a subtask to a specialized agent. The agent will have its own \
-             context and tools."
-        })
+        .description("Delegate a task to an subagent with detailed instructions.")
         .input_schema(schemars::schema_for!(SubagentInput))
         .execute(ToolExecute::from_async(move |_ctx, params| {
             let name = params
@@ -456,8 +450,8 @@ mod tests {
     }
 
     #[test]
-    fn make_subagent_tool_description_changes_with_depth() -> anyhow::Result<()> {
-        let tool_0 = make_subagent_tool(
+    fn make_subagent_tool_description_is_set() -> anyhow::Result<()> {
+        let tool = make_subagent_tool(
             dummy_model()?,
             vec![],
             vec![],
@@ -465,21 +459,9 @@ mod tests {
             None,
             0,
         );
-        let tool_1 = make_subagent_tool(
-            dummy_model()?,
-            vec![],
-            vec![],
-            PathBuf::from("/tmp"),
-            None,
-            1,
-        );
-        assert_ne!(
-            tool_0.description, tool_1.description,
-            "descriptions should differ by depth"
-        );
         assert!(
-            tool_0.description.contains("agent or skill"),
-            "depth 0 mentions agent or skill"
+            !tool.description.is_empty(),
+            "subagent tool must have a description"
         );
         Ok(())
     }

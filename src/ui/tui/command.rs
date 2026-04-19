@@ -4,6 +4,12 @@ use crate::ui::tui::state::ChatMessage;
 pub enum Command {
     /// Send a chat message / invoke a skill/agent.
     Send(String),
+    /// Invoke a named agent or skill with a query.
+    Invoke {
+        name: String,
+        query: String,
+        is_agent: bool,
+    },
     /// Quit the application.
     Quit,
     /// Show help text.
@@ -24,7 +30,32 @@ impl Command {
                 "/help" | "/h" => Self::Help,
                 "/skills" | "/ls" => Self::ListSkills,
                 "/clear" => Self::Clear,
-                _ => Self::Send(input.to_string()),
+                rest => {
+                    // Try to resolve /name to an agent or skill
+                    let without_slash = &rest[1..];
+                    let (name, query) = match without_slash.split_once(' ') {
+                        Some((n, q)) => (n, q.trim()),
+                        None => (without_slash, ""),
+                    };
+                    let agents = crate::agent::get_all_agents();
+                    if agents.iter().any(|a| a.name == name) {
+                        return Self::Invoke {
+                            name: name.to_string(),
+                            query: query.to_string(),
+                            is_agent: true,
+                        };
+                    }
+                    let skills = crate::skill::get_all_skills();
+                    if skills.iter().any(|s| s.name == name) {
+                        return Self::Invoke {
+                            name: name.to_string(),
+                            query: query.to_string(),
+                            is_agent: false,
+                        };
+                    }
+                    // Unknown /command — send as-is so the LLM can handle it
+                    Self::Send(input.to_string())
+                }
             }
         } else {
             Self::Send(input.to_string())

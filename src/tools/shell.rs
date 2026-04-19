@@ -15,7 +15,7 @@ pub fn shell_tool(sandbox_settings: PathBuf) -> Tool {
     let sandbox_settings = Arc::new(sandbox_settings);
     Tool::builder()
         .name("shell_tool")
-        .description("Execute a shell command and return its stdout, stderr, and exit code.")
+        .description("Execute a system command, bash tools, clis, etc.")
         .input_schema(schemars::schema_for!(ShellInput))
         .execute(ToolExecute::from_sync(move |_ctx, params| {
             let Some(cmd) = params.get("cmd").and_then(|v| v.as_str()) else {

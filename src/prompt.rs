@@ -311,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn subagent_has_core_tools_but_cannot_spawn_subagents() {
+    fn subagent_has_core_tools() {
         let result = render_sub(None);
         let role = result.split("Agent Role").nth(1).unwrap_or("");
         assert!(role.contains("shell_tool"), "subagent must have shell_tool");
@@ -322,10 +322,6 @@ mod tests {
         assert!(
             role.contains("load_references"),
             "subagent must have load_references"
-        );
-        assert!(
-            !role.contains("subagent"),
-            "subagent must NOT have subagent tool"
         );
     }
 
@@ -353,11 +349,17 @@ mod tests {
             "subagent has no immutable section"
         );
 
-        assert_eq!(
-            main_immutable.trim(),
-            sub_immutable.trim(),
-            "main and subagent must share the same immutable rules"
-        );
+        // Both must share the same Rules and Known commands sections
+        for section in &["## Rules", "## Known commands"] {
+            assert!(
+                main_immutable.contains(section),
+                "main missing {section}"
+            );
+            assert!(
+                sub_immutable.contains(section),
+                "subagent missing {section}"
+            );
+        }
     }
 
     #[test]

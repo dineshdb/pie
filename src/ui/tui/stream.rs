@@ -62,6 +62,32 @@ async fn run_stream(
                             let _ = event_tx.send(AppEvent::StreamDelta(accumulated.clone()));
                         }
                     }
+                    Some(LanguageModelStreamChunkType::ToolCallStart(details)) => {
+                        let _ = event_tx.send(AppEvent::ToolCallStart {
+                            name: details.name.clone(),
+                            params: String::new(),
+                        });
+                    }
+                    Some(LanguageModelStreamChunkType::ToolCallAvailable(info)) => {
+                        let params = format_tool_params(&info.input);
+                        // Update the last tool message with params
+                        let _ = event_tx.send(AppEvent::ToolCallStart {
+                            name: info.tool.name.clone(),
+                            params,
+                        });
+                    }
+                    Some(LanguageModelStreamChunkType::ToolCallEnd(result)) => {
+                        let output_text = result
+                            .output
+                            .as_ref()
+                            .ok()
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let _ = event_tx.send(AppEvent::ToolCallEnd {
+                            output: output_text,
+                        });
+                    }
                     Some(LanguageModelStreamChunkType::Failed(err)) => {
                         let _ = event_tx.send(AppEvent::StreamError(err.clone()));
                         break;
@@ -95,4 +121,29 @@ async fn run_stream(
     }
 
     let _ = event_tx.send(AppEvent::StreamDone(output));
+}
+
+/// Format tool input params as a compact single-line summary.
+fn format_tool_params(input: &serde_json::Value) -> String {
+    let Some(obj) = input.as_object() else {
+        return String::new();
+    };
+    let parts: Vec<String> = obj
+        .iter()
+        .map(|(k, v)| {
+            let val = match v {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Array(arr) => {
+                    let items: Vec<String> = arr
+                        .iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect();
+                    items.join(", ")
+                }
+                other => other.to_string(),
+            };
+            format!("{k}: {val}")
+        })
+        .collect();
+    parts.join(", ")
 }

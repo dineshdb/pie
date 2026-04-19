@@ -8,6 +8,8 @@ pub enum AppEvent {
     StreamDelta(String),
     StreamDone(String),
     StreamError(String),
+    ToolCallStart { name: String, params: String },
+    ToolCallEnd { output: String },
     Resize,
 }
 

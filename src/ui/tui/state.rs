@@ -45,6 +45,14 @@ impl ChatMessage {
         }
     }
 
+    pub fn tool(content: &str) -> Self {
+        Self {
+            role: Role::Tool,
+            content: content.to_string(),
+            is_streaming: false,
+        }
+    }
+
     pub fn set_content(&mut self, content: String) {
         self.content = content;
     }
