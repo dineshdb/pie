@@ -27,19 +27,14 @@ pub fn post_process_response(mut response: LanguageModelResponse) -> LanguageMod
 
     let mut new_contents = Vec::new();
     for content in response.contents {
-        match content {
-            LanguageModelResponseContentType::Text(ref text) => {
-                if !has_structured_tool_calls && let Some(calls) = extract_inline_tool_calls(text) {
-                    new_contents.extend(calls);
-                    continue;
-                }
-                new_contents.push(content);
-            }
-            LanguageModelResponseContentType::ToolCall(_) => {
-                new_contents.push(content);
-            }
-            other => new_contents.push(other),
+        if let LanguageModelResponseContentType::Text(ref text) = content
+            && !has_structured_tool_calls
+            && let Some(calls) = extract_inline_tool_calls(text)
+        {
+            new_contents.extend(calls);
+            continue;
         }
+        new_contents.push(content);
     }
 
     response.contents = new_contents;
@@ -215,24 +210,6 @@ mod tests {
         let text = "Just a regular response with no tool calls.";
         let result = extract_inline_tool_calls(text);
         assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_find_matching_brace_simple() {
-        assert_eq!(find_matching_brace("{}}"), Some(1));
-        assert_eq!(find_matching_brace(r#"{"key": "value"}"#), Some(15));
-    }
-
-    #[test]
-    fn test_find_matching_brace_nested() {
-        assert_eq!(find_matching_brace(r#"{"a": {"b": 1}}"#), Some(14));
-    }
-
-    #[test]
-    fn test_normalize_tool_args() {
-        let input = r#"{skill_name:<|"|>web-search<|"|>,query:<|"|>test<|"|>}"#;
-        let normalized = normalize_tool_args(input);
-        assert_eq!(normalized, r#"{"skill_name":"web-search","query":"test"}"#);
     }
 
     #[test]

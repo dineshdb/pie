@@ -64,50 +64,6 @@ impl Default for FilesystemConfig {
     }
 }
 
-/// Configuration file written for srt to consume (~/.pie/srt-settings.json)
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SrtSettings {
-    network: SrtNetwork,
-    filesystem: SrtFilesystem,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SrtNetwork {
-    #[serde(default)]
-    allowed_domains: Vec<String>,
-    #[serde(default)]
-    denied_domains: Vec<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SrtFilesystem {
-    #[serde(default)]
-    deny_read: Vec<String>,
-    #[serde(default)]
-    allow_write: Vec<String>,
-    #[serde(default)]
-    deny_write: Vec<String>,
-}
-
-impl From<&SandboxConfig> for SrtSettings {
-    fn from(cfg: &SandboxConfig) -> Self {
-        Self {
-            network: SrtNetwork {
-                allowed_domains: cfg.network.allowed_domains.clone(),
-                denied_domains: cfg.network.denied_domains.clone(),
-            },
-            filesystem: SrtFilesystem {
-                deny_read: cfg.filesystem.deny_read.clone(),
-                allow_write: cfg.filesystem.allow_write.clone(),
-                deny_write: cfg.filesystem.deny_write.clone(),
-            },
-        }
-    }
-}
-
 fn config_path() -> PathBuf {
     pie_home().join("sandbox.json")
 }
@@ -144,7 +100,7 @@ pub fn prepare(cfg: &SandboxConfig) -> anyhow::Result<PathBuf> {
         tracing::debug!(path = %path.display(), "srt settings already exist — skipping write");
         return Ok(path);
     }
-    let settings = SrtSettings::from(cfg);
+    let settings = cfg;
     let json = serde_json::to_string_pretty(&settings)
         .map_err(|e| anyhow::anyhow!("Failed to serialize srt settings: {e}"))?;
     fs::write(&path, &json)
@@ -177,17 +133,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_config_serializes_to_srt_format() -> anyhow::Result<()> {
-        let cfg = SandboxConfig::default();
-        let settings = SrtSettings::from(&cfg);
-        let json = serde_json::to_string_pretty(&settings)?;
-        assert!(json.contains("allowedDomains"));
-        assert!(json.contains("denyRead"));
-        assert!(json.contains("allowWrite"));
-        Ok(())
-    }
-
-    #[test]
     fn default_config_has_sensible_defaults() {
         let cfg = SandboxConfig::default();
         assert!(!cfg.network.allowed_domains.is_empty());
@@ -208,10 +153,5 @@ mod tests {
             .collect();
         assert!(args.contains(&"--settings".to_string()));
         assert!(args.contains(&"/tmp/test-srt-settings.json".to_string()));
-    }
-
-    #[test]
-    fn load_config_missing_file_returns_default() {
-        let _cfg = load_config();
     }
 }

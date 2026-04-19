@@ -241,18 +241,21 @@ impl AppModel {
         self.render_input(frame, input_area);
         self.render_completions(frame, input_area);
 
-        if self.is_streaming() && !self.stream_effect_active {
-            let effect = fx::repeating(fx::hsl_shift_fg(
-                [30.0, 20.0, 10.0],
-                (1500, tachyonfx::Interpolation::SineInOut),
-            ));
-            let effect = effect.with_filter(CellFilter::FgColor(Color::Rgb(255, 140, 0)));
-            self.effects.add_unique_effect("stream", effect);
-            self.stream_effect_active = true;
-        }
-        if !self.is_streaming() && self.stream_effect_active {
-            self.effects.cancel_unique_effect("stream");
-            self.stream_effect_active = false;
+        match (self.is_streaming(), self.stream_effect_active) {
+            (true, false) => {
+                let effect = fx::repeating(fx::hsl_shift_fg(
+                    [30.0, 20.0, 10.0],
+                    (1500, tachyonfx::Interpolation::SineInOut),
+                ));
+                let effect = effect.with_filter(CellFilter::FgColor(Color::Rgb(255, 140, 0)));
+                self.effects.add_unique_effect("stream", effect);
+                self.stream_effect_active = true;
+            }
+            (false, true) => {
+                self.effects.cancel_unique_effect("stream");
+                self.stream_effect_active = false;
+            }
+            _ => {}
         }
 
         let elapsed = self.last_frame.elapsed();
@@ -424,8 +427,7 @@ impl AppModel {
     }
 
     pub fn accept_completion(&mut self) {
-        let selected = self.completion.selected().map(ToString::to_string);
-        if let Some(completion) = selected {
+        if let Some(completion) = self.completion.selected().map(ToString::to_string) {
             self.apply_completion(&completion);
         }
     }

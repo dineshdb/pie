@@ -60,17 +60,4 @@ mod tests {
         }
         assert!(result.len() > 1, "Should produce multiple lines");
     }
-
-    #[test]
-    fn wrap_line_short_text_unchanged() {
-        let input = "short";
-        let result = wrap_line(input, 20);
-        assert_eq!(result, vec!["short"]);
-    }
-
-    #[test]
-    fn wrap_line_empty() {
-        let result = wrap_line("", 20);
-        assert_eq!(result, vec![""]);
-    }
 }

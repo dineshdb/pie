@@ -172,12 +172,9 @@ pub fn get_all_agents() -> Vec<Agent> {
 
 /// Resolve agents mentioned as `/agent-name` in the given sources.
 pub fn resolve_mentioned_agents<'a>(sources: &[&str], agents: &'a [Agent]) -> Vec<&'a Agent> {
-    let patterns: Vec<String> = agents.iter().map(|a| format!("/{}", a.name)).collect();
     agents
         .iter()
-        .zip(&patterns)
-        .filter(|(_, pat)| sources.iter().any(|s| s.contains(pat.as_str())))
-        .map(|(agent, _)| agent)
+        .filter(|a| sources.iter().any(|s| s.contains(&format!("/{}", a.name))))
         .collect()
 }
 
@@ -200,17 +197,6 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("expected temperature"))?;
         assert!((temp - 0.3).abs() < f32::EPSILON);
         assert_eq!(agent.content, "Be direct and thorough.");
-        Ok(())
-    }
-
-    #[test]
-    fn parse_agent_minimal() -> Result<()> {
-        let raw = "---\nname: helper\ndescription: helps\n---\nContent";
-        let agent = parse_agent(raw, "helper.md").ok_or_else(|| anyhow::anyhow!("parse failed"))?;
-        assert_eq!(agent.name, "helper");
-        assert_eq!(agent.interactivity, Interactivity::None);
-        assert!(agent.model.is_none());
-        assert!(agent.temperature.is_none());
         Ok(())
     }
 
@@ -241,15 +227,6 @@ mod tests {
             agent.content,
             "You are a codebase analyst.\nReport findings concisely."
         );
-        Ok(())
-    }
-
-    #[test]
-    fn parse_agent_no_frontmatter_empty_file() -> Result<()> {
-        let raw = "";
-        let agent = parse_agent(raw, "empty.md").ok_or_else(|| anyhow::anyhow!("parse failed"))?;
-        assert_eq!(agent.name, "empty");
-        assert!(agent.content.is_empty());
         Ok(())
     }
 

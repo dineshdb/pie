@@ -83,6 +83,24 @@ struct LoadReferencesInput {
     references: Vec<String>,
 }
 
+/// Validate a reference filename: no path traversal, absolute paths, hidden files; must be .md.
+fn validate_ref_name(name: &str) -> Result<(), String> {
+    if name.contains("..") || name.starts_with('/') || name.starts_with('.') {
+        return Err(format!(
+            "Invalid reference '{name}': path traversal, absolute paths, and hidden files are not allowed"
+        ));
+    }
+    let is_md = Path::new(name)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"));
+    if !is_md {
+        return Err(format!(
+            "Invalid reference '{name}': only .md files are allowed"
+        ));
+    }
+    Ok(())
+}
+
 /// Load reference files from a skill directory. Tracks what's already loaded.
 #[allow(clippy::unwrap_used)]
 pub fn load_references_tool(loaded_refs: Arc<Mutex<HashSet<String>>>) -> Tool {
@@ -99,23 +117,13 @@ pub fn load_references_tool(loaded_refs: Arc<Mutex<HashSet<String>>>) -> Tool {
             let ref_names = extract_string_array(&params, "references");
 
             if ref_names.is_empty() {
-                return Err("references parameter must be a non-empty array of filenames".to_string());
+                return Err(
+                    "references parameter must be a non-empty array of filenames".to_string(),
+                );
             }
 
             for name in &ref_names {
-                if name.contains("..") || name.starts_with('/') || name.starts_with('.') {
-                    return Err(format!(
-                        "Invalid reference '{name}': path traversal, absolute paths, and hidden files are not allowed"
-                    ));
-                }
-                if !Path::new(name)
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
-                {
-                    return Err(format!(
-                        "Invalid reference '{name}': only .md files are allowed"
-                    ));
-                }
+                validate_ref_name(name)?;
             }
 
             if !skill::skill_exists(&skill_name) {
@@ -125,25 +133,20 @@ pub fn load_references_tool(loaded_refs: Arc<Mutex<HashSet<String>>>) -> Tool {
             let mut output = String::new();
             for ref_name in &ref_names {
                 let key = format!("{skill_name}/{ref_name}");
-                {
-                    let loaded = super::safe_lock(&loaded_refs);
-                    if loaded.contains(&key) {
-                        writeln!(output, "Reference {key} already loaded — skipping.").ok();
-                        continue;
-                    }
+                if super::safe_lock(&loaded_refs).contains(&key) {
+                    writeln!(output, "Reference {key} already loaded — skipping.").ok();
+                    continue;
                 }
-                match skill::load_reference(&skill_name, ref_name) {
-                    Some(content) => {
-                        write!(output, "### Reference: {key}\n{content}\n---\n").ok();
-                        super::safe_lock(&loaded_refs).insert(key);
-                    }
-                    None => {
-                        writeln!(
-                            output,
-                            "Error: reference '{ref_name}' not found for skill '{skill_name}'"
-                        ).ok();
-                    }
-                }
+                let Some(content) = skill::load_reference(&skill_name, ref_name) else {
+                    writeln!(
+                        output,
+                        "Error: reference '{ref_name}' not found for skill '{skill_name}'"
+                    )
+                    .ok();
+                    continue;
+                };
+                write!(output, "### Reference: {key}\n{content}\n---\n").ok();
+                super::safe_lock(&loaded_refs).insert(key);
             }
             Ok(output)
         }))

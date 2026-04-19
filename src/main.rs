@@ -127,7 +127,7 @@ async fn main() -> anyhow::Result<()> {
         cli.api_key.as_deref(),
     )?;
 
-    let persistent = cli.persistent || std::env::var("PERSISTENT").is_ok();
+    let persistent = cli.persistent || cli.r#continue || std::env::var("PERSISTENT").is_ok();
     let pool = Arc::new(db::create_pool(persistent)?);
 
     let piped_stdin = read_piped_stdin();
@@ -156,13 +156,18 @@ async fn main() -> anyhow::Result<()> {
             anyhow::bail!("Usage: pie -s <skill> '<query>'");
         }
 
-        let full_query = match (&piped_stdin, query.is_empty()) {
-            (Some(stdin), false) => format!("## Stdin\n```\n{stdin}\n```\n\n{query}"),
-            (Some(stdin), true) => stdin.clone(),
-            (_, false) => query,
-            (_, true) => anyhow::bail!(
+        let full_query = if query.is_empty() && piped_stdin.is_none() {
+            anyhow::bail!(
                 "No query provided. Use `pie` for interactive mode or pass a query with --md or --json."
-            ),
+            );
+        } else {
+            match piped_stdin.as_deref() {
+                Some(stdin) if !query.is_empty() => {
+                    format!("## Stdin\n```\n{stdin}\n```\n\n{query}")
+                }
+                Some(stdin) => stdin.to_string(),
+                None => query,
+            }
         };
 
         let mem_pool = Arc::new(db::create_pool(false)?);
@@ -183,9 +188,12 @@ async fn main() -> anyhow::Result<()> {
     ui::tui::run_tui(model, session, sandbox_settings).await
 }
 
+fn default_env_filter(default_level: &str) -> EnvFilter {
+    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level))
+}
+
 fn init_stderr_subscriber(debug: bool) {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(if debug { "debug" } else { "refinery=warn" }));
+    let filter = default_env_filter(if debug { "debug" } else { "refinery=warn" });
 
     let subscriber = tracing_subscriber::fmt()
         .with_target(false)
@@ -201,8 +209,7 @@ fn init_stderr_subscriber(debug: bool) {
 }
 
 fn init_file_subscriber(session_id: &str, debug: bool) {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(if debug { "debug" } else { "warn" }));
+    let filter = default_env_filter(if debug { "debug" } else { "warn" });
 
     let log_path = logs_dir().join(format!("{session_id}.log"));
     let file = match std::fs::File::create(&log_path) {
@@ -238,10 +245,6 @@ fn read_piped_stdin() -> Option<String> {
     }
     let mut buf = String::new();
     io::stdin().read_to_string(&mut buf).ok()?;
-    let trimmed = buf.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
+    let trimmed = buf.trim().to_string();
+    (!trimmed.is_empty()).then_some(trimmed)
 }

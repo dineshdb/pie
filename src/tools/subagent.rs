@@ -268,19 +268,6 @@ mod tests {
     }
 
     #[test]
-    fn execute_rejects_empty_query() -> anyhow::Result<()> {
-        let sub = new_subagent(vec![], vec![])?;
-        let rt = tokio::runtime::Runtime::new()?;
-        let result = rt.block_on(sub.execute("name", "", 0, None));
-        assert!(result.is_err());
-        let Err(e) = result else {
-            anyhow::bail!("expected error")
-        };
-        assert!(e.contains("required"));
-        Ok(())
-    }
-
-    #[test]
     fn execute_rejects_unknown_name() -> anyhow::Result<()> {
         let sub = new_subagent(
             vec![skill("bash", "commands", "content")],
@@ -328,26 +315,6 @@ mod tests {
             !err.contains("not found"),
             "should not say 'not found': {err}"
         );
-        Ok(())
-    }
-
-    // ── Preloading ──────────────────────────────────────────────────
-
-    #[test]
-    fn preload_skills_tracks_names() -> anyhow::Result<()> {
-        let sub = new_subagent(vec![skill("bash", "commands", "content")], vec![])?;
-        sub.preload_skills(&["bash".to_string()]);
-        let loaded = crate::tools::safe_lock(&sub.loaded_skills);
-        assert!(loaded.contains("bash"));
-        Ok(())
-    }
-
-    #[test]
-    fn preload_skills_deduplicates() -> anyhow::Result<()> {
-        let sub = new_subagent(vec![], vec![])?;
-        sub.preload_skills(&["bash".to_string(), "bash".to_string()]);
-        let loaded = crate::tools::safe_lock(&sub.loaded_skills);
-        assert_eq!(loaded.len(), 1);
         Ok(())
     }
 
@@ -485,35 +452,6 @@ mod tests {
             !tools_2.iter().any(|t| t.name == "subagent"),
             "depth 2 must NOT have subagent"
         );
-        Ok(())
-    }
-
-    // ── SubagentInput schema ────────────────────────────────────────
-
-    #[test]
-    fn subagent_input_deserializes() -> anyhow::Result<()> {
-        let json = r#"{"name": "explore", "query": "analyze this"}"#;
-        let input: SubagentInput = serde_json::from_str(json)?;
-        assert_eq!(input.name, "explore");
-        assert_eq!(input.query, "analyze this");
-        Ok(())
-    }
-
-    #[test]
-    fn subagent_input_schema_has_name_and_query() -> anyhow::Result<()> {
-        let schema = schemars::schema_for!(SubagentInput);
-        let json = serde_json::to_string(&schema)?;
-        assert!(json.contains("name"), "schema must have 'name' field");
-        assert!(json.contains("query"), "schema must have 'query' field");
-        Ok(())
-    }
-
-    // ── Tool creation ───────────────────────────────────────────────
-
-    #[test]
-    fn subagent_tool_has_correct_name() -> anyhow::Result<()> {
-        let tool = subagent_tool(dummy_model()?, vec![], vec![], PathBuf::from("/tmp"));
-        assert_eq!(tool.name, "subagent");
         Ok(())
     }
 

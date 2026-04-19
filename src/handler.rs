@@ -70,15 +70,16 @@ pub fn build_request(
         .build()
 }
 
+const CONTROL_TOKENS: &[&str] = &["<eos>", "<|end|>", "</think_end>", "<|end_of_turn|>"];
+
 /// Strip provider control tokens that leak as text.
 pub fn strip_control_tokens(text: &str) -> String {
     if !text.contains('<') {
         return text.to_string();
     }
-    text.replace("<eos>", "")
-        .replace("<|end|>", "")
-        .replace("</think_end>", "")
-        .replace("<|end_of_turn|>", "")
+    CONTROL_TOKENS
+        .iter()
+        .fold(text.to_string(), |acc, tok| acc.replace(tok, ""))
 }
 
 /// Extract the output text from a response (handles both text and tool results).
@@ -129,23 +130,81 @@ pub async fn handle_query(
     let output = extract_output_text(&assistant_text, response.tool_results().as_deref());
     let output = strip_control_tokens(&output);
 
-    if !output.is_empty() {
-        if format.is_json() {
-            let json_resp = JsonResponse::new(
-                output.clone(),
-                Some(session.id.to_string()),
-                Some(model.name()),
-            );
-            println!("{}", serde_json::to_string(&json_resp)?);
-        } else {
-            println!("{output}");
+    session.add_user(query)?;
+
+    if output.is_empty() {
+        return Ok(());
+    }
+
+    if format.is_json() {
+        let json_resp = JsonResponse::new(
+            output.clone(),
+            Some(session.id.to_string()),
+            Some(model.name()),
+        );
+        println!("{}", serde_json::to_string(&json_resp)?);
+    } else {
+        println!("{output}");
+    }
+    session.add_assistant(&output)?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aisdk::core::tools::ToolDetails;
+
+    fn tool_result(tool_name: &str, output: &str) -> aisdk::core::ToolResultInfo {
+        aisdk::core::ToolResultInfo {
+            tool: ToolDetails {
+                name: tool_name.to_string(),
+                ..Default::default()
+            },
+            output: Ok(serde_json::json!(output)),
         }
     }
 
-    session.add_user(query)?;
-    if !output.is_empty() {
-        session.add_assistant(&output)?;
+    #[test]
+    fn strip_control_tokens_removes_all_variants() {
+        let input = "a<eos>b<|end|>c</think_end>d<|end_of_turn|>e";
+        assert_eq!(strip_control_tokens(input), "abcde");
     }
 
-    Ok(())
+    #[test]
+    fn extract_output_prefers_text_even_with_tool_results() {
+        let tool_results = vec![tool_result("shell_tool", "tool output")];
+        let result = extract_output_text("the answer", Some(&tool_results));
+        assert_eq!(result, "the answer");
+    }
+
+    #[test]
+    fn extract_output_prefers_subagent_result_over_text() {
+        let tool_results = vec![tool_result("subagent", "subagent answer")];
+        let result = extract_output_text("llm text", Some(&tool_results));
+        assert_eq!(result, "subagent answer");
+    }
+
+    #[test]
+    fn extract_output_falls_back_to_shell_tool_result_when_no_text() {
+        let tool_results = vec![
+            tool_result("other_tool", "other"),
+            tool_result("shell_tool", "shell output"),
+        ];
+        let result = extract_output_text("", Some(&tool_results));
+        assert_eq!(result, "shell output");
+    }
+
+    #[test]
+    fn extract_output_falls_back_to_last_tool_result_when_no_shell() {
+        let tool_results = vec![tool_result("other_tool", "last result")];
+        let result = extract_output_text("", Some(&tool_results));
+        assert_eq!(result, "last result");
+    }
+
+    #[test]
+    fn extract_output_returns_empty_when_nothing_available() {
+        assert!(extract_output_text("", None).is_empty());
+    }
 }

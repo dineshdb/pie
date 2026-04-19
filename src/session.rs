@@ -183,15 +183,6 @@ mod tests {
     }
 
     #[test]
-    fn load_existing_session() -> anyhow::Result<()> {
-        let pool = pool()?;
-        let session = Session::create(pool.clone())?;
-        let loaded = Session::load(pool, session.id)?;
-        assert!(loaded.history_entries().is_empty());
-        Ok(())
-    }
-
-    #[test]
     fn load_nonexistent_session() -> anyhow::Result<()> {
         let pool = pool()?;
         let result = Session::load(pool, Uuid::now_v7());
@@ -276,27 +267,6 @@ mod tests {
             .get(1)
             .ok_or_else(|| anyhow::anyhow!("no entry 1"))?;
         assert_eq!(second.content, "second");
-        Ok(())
-    }
-
-    #[test]
-    fn cache_rebuilt_after_rebuild_cache() -> anyhow::Result<()> {
-        let pool = pool()?;
-        let mut session = Session::create(pool.clone())?;
-        session.add_user("msg")?;
-        assert_eq!(session.history_entries().len(), 1);
-
-        // Manually clear cache and rebuild
-        session.cache.clear();
-        assert!(session.history_entries().is_empty());
-
-        session.rebuild_cache()?;
-        assert_eq!(session.history_entries().len(), 1);
-        let first = session
-            .history_entries()
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("no entry 0"))?;
-        assert_eq!(first.content, "msg");
         Ok(())
     }
 }

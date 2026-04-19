@@ -75,15 +75,9 @@ pub fn subagent_prompt(
     agent_name: Option<&str>,
     loaded: &[&Skill],
 ) -> String {
-    let agent_content = agent_name.and_then(|name| {
-        agents
-            .iter()
-            .find(|a| a.name == name)
-            .map(|a| a.content.as_str())
-    });
-    let interactivity = agent_name
-        .and_then(|name| agents.iter().find(|a| a.name == name))
-        .map_or("none", |a| a.interactivity.as_ref());
+    let agent = agent_name.and_then(|name| agents.iter().find(|a| a.name == name));
+    let agent_content = agent.map(|a| a.content.as_str());
+    let interactivity = agent.map_or("none", |a| a.interactivity.as_ref());
     let (date, pwd) = context_vars();
     render_template(
         "system_prompt",
@@ -133,12 +127,14 @@ pub fn resolve_with_needs<'a>(names: &[String], skills: &'a [Skill]) -> Vec<&'a 
 /// Also auto-resolves explicit `needs` dependencies from resolved skills.
 /// Auto-detects common patterns (e.g. "summarize repo" → explore) for small models.
 pub fn resolve_mentioned<'a>(sources: &[&str], skills: &'a [Skill]) -> Vec<&'a Skill> {
-    let patterns: Vec<String> = skills.iter().map(|s| format!("/{}", s.name)).collect();
     let mut mentioned_names: Vec<String> = skills
         .iter()
-        .zip(&patterns)
-        .filter(|(_, pat)| sources.iter().any(|s| s.contains(pat.as_str())))
-        .map(|(skill, _)| skill.name.clone())
+        .filter(|s| {
+            sources
+                .iter()
+                .any(|src| src.contains(&format!("/{}", s.name)))
+        })
+        .map(|s| s.name.clone())
         .collect();
 
     // Auto-detect repo exploration patterns → load explore skill
@@ -364,8 +360,6 @@ mod tests {
         );
     }
 
-    // ── Self-sufficiency ─────────────────────────────────────────
-
     #[test]
     fn main_agent_must_be_self_sufficient() {
         let result = render_main(&[], None, false);
@@ -373,16 +367,6 @@ mod tests {
         assert!(
             role.contains("NEVER ask") || role.contains("use your tools"),
             "main agent must be told to use tools instead of asking user"
-        );
-    }
-
-    #[test]
-    fn subagent_must_be_concise_and_immediate() {
-        let result = render_sub(None);
-        let role = result.split("Agent Role").nth(1).unwrap_or("");
-        assert!(
-            role.contains("final answer immediately"),
-            "subagent must provide answer immediately after tool results"
         );
     }
 

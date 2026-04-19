@@ -94,15 +94,10 @@ impl CompletionState {
         if self.candidates.is_empty() {
             return;
         }
+        let len = self.candidates.len();
         self.index = match direction {
-            Direction::Prev => {
-                if self.index == 0 {
-                    self.candidates.len() - 1
-                } else {
-                    self.index - 1
-                }
-            }
-            Direction::Next => (self.index + 1) % self.candidates.len(),
+            Direction::Prev => (self.index + len - 1) % len,
+            Direction::Next => (self.index + 1) % len,
         };
     }
 

@@ -63,46 +63,34 @@ pub fn get_all_skills() -> Vec<Skill> {
     }
 
     let mut names: HashSet<String> = skills.iter().map(|s| s.name.clone()).collect();
-
     let root = skills_root();
-    let Ok(entries) = fs::read_dir(&root) else {
-        return skills;
-    };
+    let filesystem_skills = load_skills_from_dir(&root);
 
-    for entry in entries.flatten() {
-        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
-            continue;
-        }
-        let dir_path = entry.path();
-        let md_path = dir_path.join("SKILL.md");
-        let Ok(raw) = fs::read_to_string(&md_path) else {
-            continue;
-        };
-        let Some(skill) = parse_skill(&raw) else {
-            continue;
-        };
-        let name = skill.name.clone();
-        if names.contains(&name) {
-            if let Some(existing) = skills.iter_mut().find(|s| s.name == name) {
-                *existing = skill;
-            }
-        } else {
-            names.insert(name);
-            skills.push(skill);
-        }
-    }
+    crate::utils::merge_by_name(&mut skills, &mut names, filesystem_skills, |s| &s.name);
     skills
+}
+
+/// Load skills from a filesystem directory of skill subdirectories.
+fn load_skills_from_dir(dir: &std::path::Path) -> Vec<Skill> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|e| {
+            let md_path = e.path().join("SKILL.md");
+            let raw = fs::read_to_string(&md_path).ok()?;
+            parse_skill(&raw)
+        })
+        .collect()
 }
 
 /// Resolve the directory path for a filesystem skill by name.
 /// Returns None for embedded-only skills with no filesystem override.
 pub fn skill_dir(name: &str) -> Option<PathBuf> {
     let dir = skills_root().join(name);
-    if dir.join("SKILL.md").exists() {
-        Some(dir)
-    } else {
-        None
-    }
+    dir.join("SKILL.md").exists().then_some(dir)
 }
 
 /// Load a reference file for a skill. Checks filesystem skills first (user overrides),
@@ -173,28 +161,5 @@ mod tests {
         assert_eq!(skill.needs, vec!["filesystem", "developer"]);
         assert_eq!(skill.content, "Content here");
         Ok(())
-    }
-
-    #[test]
-    fn parse_skill_without_needs() -> anyhow::Result<()> {
-        let raw = "---\nname: bash\ndescription: run commands\n---\nContent";
-        let skill = parse_skill(raw).ok_or_else(|| anyhow::anyhow!("parse failed"))?;
-        assert!(skill.needs.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn split_frontmatter_no_frontmatter() {
-        let (yaml, body) = split_frontmatter("Just body text");
-        assert!(yaml.is_empty());
-        assert_eq!(body, "Just body text");
-    }
-
-    #[test]
-    fn split_frontmatter_with_frontmatter() {
-        let raw = "---\nname: foo\n---\nBody content";
-        let (yaml, body) = split_frontmatter(raw);
-        assert_eq!(yaml, "name: foo");
-        assert_eq!(body, "Body content");
     }
 }

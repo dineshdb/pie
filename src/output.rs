@@ -37,3 +37,15 @@ impl JsonResponse {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_explicit_only_true_for_markdown_and_json() {
+        assert!(!OutputFormat::Default.is_explicit());
+        assert!(OutputFormat::Markdown.is_explicit());
+        assert!(OutputFormat::Json.is_explicit());
+    }
+}

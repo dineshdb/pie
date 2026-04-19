@@ -28,31 +28,26 @@ pub fn shell_tool(sandbox_settings: PathBuf) -> Tool {
                 .env("PAGER", "cat")
                 .env("EDITOR", "true")
                 .output();
-            let result = match output {
+            let (stdout, stderr, exit_code) = match output {
                 Ok(out) => {
                     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
                     let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
                     let exit_code = out.status.code().unwrap_or(-1);
                     tracing::debug!(exit_code, stdout_len = stdout.len(), out = %stdout, "shell:");
-                    json!({
-                        "cmd": cmd,
-                        "exitCode": exit_code,
-                        "stdout": stdout,
-                        "stderr": stderr,
-                        "success": exit_code == 0
-                    })
+                    (stdout, stderr, exit_code)
                 }
                 Err(e) => {
                     tracing::debug!(error = %e, "shell_tool failed");
-                    json!({
-                        "cmd": cmd,
-                        "exitCode": -1,
-                        "stdout": "",
-                        "stderr": e.to_string(),
-                        "success": false
-                    })
+                    (String::new(), e.to_string(), -1)
                 }
             };
+            let result = json!({
+                "cmd": cmd,
+                "exitCode": exit_code,
+                "stdout": stdout,
+                "stderr": stderr,
+                "success": exit_code == 0
+            });
             tracing::trace!(%result, "shell:");
             Ok(serde_json::to_string(&result).unwrap_or_default())
         }))
