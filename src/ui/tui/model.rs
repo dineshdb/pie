@@ -66,7 +66,7 @@ impl AppModel {
             ta
         };
 
-        let mut messages = Vec::new();
+        let mut messages = vec![ChatMessage::system("Welcome to pie! Type ? for help.")];
         for entry in session.history_entries() {
             let msg = match entry.role {
                 crate::session::Role::User => ChatMessage::user(&entry.content),
@@ -608,4 +608,101 @@ fn apply_textarea_style(textarea: &mut TextArea<'static>) {
     textarea.set_cursor_line_style(Style::default());
     textarea.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
     textarea.set_style(Style::default().fg(Color::White));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db;
+    use crate::session::Session;
+    use std::sync::Arc;
+
+    fn test_pool() -> Arc<db::DbPool> {
+        Arc::new(db::create_test_pool().unwrap())
+    }
+
+    fn test_model() -> Model {
+        Model::test_dummy().unwrap()
+    }
+
+    // ── Session restore ordering ────────────────────────────────────
+
+    #[test]
+    fn new_session_has_welcome_message_first() {
+        let pool = test_pool();
+        let session = Session::create(pool).unwrap();
+        let app = AppModel::new(test_model(), &session, PathBuf::from("/tmp"));
+
+        assert_eq!(app.messages.len(), 1, "new session should have welcome");
+        assert_eq!(
+            app.messages[0].role,
+            crate::session::Role::System,
+            "first message should be system welcome"
+        );
+        assert!(
+            app.messages[0].content.contains("Welcome"),
+            "welcome message should contain 'Welcome'"
+        );
+    }
+
+    #[test]
+    fn restored_session_places_history_after_welcome() {
+        let pool = test_pool();
+        let mut session = Session::create(pool.clone()).unwrap();
+        session.add_user("hello").unwrap();
+        session.add_assistant("hi there").unwrap();
+
+        // Reload session (simulates --continue finding the session)
+        let session = Session::load(pool, session.id).unwrap();
+        let app = AppModel::new(test_model(), &session, PathBuf::from("/tmp"));
+
+        assert_eq!(app.messages.len(), 3);
+        // Welcome first
+        assert!(
+            app.messages[0].content.contains("Welcome"),
+            "welcome must be first, got: {:?}",
+            app.messages[0].content
+        );
+        // Then history in order
+        assert_eq!(app.messages[1].role, crate::session::Role::User);
+        assert_eq!(app.messages[1].content, "hello");
+        assert_eq!(app.messages[2].role, crate::session::Role::Assistant);
+        assert_eq!(app.messages[2].content, "hi there");
+    }
+
+    #[test]
+    fn restored_session_auto_scrolls_to_bottom() {
+        let pool = test_pool();
+        let mut session = Session::create(pool.clone()).unwrap();
+        // Add enough messages to overflow a small terminal
+        for i in 0..20 {
+            session.add_user(&format!("query {i}")).unwrap();
+            session.add_assistant(&format!("answer {i}")).unwrap();
+        }
+
+        let session = Session::load(pool, session.id).unwrap();
+        let app = AppModel::new(test_model(), &session, PathBuf::from("/tmp"));
+
+        assert!(
+            app.chat_state.auto_scroll,
+            "restored session should auto_scroll to show latest"
+        );
+    }
+
+    // ── add_message behavior ────────────────────────────────────────
+
+    #[test]
+    fn add_message_auto_scrolls() {
+        let pool = test_pool();
+        let session = Session::create(pool).unwrap();
+        let mut app = AppModel::new(test_model(), &session, PathBuf::from("/tmp"));
+
+        app.chat_state.auto_scroll = false;
+        app.add_message(ChatMessage::user("test"));
+
+        assert!(
+            app.chat_state.auto_scroll,
+            "add_message should enable auto_scroll"
+        );
+    }
 }

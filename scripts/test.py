@@ -44,7 +44,7 @@ Also report a summary:
 - Total tool calls (count "shell_tool", "subagent", "load_skills", "load_references")
 - Efficiency score: 1-5 (5 = optimal, 1 = very wasteful)
 
-Be specific. Reference actual commands and line content from the log."""
+Be specific. Reference actual commands and line content from the log. Skip a section if no issues are found."""
 
 MAX_VALUE_LEN = 200
 
@@ -93,6 +93,7 @@ def run_pie(args, input_text=None, timeout=30):
     if input_text:
         cmd += [input_text]
     cmd.append("--debug")
+    cmd.append("--md")
     try:
         r = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout, cwd=ROOT

@@ -2,7 +2,6 @@ use crate::providers::Model;
 use crate::session::Session;
 use crate::ui::tui::event::{AppEvent, HandleResult};
 use crate::ui::tui::model::AppModel;
-use crate::ui::tui::state::ChatMessage;
 use anyhow::Result;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event as CrosstermEvent, MouseEventKind,
@@ -22,8 +21,6 @@ pub async fn run_tui(model: Model, session: Session, sandbox_settings: PathBuf) 
     terminal.clear()?;
 
     let mut app = AppModel::new(model, &session, sandbox_settings);
-
-    app.add_message(ChatMessage::system("Welcome to pie! Type ? for help."));
 
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
 

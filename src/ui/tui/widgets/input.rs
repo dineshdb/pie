@@ -90,3 +90,102 @@ pub fn cursor_position(area: Rect, cursor_row: usize, cursor_col: usize) -> (u16
         area.y + 1 + cursor_row as u16,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn render_input(view: InputView<'_>, width: u16, height: u16) -> Buffer {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| f.render_widget(view, f.area()))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn row(buf: &Buffer, row: u16) -> String {
+        (0..buf.area.width)
+            .map(|col| buf[(col, row)].symbol().to_string())
+            .collect::<Vec<_>>()
+            .join("")
+            .trim_end()
+            .to_string()
+    }
+
+    #[test]
+    fn empty_input_shows_placeholder() {
+        let view = InputView {
+            text_lines: vec![String::new()],
+            cursor_row: 0,
+            placeholder: "Type something",
+            hint: "",
+            is_empty: true,
+            is_streaming: false,
+        };
+        let buf = render_input(view, 30, 3);
+        // Row 1 is the content row (row 0 is the top border)
+        let content = row(&buf, 1);
+        assert!(
+            content.contains("Type something"),
+            "empty input should show placeholder, got: {content}"
+        );
+    }
+
+    #[test]
+    fn input_with_text_shows_prompt_and_content() {
+        let view = InputView {
+            text_lines: vec!["hello world".to_string()],
+            cursor_row: 0,
+            placeholder: "",
+            hint: "",
+            is_empty: false,
+            is_streaming: false,
+        };
+        let buf = render_input(view, 30, 3);
+        let content = row(&buf, 1);
+        assert!(
+            content.contains(">"),
+            "non-empty input should show prompt"
+        );
+        assert!(
+            content.contains("hello"),
+            "input should show typed content"
+        );
+    }
+
+    #[test]
+    fn streaming_input_has_colored_border() {
+        let view = InputView {
+            text_lines: vec![String::new()],
+            cursor_row: 0,
+            placeholder: "",
+            hint: "",
+            is_empty: true,
+            is_streaming: true,
+        };
+        let buf = render_input(view, 30, 3);
+        // Top border should be orange (streaming color)
+        let border_cell = &buf[(0, 0)];
+        assert_eq!(
+            border_cell.fg,
+            Color::Rgb(255, 140, 0),
+            "streaming border should be orange"
+        );
+    }
+
+    #[test]
+    fn cursor_position_accounts_for_prompt_offset() {
+        let area = Rect::new(0, 0, 40, 5);
+        // Row 0 with col 0 should offset by 2 (prompt "> ")
+        let (x, y) = cursor_position(area, 0, 0);
+        assert_eq!(x, 2, "first row cursor should offset for prompt");
+        assert_eq!(y, 1, "cursor should be below top border");
+
+        // Row 1+ should have no offset
+        let (x, _) = cursor_position(area, 1, 5);
+        assert_eq!(x, 5, "subsequent rows should have no prompt offset");
+    }
+}

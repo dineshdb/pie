@@ -125,3 +125,107 @@ fn message_prefix(role: Role, is_latest: bool) -> Span<'static> {
 fn continuation_prefix() -> Span<'static> {
     Span::styled("  ", Style::default().fg(Color::DarkGray))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn render_chat(messages: &[ChatMessage], width: u16, height: u16) -> Buffer {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut cache = MessageRenderCache::new();
+        let mut state = ChatState::new();
+        terminal
+            .draw(|f| {
+                let lines = build_chat_lines(messages, &mut cache, width as usize);
+                let view = ChatView { lines: &lines };
+                f.render_stateful_widget(view, f.area(), &mut state);
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+    #[test]
+    fn session_restore_shows_welcome_then_history_in_order() {
+        // Simulates --continue: welcome msg first, then restored history
+        let messages = vec![
+            ChatMessage::system("Welcome to pie!"),
+            ChatMessage::user("hello"),
+            ChatMessage::assistant("hi there"),
+        ];
+        let buf = render_chat(&messages, 40, 10);
+
+        // "Welcome" should appear at the top (row 0)
+        let row0 = buffer_row(&buf, 0);
+        assert!(
+            row0.contains("Welcome"),
+            "welcome message should be first row, got: {row0}"
+        );
+
+        // "hello" (user message with "> " prefix) should be after welcome
+        let content = buffer_to_string(&buf);
+        let welcome_pos = content.find("Welcome").unwrap_or(0);
+        let hello_pos = content.find("hello").unwrap_or(0);
+        assert!(
+            hello_pos > welcome_pos,
+            "user message should appear after welcome"
+        );
+    }
+
+    #[test]
+    fn chat_shows_user_message_with_arrow_prefix() {
+        let messages = vec![ChatMessage::user("test query")];
+        let buf = render_chat(&messages, 40, 5);
+        let row0 = buffer_row(&buf, 0);
+        assert!(
+            row0.contains(">"),
+            "user message should have > prefix, got: {row0}"
+        );
+    }
+
+    #[test]
+    fn auto_scroll_shows_latest_messages() {
+        // More messages than can fit — auto_scroll should show the last ones
+        let messages: Vec<ChatMessage> = (0..20)
+            .map(|i| ChatMessage::assistant(&format!("line {i}")))
+            .collect();
+        let buf = render_chat(&messages, 30, 5);
+        let content = buffer_to_string(&buf);
+        assert!(
+            content.contains("line 19"),
+            "auto_scroll should show latest messages, got: {content}"
+        );
+        assert!(
+            !content.contains("line 0"),
+            "auto_scroll should not show earliest messages"
+        );
+    }
+
+    #[test]
+    fn scroll_up_disables_auto_scroll() {
+        let mut state = ChatState::new();
+        assert!(state.auto_scroll);
+        state.scroll_up(1);
+        assert!(!state.auto_scroll, "scroll_up should disable auto_scroll");
+    }
+
+    // ── Helpers ─────────────────────────────────────────────────────
+
+    fn buffer_row(buf: &Buffer, row: u16) -> String {
+        let width = buf.area.width;
+        (0..width)
+            .map(|col| buf[(col, row)].symbol().to_string())
+            .collect::<Vec<_>>()
+            .join("")
+            .trim_end()
+            .to_string()
+    }
+
+    fn buffer_to_string(buf: &Buffer) -> String {
+        (0..buf.area.height)
+            .map(|row| buffer_row(buf, row))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
