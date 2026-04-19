@@ -18,10 +18,10 @@ pub fn shell_tool(sandbox_settings: PathBuf) -> Tool {
         .description("Execute a shell command and return its stdout, stderr, and exit code.")
         .input_schema(schemars::schema_for!(ShellInput))
         .execute(ToolExecute::from_sync(move |_ctx, params| {
-            let cmd = match params.get("cmd").and_then(|v| v.as_str()) {
-                Some(c) => c.to_string(),
-                None => return Err("cmd parameter is required".to_string()),
+            let Some(cmd) = params.get("cmd").and_then(|v| v.as_str()) else {
+                return Err("cmd parameter is required".to_string());
             };
+            let cmd = cmd.to_string();
             tracing::debug!(cmd = %cmd, "shell:");
             let output = sandbox::build_command(&cmd, &sandbox_settings)
                 .env("GIT_TERMINAL_PROMPT", "0")

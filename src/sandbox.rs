@@ -119,13 +119,16 @@ fn srt_settings_path() -> PathBuf {
 /// Load sandbox config from ~/.pie/sandbox.json, falling back to defaults.
 pub fn load_config() -> SandboxConfig {
     let path = config_path();
-    match fs::read_to_string(&path) {
-        Ok(content) => serde_json::from_str(&content).unwrap_or_else(|e| {
-            tracing::warn!("Invalid sandbox config at {}: {e}", path.display());
-            SandboxConfig::default()
-        }),
-        Err(_) => SandboxConfig::default(),
-    }
+    fs::read_to_string(&path)
+        .ok()
+        .and_then(|content| {
+            serde_json::from_str(&content)
+                .inspect_err(|e| {
+                    tracing::warn!("Invalid sandbox config at {}: {e}", path.display());
+                })
+                .ok()
+        })
+        .unwrap_or_default()
 }
 
 /// Write the srt-compatible settings file and return the settings path.

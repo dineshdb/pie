@@ -43,12 +43,12 @@ mod tools;
 mod ui;
 mod utils;
 
+use crate::config::logs_dir;
 use crate::output::OutputFormat;
 use crate::{db::DbPool, session::Session};
 use clap::Parser;
 use std::io::{self, IsTerminal, Read};
 use std::sync::Arc;
-use tracing::Level;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -112,22 +112,6 @@ async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 
     let cli = Cli::parse();
-    {
-        let filter =
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("refinery=warn"));
-
-        let subscriber = tracing_subscriber::fmt()
-            .with_target(false)
-            .with_level(false)
-            .with_env_filter(filter)
-            .compact();
-
-        if cli.debug {
-            subscriber.with_max_level(Level::DEBUG).init();
-        } else {
-            subscriber.without_time().init();
-        }
-    }
 
     if cli.list_skills {
         cmd::handle_list_skills();
@@ -156,9 +140,11 @@ async fn main() -> anyhow::Result<()> {
         OutputFormat::Default
     };
 
-    // --md or --json → single-shot mode (no session persistence)
-    // Otherwise → interactive mode (session-backed)
+    // --md or --json → single-shot mode (logs to stderr)
+    // Otherwise → interactive mode (logs to .pie/logs/<session-id>.log)
     if format.is_explicit() {
+        init_stderr_subscriber(cli.debug);
+
         let cli_query = cli.query.join(" ");
         let query = if cli_query.is_empty() {
             piped_stdin.as_deref().unwrap_or_default().to_string()
@@ -191,9 +177,58 @@ async fn main() -> anyhow::Result<()> {
         .await;
     }
 
-    // Interactive mode: session-based REPL with persistence
+    // Interactive mode: session-based REPL with file logging
     let session = resolve_session(pool, cli.r#continue)?;
-    ui::interactive::start_interactive_mode(&mut model, session, sandbox_settings).await
+    init_file_subscriber(&session.id.to_string(), cli.debug);
+    ui::tui::run_tui(model, session, sandbox_settings).await
+}
+
+fn init_stderr_subscriber(debug: bool) {
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(if debug { "debug" } else { "refinery=warn" }));
+
+    let subscriber = tracing_subscriber::fmt()
+        .with_target(false)
+        .with_level(false)
+        .with_env_filter(filter)
+        .compact();
+
+    if debug {
+        subscriber.init();
+    } else {
+        subscriber.without_time().init();
+    }
+}
+
+fn init_file_subscriber(session_id: &str, debug: bool) {
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(if debug { "debug" } else { "warn" }));
+
+    let log_path = logs_dir().join(format!("{session_id}.log"));
+    let file = match std::fs::File::create(&log_path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!(
+                "Warning: cannot create log file {}: {e}",
+                log_path.display()
+            );
+            // Fall back to stderr
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .compact()
+                .init();
+            return;
+        }
+    };
+
+    tracing_subscriber::fmt()
+        .with_writer(file)
+        .with_ansi(false)
+        .with_target(true)
+        .with_level(true)
+        .with_env_filter(filter)
+        .compact()
+        .init();
 }
 
 /// Read piped stdin. Returns None if stdin is a terminal or empty.

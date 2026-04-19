@@ -97,26 +97,26 @@ impl Session {
     }
 
     pub fn find_latest_for_cwd(pool: Arc<DbPool>, cwd: &str) -> anyhow::Result<Option<Self>> {
-        let id_str = {
-            let conn = pool.get()?;
-            conn.query_row(
+        let conn = pool.get()?;
+        let id_str = conn
+            .query_row(
                 "SELECT id FROM sessions WHERE cwd = ? ORDER BY created_at DESC LIMIT 1",
                 rusqlite::params![cwd],
                 |row| row.get::<_, String>(0),
             )
-            .ok()
+            .ok();
+        let Some(id_str) = id_str else {
+            return Ok(None);
         };
-        match id_str {
-            Some(id_str) => {
-                let id = Uuid::parse_str(&id_str)?;
-                Ok(Some(Self::load(pool, id)?))
-            }
-            None => Ok(None),
-        }
+        Ok(Some(Self::load(pool, Uuid::parse_str(&id_str)?)?))
     }
 
     pub fn history_entries(&self) -> &[HistoryEntry] {
         &self.cache
+    }
+
+    pub fn pool(&self) -> &Arc<DbPool> {
+        &self.pool
     }
 
     fn add_message(&mut self, role: Role, content: &str) -> anyhow::Result<()> {

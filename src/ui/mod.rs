@@ -1,2 +1,1 @@
-pub mod interactive;
-pub mod markdown;
+pub mod tui;

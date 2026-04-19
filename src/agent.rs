@@ -145,34 +145,26 @@ fn load_embedded_agents() -> Vec<Agent> {
         .collect()
 }
 
-/// Merge agents into the list, overriding by name.
-fn merge_agents(agents: &mut Vec<Agent>, names: &mut HashSet<String>, incoming: Vec<Agent>) {
-    for agent in incoming {
-        if names.contains(&agent.name) {
-            if let Some(existing) = agents.iter_mut().find(|a| a.name == agent.name) {
-                *existing = agent;
-            }
-        } else {
-            names.insert(agent.name.clone());
-            agents.push(agent);
-        }
-    }
-}
-
 /// Load all agents: embedded + global (~/.pie/agents/) + local (.pie/agents/).
 /// Local overrides global, global overrides embedded.
 pub fn get_all_agents() -> Vec<Agent> {
     let mut agents: Vec<Agent> = load_embedded_agents();
     let mut names: HashSet<String> = agents.iter().map(|a| a.name.clone()).collect();
 
-    merge_agents(
+    crate::utils::merge_by_name(
         &mut agents,
         &mut names,
         load_agents_from_dir(&agents_root_global()),
+        |a| &a.name,
     );
 
     if let Some(local_dir) = agents_root_local() {
-        merge_agents(&mut agents, &mut names, load_agents_from_dir(&local_dir));
+        crate::utils::merge_by_name(
+            &mut agents,
+            &mut names,
+            load_agents_from_dir(&local_dir),
+            |a| &a.name,
+        );
     }
 
     agents

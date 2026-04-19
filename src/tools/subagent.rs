@@ -41,10 +41,7 @@ impl Subagent {
     }
 
     pub fn preload_skills(&self, names: &[String]) {
-        let mut loaded = self
-            .loaded_skills
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut loaded = crate::tools::safe_lock(&self.loaded_skills);
         for name in names {
             loaded.insert(name.clone());
         }
@@ -69,11 +66,7 @@ impl Subagent {
     }
 
     fn build_system_prompt(&self, name: &str) -> String {
-        let loaded_names = self
-            .loaded_skills
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+        let loaded_names = crate::tools::safe_lock(&self.loaded_skills).clone();
         let loaded: Vec<&Skill> = self
             .skills
             .iter()
@@ -344,10 +337,7 @@ mod tests {
     fn preload_skills_tracks_names() -> anyhow::Result<()> {
         let sub = new_subagent(vec![skill("bash", "commands", "content")], vec![])?;
         sub.preload_skills(&["bash".to_string()]);
-        let loaded = sub
-            .loaded_skills
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let loaded = crate::tools::safe_lock(&sub.loaded_skills);
         assert!(loaded.contains("bash"));
         Ok(())
     }
@@ -356,10 +346,7 @@ mod tests {
     fn preload_skills_deduplicates() -> anyhow::Result<()> {
         let sub = new_subagent(vec![], vec![])?;
         sub.preload_skills(&["bash".to_string(), "bash".to_string()]);
-        let loaded = sub
-            .loaded_skills
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let loaded = crate::tools::safe_lock(&sub.loaded_skills);
         assert_eq!(loaded.len(), 1);
         Ok(())
     }
@@ -380,10 +367,7 @@ mod tests {
     fn build_user_message_preloads_mentioned_skills() -> anyhow::Result<()> {
         let sub = new_subagent(vec![skill("bash", "commands", "content")], vec![])?;
         sub.build_user_message("bash", "run something");
-        let loaded = sub
-            .loaded_skills
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let loaded = crate::tools::safe_lock(&sub.loaded_skills);
         assert!(
             loaded.contains("bash"),
             "skill mentioned via /bash must be preloaded"
@@ -404,10 +388,7 @@ mod tests {
         )];
         let sub = new_subagent(skills, agents)?;
         sub.build_user_message("review", "check this code");
-        let loaded = sub
-            .loaded_skills
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let loaded = crate::tools::safe_lock(&sub.loaded_skills);
         assert!(
             loaded.contains("explore"),
             "skills from agent content must be preloaded"

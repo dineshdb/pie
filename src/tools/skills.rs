@@ -12,6 +12,18 @@ struct LoadSkillsInput {
     skills: Vec<String>,
 }
 
+fn extract_string_array(params: &serde_json::Value, key: &str) -> Vec<String> {
+    params
+        .get(key)
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(ToString::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Load one or more skills by name. Auto-resolves `needs` dependencies.
 ///
 /// When `loaded` is `Some`, already-loaded skills are skipped with a message
@@ -27,15 +39,7 @@ pub fn load_skills_tool(skills: Vec<Skill>, loaded: Option<Arc<Mutex<HashSet<Str
         )
         .input_schema(schemars::schema_for!(LoadSkillsInput))
         .execute(ToolExecute::from_sync(move |_ctx, params| {
-            let names: Vec<String> = params
-                .get("skills")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(ToString::to_string))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let names = extract_string_array(&params, "skills");
 
             if names.is_empty() {
                 return Err("skills parameter must be a non-empty array of skill names".to_string());
@@ -50,9 +54,7 @@ pub fn load_skills_tool(skills: Vec<Skill>, loaded: Option<Arc<Mutex<HashSet<Str
             let mut output = String::new();
             for skill in &resolved {
                 if let Some(ref loaded) = loaded {
-                    let mut guard = loaded
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut guard = super::safe_lock(loaded);
                     if guard.contains(&skill.name) {
                         writeln!(
                             output,
@@ -89,20 +91,12 @@ pub fn load_references_tool(loaded_refs: Arc<Mutex<HashSet<String>>>) -> Tool {
         .description("Load reference files from a skill directory")
         .input_schema(schemars::schema_for!(LoadReferencesInput))
         .execute(ToolExecute::from_sync(move |_ctx, params| {
-            let skill_name = match params.get("skill").and_then(|v| v.as_str()) {
-                Some(s) => s.to_string(),
-                None => return Err("skill parameter is required".to_string()),
+            let Some(skill_name) = params.get("skill").and_then(|v| v.as_str()) else {
+                return Err("skill parameter is required".to_string());
             };
+            let skill_name = skill_name.to_string();
 
-            let ref_names: Vec<String> = params
-                .get("references")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(ToString::to_string))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let ref_names = extract_string_array(&params, "references");
 
             if ref_names.is_empty() {
                 return Err("references parameter must be a non-empty array of filenames".to_string());
@@ -132,7 +126,7 @@ pub fn load_references_tool(loaded_refs: Arc<Mutex<HashSet<String>>>) -> Tool {
             for ref_name in &ref_names {
                 let key = format!("{skill_name}/{ref_name}");
                 {
-                    let loaded = loaded_refs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let loaded = super::safe_lock(&loaded_refs);
                     if loaded.contains(&key) {
                         writeln!(output, "Reference {key} already loaded — skipping.").ok();
                         continue;
@@ -141,7 +135,7 @@ pub fn load_references_tool(loaded_refs: Arc<Mutex<HashSet<String>>>) -> Tool {
                 match skill::load_reference(&skill_name, ref_name) {
                     Some(content) => {
                         write!(output, "### Reference: {key}\n{content}\n---\n").ok();
-                        loaded_refs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key);
+                        super::safe_lock(&loaded_refs).insert(key);
                     }
                     None => {
                         writeln!(
