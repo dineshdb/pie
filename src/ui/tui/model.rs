@@ -44,6 +44,8 @@ pub struct AppModel {
     pub effects: EffectManager<&'static str>,
     pub last_frame: Instant,
     stream_effect_active: bool,
+    /// Index of the current streaming response message (if any).
+    response_idx: Option<usize>,
     pub model: Model,
     pub session_id: uuid::Uuid,
     pub session_pool: Arc<crate::db::DbPool>,
@@ -94,6 +96,7 @@ impl AppModel {
             effects: EffectManager::default(),
             last_frame: Instant::now(),
             stream_effect_active: false,
+            response_idx: None,
             model,
             session_id,
             session_pool,
@@ -133,30 +136,17 @@ impl AppModel {
 
     pub fn handle_event(&mut self, event: AppEvent) {
         match event {
-            AppEvent::StreamDelta(delta) => self.append_stream_delta(&delta),
+            AppEvent::StreamDelta(delta) => self.update_response(|msg| msg.set_content(delta)),
             AppEvent::StreamDone(output) => self.finish_stream(output),
             AppEvent::StreamError(err) => self.stream_error(&err),
-            AppEvent::ToolCallStart { name, params } => {
-                // ToolCallStart fires first (no params), ToolCallAvailable fires
-                // after with params. Update the existing message when params arrive.
-                if params.is_empty() {
-                    self.add_message(ChatMessage::tool(&name));
-                } else if let Some(msg) = self.messages.last_mut()
-                    && msg.role == Role::Tool
-                {
-                    msg.set_content(format!("{name}({params})"));
-                }
-            }
-            AppEvent::ToolCallEnd { output } => {
-                // Append truncated output to the last tool message
-                if let Some(msg) = self.messages.last_mut()
-                    && msg.role == Role::Tool
-                {
-                    let truncated = truncate_tool_output(&output, 120);
-                    if !truncated.is_empty() {
-                        msg.set_content(format!("{} → {}", msg.content, truncated));
-                    }
-                }
+            AppEvent::ToolCall { display, output } => {
+                let truncated = truncate_str(&output, 120);
+                let content = if truncated.is_empty() {
+                    display
+                } else {
+                    format!("{display} → {truncated}")
+                };
+                self.add_message(ChatMessage::tool(&content));
             }
             AppEvent::ScrollUp => self.chat_state.scroll_up(3),
             AppEvent::ScrollDown => self.chat_state.scroll_down(3),
@@ -164,65 +154,127 @@ impl AppModel {
         }
     }
 
-    fn handle_editing(&mut self, key: KeyEvent) {
-        if self.completions_active() {
-            match (key.modifiers, key.code) {
-                (KeyModifiers::NONE, KeyCode::Up) => {
-                    self.completion_prev();
-                    return;
-                }
-                (KeyModifiers::NONE, KeyCode::Down) => {
-                    self.completion_next();
-                    return;
-                }
-                (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Enter)
-                | (KeyModifiers::NONE, KeyCode::Tab) => {
-                    self.accept_completion();
-                    return;
-                }
-                (KeyModifiers::NONE, KeyCode::Esc) => {
-                    self.dismiss_completions();
-                    return;
-                }
-                _ => {}
-            }
+    // ── Streaming lifecycle ──────────────────────────────────────────
+
+    fn update_response(&mut self, f: impl FnOnce(&mut ChatMessage)) {
+        if let Some(idx) = self.response_idx
+            && let Some(msg) = self.messages.get_mut(idx)
+        {
+            f(msg);
+            self.chat_state.scroll_to_bottom();
+        }
+    }
+
+    fn finish_stream(&mut self, output: String) {
+        self.stream_state = StreamState::Idle;
+        self.stream_abort = None;
+        self.update_response(|msg| msg.set_content(output));
+    }
+
+    fn stream_error(&mut self, err: &str) {
+        self.finish_stream(format!("Error: {err}"));
+    }
+
+    pub fn start_stream(&mut self, query: &str, tx: &mpsc::UnboundedSender<AppEvent>) {
+        self.stream_state = StreamState::Active;
+        self.add_message(ChatMessage::response());
+        self.response_idx = Some(self.messages.len() - 1);
+
+        let (abort_tx, abort_rx) = mpsc::unbounded_channel::<()>();
+        self.stream_abort = Some(abort_tx);
+
+        super::stream::spawn_stream(
+            query.to_string(),
+            self.model.clone(),
+            self.sandbox_settings.clone(),
+            self.session_id,
+            self.session_pool.clone(),
+            tx.clone(),
+            abort_rx,
+        );
+    }
+
+    pub fn is_streaming(&self) -> bool {
+        matches!(self.stream_state, StreamState::Active)
+    }
+
+    pub fn take_abort_handle(&mut self) -> Option<mpsc::UnboundedSender<()>> {
+        self.stream_abort.take()
+    }
+
+    // ── Message management ───────────────────────────────────────────
+
+    pub fn add_message(&mut self, msg: ChatMessage) {
+        if self.messages.len() >= MAX_MESSAGES {
+            self.messages.remove(0);
+            self.render_cache.trim_front(1);
+            // Adjust response index for the shift
+            self.response_idx = self.response_idx.and_then(|i| i.checked_sub(1));
+        }
+        self.messages.push(msg);
+        self.render_cache.push();
+        self.chat_state.auto_scroll = true;
+    }
+
+    pub fn clear_messages(&mut self) {
+        self.messages.clear();
+        self.render_cache.clear();
+        self.response_idx = None;
+        self.chat_state.scroll_offset = 0;
+        self.chat_state.auto_scroll = true;
+    }
+
+    // ── Input ────────────────────────────────────────────────────────
+
+    pub fn submit_input(&mut self, tx: &mpsc::UnboundedSender<AppEvent>) {
+        let text = self.take_input();
+        if text.trim().is_empty() {
+            return;
         }
 
-        match (key.modifiers, key.code) {
-            (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Enter) => {}
-            (KeyModifiers::CONTROL, KeyCode::Enter) => {
-                self.insert_char('\n');
+        let cmd = Command::parse(&text);
+        let action = Self::dispatch_command(cmd);
+        match action {
+            CommandAction::AddMessage(msg) => {
+                self.add_message(ChatMessage::user(&text));
+                self.add_message(msg);
             }
-            (KeyModifiers::NONE, KeyCode::Tab) => {
-                self.tab_complete();
+            CommandAction::ClearMessages => {
+                self.clear_messages();
             }
-            (KeyModifiers::NONE, KeyCode::Up) if self.cursor_is_at_first_line_start() => {
-                self.history_prev();
+            CommandAction::Stream(query) => {
+                self.add_message(ChatMessage::user(&query));
+                self.start_stream(&query, tx);
             }
-            (KeyModifiers::NONE, KeyCode::Down) if self.cursor_is_at_end() => {
-                self.history_next();
+            CommandAction::Quit => {
+                self.should_quit = true;
             }
-            (KeyModifiers::NONE, KeyCode::Up) => {
-                self.chat_state.scroll_up(1);
+        }
+    }
+
+    fn dispatch_command(cmd: Command) -> CommandAction {
+        match cmd {
+            Command::Quit => CommandAction::Quit,
+            Command::Help => CommandAction::AddMessage(ChatMessage::system(command::HELP_TEXT)),
+            Command::ListSkills => {
+                let text = build_skills_list();
+                CommandAction::AddMessage(ChatMessage::system(&text))
             }
-            (KeyModifiers::NONE, KeyCode::Down) => {
-                self.chat_state.scroll_down(1);
-            }
-            (KeyModifiers::NONE, KeyCode::PageUp) => {
-                self.chat_state.scroll_up(20);
-            }
-            (KeyModifiers::NONE, KeyCode::PageDown) => {
-                self.chat_state.scroll_down(20);
-            }
-            (KeyModifiers::NONE, KeyCode::Right) if self.cursor_is_at_end() && self.has_hint() => {
-                self.accept_hint();
-            }
-            (KeyModifiers::NONE, KeyCode::Esc) if self.is_streaming() => {
-                self.take_abort_handle();
-            }
-            _ => {
-                // Only pass non-navigation keys to textarea — never Up/Down/PageUp/PageDown
-                self.input_key(key);
+            Command::Clear => CommandAction::ClearMessages,
+            Command::Send(query) => CommandAction::Stream(query),
+            Command::Invoke {
+                name,
+                query,
+                is_agent,
+            } => {
+                let rewritten = if is_agent {
+                    format!("Use the subagent tool with agent_name=\"{name}\" to handle: {query}")
+                } else if query.is_empty() {
+                    format!("/{name}")
+                } else {
+                    format!("/{name} {query}")
+                };
+                CommandAction::Stream(rewritten)
             }
         }
     }
@@ -341,26 +393,7 @@ impl AppModel {
         frame.render_widget(popup, popup_area);
     }
 
-    pub fn add_message(&mut self, msg: ChatMessage) {
-        if self.messages.len() >= MAX_MESSAGES {
-            self.messages.remove(0);
-            self.render_cache.trim_front(1);
-        }
-        self.messages.push(msg);
-        self.render_cache.push();
-        self.chat_state.auto_scroll = true;
-    }
-
-    pub fn clear_messages(&mut self) {
-        self.messages.clear();
-        self.render_cache.clear();
-        self.chat_state.scroll_offset = 0;
-        self.chat_state.auto_scroll = true;
-    }
-
-    pub fn last_message_mut(&mut self) -> Option<&mut ChatMessage> {
-        self.messages.last_mut()
-    }
+    // ── Textarea helpers ─────────────────────────────────────────────
 
     pub fn input_text(&self) -> String {
         self.textarea.lines().join("\n")
@@ -485,114 +518,64 @@ impl AppModel {
         }
     }
 
-    pub fn is_streaming(&self) -> bool {
-        matches!(self.stream_state, StreamState::Active)
-    }
-
-    pub fn start_stream(&mut self, query: &str, tx: &mpsc::UnboundedSender<AppEvent>) {
-        self.stream_state = StreamState::Active;
-        self.add_message(ChatMessage::assistant_streaming(""));
-
-        let (abort_tx, abort_rx) = mpsc::unbounded_channel::<()>();
-        self.stream_abort = Some(abort_tx);
-
-        super::stream::spawn_stream(
-            query.to_string(),
-            self.model.clone(),
-            self.sandbox_settings.clone(),
-            self.session_id,
-            self.session_pool.clone(),
-            tx.clone(),
-            abort_rx,
-        );
-    }
-
-    pub fn append_stream_delta(&mut self, text: &str) {
-        if let Some(msg) = self.last_message_mut()
-            && msg.is_streaming
-        {
-            msg.set_content(text.to_string());
-            self.chat_state.scroll_to_bottom();
-        }
-    }
-
-    pub fn finish_stream(&mut self, output: String) {
-        self.end_stream(output);
-        self.chat_state.scroll_to_bottom();
-    }
-
-    pub fn stream_error(&mut self, err: &str) {
-        self.end_stream(format!("Error: {err}"));
-    }
-
-    fn end_stream(&mut self, content: impl Into<String>) {
-        self.stream_state = StreamState::Idle;
-        self.stream_abort = None;
-
-        if let Some(msg) = self.last_message_mut()
-            && msg.is_streaming
-        {
-            msg.set_content(content.into());
-            msg.is_streaming = false;
-        }
-    }
-
-    pub fn take_abort_handle(&mut self) -> Option<mpsc::UnboundedSender<()>> {
-        self.stream_abort.take()
-    }
-
-    pub fn submit_input(&mut self, tx: &mpsc::UnboundedSender<AppEvent>) {
-        let text = self.take_input();
-        if text.trim().is_empty() {
-            return;
-        }
-
-        let cmd = Command::parse(&text);
-        let action = Self::dispatch_command(cmd);
-        match action {
-            CommandAction::AddMessage(msg) => {
-                self.add_message(ChatMessage::user(&text));
-                self.add_message(msg);
-            }
-            CommandAction::ClearMessages => {
-                self.clear_messages();
-            }
-            CommandAction::Stream(query) => {
-                self.add_message(ChatMessage::user(&query));
-                self.start_stream(&query, tx);
-            }
-            CommandAction::Quit => {
-                self.should_quit = true;
+    fn handle_editing(&mut self, key: KeyEvent) {
+        if self.completions_active() {
+            match (key.modifiers, key.code) {
+                (KeyModifiers::NONE, KeyCode::Up) => {
+                    self.completion_prev();
+                    return;
+                }
+                (KeyModifiers::NONE, KeyCode::Down) => {
+                    self.completion_next();
+                    return;
+                }
+                (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Enter)
+                | (KeyModifiers::NONE, KeyCode::Tab) => {
+                    self.accept_completion();
+                    return;
+                }
+                (KeyModifiers::NONE, KeyCode::Esc) => {
+                    self.dismiss_completions();
+                    return;
+                }
+                _ => {}
             }
         }
-    }
 
-    fn dispatch_command(cmd: Command) -> CommandAction {
-        match cmd {
-            Command::Quit => CommandAction::Quit,
-            Command::Help => CommandAction::AddMessage(ChatMessage::system(command::HELP_TEXT)),
-            Command::ListSkills => {
-                let text = build_skills_list();
-                CommandAction::AddMessage(ChatMessage::system(&text))
+        match (key.modifiers, key.code) {
+            (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Enter) => {}
+            (KeyModifiers::CONTROL, KeyCode::Enter) => {
+                self.insert_char('\n');
             }
-            Command::Clear => CommandAction::ClearMessages,
-            Command::Send(query) => CommandAction::Stream(query),
-            Command::Invoke {
-                name,
-                query,
-                is_agent,
-            } => {
-                // Rewrite the query so the LLM knows exactly what to do.
-                // /agent-name query → "Use subagent to spawn the /agent-name agent for: query"
-                // /skill-name query → "/skill-name query" (existing skill preloading handles it)
-                let rewritten = if is_agent {
-                    format!("Use the subagent tool with agent_name=\"{name}\" to handle: {query}")
-                } else if query.is_empty() {
-                    format!("/{name}")
-                } else {
-                    format!("/{name} {query}")
-                };
-                CommandAction::Stream(rewritten)
+            (KeyModifiers::NONE, KeyCode::Tab) => {
+                self.tab_complete();
+            }
+            (KeyModifiers::NONE, KeyCode::Up) if self.cursor_is_at_first_line_start() => {
+                self.history_prev();
+            }
+            (KeyModifiers::NONE, KeyCode::Down) if self.cursor_is_at_end() => {
+                self.history_next();
+            }
+            (KeyModifiers::NONE, KeyCode::Up) => {
+                self.chat_state.scroll_up(1);
+            }
+            (KeyModifiers::NONE, KeyCode::Down) => {
+                self.chat_state.scroll_down(1);
+            }
+            (KeyModifiers::NONE, KeyCode::PageUp) => {
+                self.chat_state.scroll_up(20);
+            }
+            (KeyModifiers::NONE, KeyCode::PageDown) => {
+                self.chat_state.scroll_down(20);
+            }
+            (KeyModifiers::NONE, KeyCode::Right) if self.cursor_is_at_end() && self.has_hint() => {
+                self.accept_hint();
+            }
+            (KeyModifiers::NONE, KeyCode::Esc) if self.is_streaming() => {
+                self.take_abort_handle();
+            }
+            _ => {
+                self.input_key(key);
             }
         }
     }
@@ -650,14 +633,14 @@ fn apply_textarea_style(textarea: &mut TextArea<'static>) {
     textarea.set_style(Style::default().fg(Color::White));
 }
 
-/// Collapse multiline output to one line and truncate.
-fn truncate_tool_output(output: &str, max_len: usize) -> String {
-    let single_line: String = output.lines().collect::<Vec<_>>().join(" ");
+/// Collapse multiline to one line and truncate, safe on UTF-8 boundaries.
+fn truncate_str(s: &str, max_len: usize) -> String {
+    let single_line: String = s.lines().collect::<Vec<_>>().join(" ");
     if single_line.len() <= max_len {
-        single_line
-    } else {
-        format!("{}…", &single_line[..max_len])
+        return single_line;
     }
+    let end = single_line.ceil_char_boundary(max_len);
+    format!("{}…", &single_line[..end])
 }
 
 #[cfg(test)]
@@ -674,8 +657,6 @@ mod tests {
     fn test_model() -> Model {
         Model::test_dummy().unwrap()
     }
-
-    // ── Session restore ordering ────────────────────────────────────
 
     #[test]
     fn new_session_has_welcome_message_first() {
@@ -702,18 +683,15 @@ mod tests {
         session.add_user("hello").unwrap();
         session.add_assistant("hi there").unwrap();
 
-        // Reload session (simulates --continue finding the session)
         let session = Session::load(pool, session.id).unwrap();
         let app = AppModel::new(test_model(), &session, PathBuf::from("/tmp"));
 
         assert_eq!(app.messages.len(), 3);
-        // Welcome first
         assert!(
             app.messages[0].content.contains("Welcome"),
             "welcome must be first, got: {:?}",
             app.messages[0].content
         );
-        // Then history in order
         assert_eq!(app.messages[1].role, Role::User);
         assert_eq!(app.messages[1].content, "hello");
         assert_eq!(app.messages[2].role, Role::Assistant);
@@ -724,7 +702,6 @@ mod tests {
     fn restored_session_auto_scrolls_to_bottom() {
         let pool = test_pool();
         let mut session = Session::create(pool.clone()).unwrap();
-        // Add enough messages to overflow a small terminal
         for i in 0..20 {
             session.add_user(&format!("query {i}")).unwrap();
             session.add_assistant(&format!("answer {i}")).unwrap();
@@ -739,8 +716,6 @@ mod tests {
         );
     }
 
-    // ── add_message behavior ────────────────────────────────────────
-
     #[test]
     fn add_message_auto_scrolls() {
         let pool = test_pool();
@@ -754,5 +729,12 @@ mod tests {
             app.chat_state.auto_scroll,
             "add_message should enable auto_scroll"
         );
+    }
+
+    #[test]
+    fn truncate_str_safe_on_multibyte() {
+        // "café" is 5 bytes — 'é' is 2 bytes. Truncating at 4 should land on char boundary.
+        let result = truncate_str("café coffee", 4);
+        assert_eq!(result, "café…");
     }
 }

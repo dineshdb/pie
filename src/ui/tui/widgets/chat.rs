@@ -71,20 +71,41 @@ impl StatefulWidget for ChatView<'_> {
 }
 
 /// Build rendered chat lines from messages, using the render cache for efficiency.
+/// Streaming/final assistant messages are rendered last so tool calls appear above the response.
 pub fn build_chat_lines(
     messages: &[ChatMessage],
     cache: &mut MessageRenderCache,
     area_width: usize,
 ) -> Vec<Line<'static>> {
     let width = area_width.saturating_sub(PREFIX_WIDTH + RIGHT_PAD);
-    let last_idx = messages.len().saturating_sub(1);
+
+    // Build render order: regular messages in order, then response message last
+    let mut order: Vec<usize> = Vec::with_capacity(messages.len());
+    let mut response_idx: Option<usize> = None;
+
+    for (i, msg) in messages.iter().enumerate() {
+        if msg.is_response() {
+            response_idx = Some(i);
+        } else {
+            order.push(i);
+        }
+    }
+    // Append response message at the end
+    if let Some(ri) = response_idx {
+        order.push(ri);
+    }
+
+    let last_rendered = order.len().saturating_sub(1);
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    for (msg_idx, msg) in messages.iter().enumerate() {
-        let is_latest = msg_idx == last_idx;
+    for (render_pos, &msg_idx) in order.iter().enumerate() {
+        let Some(msg) = messages.get(msg_idx) else {
+            continue;
+        };
+        let is_latest = render_pos == last_rendered;
         let prefix = message_prefix(msg.role, is_latest);
         let rendered =
-            cache.get_or_render(msg.role, &msg.content, msg.is_streaming, msg_idx, width);
+            cache.get_or_render(msg.role, &msg.content, msg.is_response(), msg_idx, width);
 
         for (i, line) in rendered.iter().enumerate() {
             let pfx = if i == 0 {
@@ -97,9 +118,9 @@ pub fn build_chat_lines(
             lines.push(Line::from(spans));
         }
 
-        // Blank separator: only before user messages (keeps space between response → next question,
-        // removes space between question → response).
-        if let Some(next) = messages.get(msg_idx + 1)
+        // Blank separator: only before user messages
+        if let Some(&next_idx) = order.get(render_pos + 1)
+            && let Some(next) = messages.get(next_idx)
             && next.role == Role::User
         {
             lines.push(Line::raw(""));

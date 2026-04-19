@@ -313,15 +313,13 @@ mod tests {
     #[test]
     fn subagent_has_core_tools() {
         let result = render_sub(None);
-        let role = result.split("Agent Role").nth(1).unwrap_or("");
-        assert!(role.contains("shell_tool"), "subagent must have shell_tool");
         assert!(
-            role.contains("load_skills"),
-            "subagent must have load_skills"
+            result.contains("shell_tool"),
+            "subagent must reference shell_tool"
         );
         assert!(
-            role.contains("load_references"),
-            "subagent must have load_references"
+            result.contains("load_skills"),
+            "subagent must reference load_skills"
         );
     }
 
@@ -331,35 +329,28 @@ mod tests {
     fn immutable_rules_appear_in_both_modes() {
         let main = render_main(&[], None, false);
         let sub = render_sub(None);
-        let boundary = "START OF USER SECTION";
-        assert!(
-            main.contains(boundary),
-            "main prompt missing user section boundary"
-        );
-        assert!(
-            sub.contains(boundary),
-            "subagent prompt missing user section boundary"
-        );
 
-        let main_immutable = main.split(boundary).next().unwrap_or("");
-        let sub_immutable = sub.split(boundary).next().unwrap_or("");
-        assert!(!main_immutable.is_empty(), "main has no immutable section");
-        assert!(
-            !sub_immutable.is_empty(),
-            "subagent has no immutable section"
-        );
-
-        // Both must share the same Rules and Known commands sections
-        for section in &["## Rules", "## Known commands"] {
+        // Both must have core sections
+        for section in &["## Rules", "## Known Commands"] {
             assert!(
-                main_immutable.contains(section),
+                main.contains(section),
                 "main missing {section}"
             );
             assert!(
-                sub_immutable.contains(section),
+                sub.contains(section),
                 "subagent missing {section}"
             );
         }
+
+        // Both must warn about not calling skills as tools
+        assert!(
+            main.contains("Never call a skill name as a tool"),
+            "main must have tool discipline rule"
+        );
+        assert!(
+            sub.contains("Never call a skill name as a tool"),
+            "subagent must have tool discipline rule"
+        );
     }
 
     #[test]

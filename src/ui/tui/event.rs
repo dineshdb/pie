@@ -8,8 +8,8 @@ pub enum AppEvent {
     StreamDelta(String),
     StreamDone(String),
     StreamError(String),
-    ToolCallStart { name: String, params: String },
-    ToolCallEnd { output: String },
+    /// A tool call completed. `display` is the formatted "name(params)", `output` is truncated result.
+    ToolCall { display: String, output: String },
     Resize,
 }
 

@@ -50,6 +50,7 @@ async fn run_stream(
     };
 
     let mut accumulated = String::new();
+    let mut pending_tool = PendingToolCall::default();
 
     loop {
         tokio::select! {
@@ -63,30 +64,15 @@ async fn run_stream(
                         }
                     }
                     Some(LanguageModelStreamChunkType::ToolCallStart(details)) => {
-                        let _ = event_tx.send(AppEvent::ToolCallStart {
-                            name: details.name.clone(),
-                            params: String::new(),
-                        });
+                        pending_tool.name.clone_from(&details.name);
                     }
                     Some(LanguageModelStreamChunkType::ToolCallAvailable(info)) => {
-                        let params = format_tool_params(&info.input);
-                        // Update the last tool message with params
-                        let _ = event_tx.send(AppEvent::ToolCallStart {
-                            name: info.tool.name.clone(),
-                            params,
-                        });
+                        pending_tool.params = format_tool_params(&info.input);
                     }
                     Some(LanguageModelStreamChunkType::ToolCallEnd(result)) => {
-                        let output_text = result
-                            .output
-                            .as_ref()
-                            .ok()
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let _ = event_tx.send(AppEvent::ToolCallEnd {
-                            output: output_text,
-                        });
+                        let output = tool_output_text(&result);
+                        let _ = event_tx.send(pending_tool.to_event(output));
+                        pending_tool.clear();
                     }
                     Some(LanguageModelStreamChunkType::Failed(err)) => {
                         let _ = event_tx.send(AppEvent::StreamError(err.clone()));
@@ -123,6 +109,39 @@ async fn run_stream(
     let _ = event_tx.send(AppEvent::StreamDone(output));
 }
 
+/// Accumulates tool call state across Start/Available/End chunks.
+#[derive(Default)]
+struct PendingToolCall {
+    name: String,
+    params: String,
+}
+
+impl PendingToolCall {
+    fn to_event(&self, output: String) -> AppEvent {
+        let display = if self.params.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{}({})", self.name, self.params)
+        };
+        AppEvent::ToolCall { display, output }
+    }
+
+    fn clear(&mut self) {
+        self.name.clear();
+        self.params.clear();
+    }
+}
+
+fn tool_output_text(result: &aisdk::core::ToolResultInfo) -> String {
+    result
+        .output
+        .as_ref()
+        .ok()
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
 /// Format tool input params as a compact single-line summary.
 fn format_tool_params(input: &serde_json::Value) -> String {
     let Some(obj) = input.as_object() else {
@@ -133,13 +152,11 @@ fn format_tool_params(input: &serde_json::Value) -> String {
         .map(|(k, v)| {
             let val = match v {
                 serde_json::Value::String(s) => s.clone(),
-                serde_json::Value::Array(arr) => {
-                    let items: Vec<String> = arr
-                        .iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect();
-                    items.join(", ")
-                }
+                serde_json::Value::Array(arr) => arr
+                    .iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 other => other.to_string(),
             };
             format!("{k}: {val}")

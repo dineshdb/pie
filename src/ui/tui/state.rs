@@ -6,10 +6,19 @@ pub enum StreamState {
     Active,
 }
 
+/// Why this message exists — controls rendering order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageKind {
+    /// Regular message rendered in insertion order.
+    Normal,
+    /// The main LLM response — always rendered last (after tool calls).
+    Response,
+}
+
 pub struct ChatMessage {
     pub role: Role,
     pub content: String,
-    pub is_streaming: bool,
+    pub kind: MessageKind,
 }
 
 impl ChatMessage {
@@ -17,7 +26,7 @@ impl ChatMessage {
         Self {
             role: Role::User,
             content: content.to_string(),
-            is_streaming: false,
+            kind: MessageKind::Normal,
         }
     }
 
@@ -25,15 +34,16 @@ impl ChatMessage {
         Self {
             role: Role::Assistant,
             content: content.to_string(),
-            is_streaming: false,
+            kind: MessageKind::Normal,
         }
     }
 
-    pub fn assistant_streaming(content: &str) -> Self {
+    /// Create a streaming response placeholder — rendered last, content updated via deltas.
+    pub fn response() -> Self {
         Self {
             role: Role::Assistant,
-            content: content.to_string(),
-            is_streaming: true,
+            content: String::new(),
+            kind: MessageKind::Response,
         }
     }
 
@@ -41,7 +51,7 @@ impl ChatMessage {
         Self {
             role: Role::System,
             content: content.to_string(),
-            is_streaming: false,
+            kind: MessageKind::Normal,
         }
     }
 
@@ -49,12 +59,16 @@ impl ChatMessage {
         Self {
             role: Role::Tool,
             content: content.to_string(),
-            is_streaming: false,
+            kind: MessageKind::Normal,
         }
     }
 
     pub fn set_content(&mut self, content: String) {
         self.content = content;
+    }
+
+    pub fn is_response(&self) -> bool {
+        self.kind == MessageKind::Response
     }
 }
 
@@ -63,7 +77,7 @@ impl From<Role> for ChatMessage {
         Self {
             role,
             content: String::new(),
-            is_streaming: false,
+            kind: MessageKind::Normal,
         }
     }
 }
