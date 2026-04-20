@@ -71,8 +71,12 @@ async fn run_stream(
                     }
                     Some(LanguageModelStreamChunkType::ToolCallEnd(result)) => {
                         let output = tool_output_text(&result);
-                        let _ = event_tx.send(pending_tool.to_event(output));
-                        pending_tool.clear();
+                        let event = CompletedToolCall {
+                            name: std::mem::take(&mut pending_tool.name),
+                            params: std::mem::take(&mut pending_tool.params),
+                            output,
+                        };
+                        let _ = event_tx.send(event.into());
                     }
                     Some(LanguageModelStreamChunkType::Failed(err)) => {
                         let _ = event_tx.send(AppEvent::StreamError(err.clone()));
@@ -116,19 +120,23 @@ struct PendingToolCall {
     params: String,
 }
 
-impl PendingToolCall {
-    fn to_event(&self, output: String) -> AppEvent {
-        let display = if self.params.is_empty() {
-            self.name.clone()
-        } else {
-            format!("{}({})", self.name, self.params)
-        };
-        AppEvent::ToolCall { display, output }
-    }
+struct CompletedToolCall {
+    name: String,
+    params: String,
+    output: String,
+}
 
-    fn clear(&mut self) {
-        self.name.clear();
-        self.params.clear();
+impl From<CompletedToolCall> for AppEvent {
+    fn from(call: CompletedToolCall) -> AppEvent {
+        let display = if call.params.is_empty() {
+            call.name
+        } else {
+            format!("{}({})", call.name, call.params)
+        };
+        AppEvent::ToolCall {
+            display,
+            output: call.output,
+        }
     }
 }
 

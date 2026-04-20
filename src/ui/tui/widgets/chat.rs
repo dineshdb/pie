@@ -70,8 +70,8 @@ impl StatefulWidget for ChatView<'_> {
     }
 }
 
-/// Build rendered chat lines from messages, using the render cache for efficiency.
-/// Streaming/final assistant messages are rendered last so tool calls appear above the response.
+/// Build rendered chat lines from messages.
+/// Response messages are rendered last so tool calls appear above the response.
 pub fn build_chat_lines(
     messages: &[ChatMessage],
     cache: &mut MessageRenderCache,
@@ -90,7 +90,6 @@ pub fn build_chat_lines(
             order.push(i);
         }
     }
-    // Append response message at the end
     if let Some(ri) = response_idx {
         order.push(ri);
     }
@@ -102,20 +101,29 @@ pub fn build_chat_lines(
         let Some(msg) = messages.get(msg_idx) else {
             continue;
         };
-        let is_latest = render_pos == last_rendered;
-        let prefix = message_prefix(msg.role, is_latest);
-        let rendered =
-            cache.get_or_render(msg.role, &msg.content, msg.is_response(), msg_idx, width);
 
-        for (i, line) in rendered.iter().enumerate() {
-            let pfx = if i == 0 {
-                prefix.clone()
-            } else {
-                continuation_prefix()
-            };
-            let mut spans = vec![pfx];
-            spans.extend(line.spans.iter().cloned());
-            lines.push(Line::from(spans));
+        if msg.role == Role::Tool {
+            append_tool_lines(&mut lines, &msg.content, width);
+        } else {
+            // Add a gap before the assistant response (streaming or finalized)
+            if msg.role == Role::Assistant && !lines.is_empty() {
+                lines.push(Line::raw(""));
+            }
+            let is_latest = render_pos == last_rendered;
+            let prefix = message_prefix(msg.role, is_latest);
+            let rendered =
+                cache.get_or_render(msg.role, &msg.content, msg.is_response(), msg_idx, width);
+
+            for (i, line) in rendered.iter().enumerate() {
+                let pfx = if i == 0 {
+                    prefix.clone()
+                } else {
+                    continuation_prefix()
+                };
+                let mut spans = vec![pfx];
+                spans.extend(line.spans.iter().cloned());
+                lines.push(Line::from(spans));
+            }
         }
 
         // Blank separator: only before user messages
@@ -130,6 +138,29 @@ pub fn build_chat_lines(
     lines
 }
 
+/// Render a tool call as exactly two lines using color to distinguish them:
+/// ```text
+///   name(params)            ← magenta
+///     output text...        ← dark gray
+/// ```
+fn append_tool_lines(lines: &mut Vec<Line<'static>>, content: &str, width: usize) {
+    let (call, output) = content.split_once(" → ").unwrap_or((content, ""));
+
+    let call_text = truncate_str(call, width);
+    lines.push(Line::from(vec![
+        Span::styled("  ", Style::default()),
+        Span::styled(call_text, Style::default().fg(Color::Magenta)),
+    ]));
+
+    if !output.is_empty() {
+        let output_text = truncate_str(output, width.saturating_sub(4));
+        lines.push(Line::from(vec![
+            Span::styled("  └ ", Style::default().fg(Color::DarkGray)),
+            Span::styled(output_text, Style::default().fg(Color::DarkGray)),
+        ]));
+    }
+}
+
 fn message_prefix(role: Role, is_latest: bool) -> Span<'static> {
     match role {
         Role::User if is_latest => Span::styled(
@@ -139,7 +170,6 @@ fn message_prefix(role: Role, is_latest: bool) -> Span<'static> {
                 .add_modifier(Modifier::BOLD),
         ),
         Role::User => Span::styled("> ", Style::default().fg(Color::DarkGray)),
-        Role::Tool => Span::styled("▸ ", Style::default().fg(Color::Cyan)),
         _ => Span::styled("  ", Style::default().fg(Color::DarkGray)),
     }
 }
@@ -148,7 +178,16 @@ fn continuation_prefix() -> Span<'static> {
     Span::styled("  ", Style::default().fg(Color::DarkGray))
 }
 
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        return s.to_string();
+    }
+    let end = s.ceil_char_boundary(max_len);
+    format!("{}…", &s[..end])
+}
+
 #[cfg(test)]
+#[allow(clippy::indexing_slicing)]
 mod tests {
     use super::*;
     use ratatui::Terminal;
@@ -170,7 +209,6 @@ mod tests {
     }
     #[test]
     fn session_restore_shows_welcome_then_history_in_order() {
-        // Simulates --continue: welcome msg first, then restored history
         let messages = vec![
             ChatMessage::system("Welcome to pie!"),
             ChatMessage::user("hello"),
@@ -178,14 +216,12 @@ mod tests {
         ];
         let buf = render_chat(&messages, 40, 10);
 
-        // "Welcome" should appear at the top (row 0)
         let row0 = buffer_row(&buf, 0);
         assert!(
             row0.contains("Welcome"),
             "welcome message should be first row, got: {row0}"
         );
 
-        // "hello" (user message with "> " prefix) should be after welcome
         let content = buffer_to_string(&buf);
         let welcome_pos = content.find("Welcome").unwrap_or(0);
         let hello_pos = content.find("hello").unwrap_or(0);
@@ -201,14 +237,13 @@ mod tests {
         let buf = render_chat(&messages, 40, 5);
         let row0 = buffer_row(&buf, 0);
         assert!(
-            row0.contains(">"),
+            row0.contains('>'),
             "user message should have > prefix, got: {row0}"
         );
     }
 
     #[test]
     fn auto_scroll_shows_latest_messages() {
-        // More messages than can fit — auto_scroll should show the last ones
         let messages: Vec<ChatMessage> = (0..20)
             .map(|i| ChatMessage::assistant(&format!("line {i}")))
             .collect();
@@ -238,8 +273,7 @@ mod tests {
         let width = buf.area.width;
         (0..width)
             .map(|col| buf[(col, row)].symbol().to_string())
-            .collect::<Vec<_>>()
-            .join("")
+            .collect::<String>()
             .trim_end()
             .to_string()
     }

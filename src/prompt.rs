@@ -332,14 +332,8 @@ mod tests {
 
         // Both must have core sections
         for section in &["## Rules", "## Known Commands"] {
-            assert!(
-                main.contains(section),
-                "main missing {section}"
-            );
-            assert!(
-                sub.contains(section),
-                "subagent missing {section}"
-            );
+            assert!(main.contains(section), "main missing {section}");
+            assert!(sub.contains(section), "subagent missing {section}");
         }
 
         // Both must warn about not calling skills as tools

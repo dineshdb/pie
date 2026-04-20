@@ -92,6 +92,7 @@ pub fn cursor_position(area: Rect, cursor_row: usize, cursor_col: usize) -> (u16
 }
 
 #[cfg(test)]
+#[allow(clippy::indexing_slicing)]
 mod tests {
     use super::*;
     use ratatui::Terminal;
@@ -107,8 +108,7 @@ mod tests {
     fn row(buf: &Buffer, row: u16) -> String {
         (0..buf.area.width)
             .map(|col| buf[(col, row)].symbol().to_string())
-            .collect::<Vec<_>>()
-            .join("")
+            .collect::<String>()
             .trim_end()
             .to_string()
     }
@@ -144,7 +144,7 @@ mod tests {
         };
         let buf = render_input(view, 30, 3);
         let content = row(&buf, 1);
-        assert!(content.contains(">"), "non-empty input should show prompt");
+        assert!(content.contains('>'), "non-empty input should show prompt");
         assert!(content.contains("hello"), "input should show typed content");
     }
 

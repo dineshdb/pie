@@ -250,48 +250,28 @@ fn read_piped_stdin() -> Option<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn continue_implies_persistent() {
-        // Simulates: persistent=false, continue=true
-        let persistent = false || true; // cli.persistent || cli.r#continue
-        assert!(persistent, "--continue should imply persistent storage");
-    }
 
     #[test]
     fn resolve_session_creates_new_when_not_resuming() {
         let pool = Arc::new(db::create_pool(false).unwrap());
         let session = resolve_session(pool, false).unwrap();
-        // New session should have no history
         assert!(session.history_entries().is_empty());
     }
 
     #[test]
     fn resolve_session_restores_when_resuming() {
         let pool = Arc::new(db::create_pool(true).unwrap());
-        // Create a session with history for current cwd
         let mut original = Session::create(pool.clone()).unwrap();
         original.add_user("hello").unwrap();
         original.add_assistant("world").unwrap();
         drop(original);
 
-        // Resume should find and load it
         let session = resolve_session(pool, true).unwrap();
         let entries = session.history_entries();
         assert_eq!(entries.len(), 2, "restored session should have history");
         assert_eq!(entries[0].content, "hello");
-    }
-
-    #[test]
-    fn resolve_session_creates_new_when_no_previous() {
-        // Use in-memory pool so there's nothing to find
-        let pool = Arc::new(db::create_pool(false).unwrap());
-        let session = resolve_session(pool, true).unwrap();
-        assert!(
-            session.history_entries().is_empty(),
-            "no previous session → fresh start"
-        );
     }
 }

@@ -3,12 +3,8 @@ use crate::session::Session;
 use crate::ui::tui::event::{AppEvent, HandleResult};
 use crate::ui::tui::model::AppModel;
 use anyhow::Result;
-use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event as CrosstermEvent, MouseEventKind,
-};
-use crossterm::execute;
+use crossterm::event::{self, Event as CrosstermEvent};
 use ratatui::crossterm;
-use std::io::stdout;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -17,7 +13,6 @@ const FRAME_DURATION: Duration = Duration::from_millis(50);
 
 pub async fn run_tui(model: Model, session: Session, sandbox_settings: PathBuf) -> Result<()> {
     let mut terminal = ratatui::init();
-    execute!(stdout(), EnableMouseCapture)?;
     terminal.clear()?;
 
     let mut app = AppModel::new(model, &session, sandbox_settings);
@@ -53,7 +48,6 @@ pub async fn run_tui(model: Model, session: Session, sandbox_settings: PathBuf) 
         terminal.draw(|f| app.render(f))?;
     }
 
-    execute!(stdout(), DisableMouseCapture)?;
     ratatui::restore();
     Ok(())
 }
@@ -63,11 +57,6 @@ fn convert_event(e: CrosstermEvent) -> Option<AppEvent> {
     match e {
         CrosstermEvent::Key(key) => Some(AppEvent::Key(key)),
         CrosstermEvent::Resize(_, _) => Some(AppEvent::Resize),
-        CrosstermEvent::Mouse(mouse) => match mouse.kind {
-            MouseEventKind::ScrollUp => Some(AppEvent::ScrollUp),
-            MouseEventKind::ScrollDown => Some(AppEvent::ScrollDown),
-            _ => None,
-        },
         _ => None,
     }
 }

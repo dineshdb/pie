@@ -148,8 +148,6 @@ impl AppModel {
                 };
                 self.add_message(ChatMessage::tool(&content));
             }
-            AppEvent::ScrollUp => self.chat_state.scroll_up(3),
-            AppEvent::ScrollDown => self.chat_state.scroll_down(3),
             AppEvent::Key(_) | AppEvent::Resize => {}
         }
     }
@@ -168,7 +166,17 @@ impl AppModel {
     fn finish_stream(&mut self, output: String) {
         self.stream_state = StreamState::Idle;
         self.stream_abort = None;
-        self.update_response(|msg| msg.set_content(output));
+        if let Some(idx) = self.response_idx {
+            if let Some(msg) = self.messages.get_mut(idx) {
+                msg.set_content(output);
+                msg.finalize_response();
+            }
+            // Move response to end so it renders after tool calls
+            let msg = self.messages.remove(idx);
+            self.messages.push(msg);
+            self.render_cache.shift_remove(idx);
+        }
+        self.response_idx = None;
     }
 
     fn stream_error(&mut self, err: &str) {
@@ -644,6 +652,7 @@ fn truncate_str(s: &str, max_len: usize) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
     use crate::db;

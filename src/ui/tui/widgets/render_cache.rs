@@ -84,6 +84,15 @@ impl MessageRenderCache {
     pub fn trim_front(&mut self, count: usize) {
         self.entries.drain(0..count);
     }
+
+    /// Remove the entry at `index`, shift subsequent entries down by one,
+    /// and append `None` at the end (for the moved message).
+    pub fn shift_remove(&mut self, index: usize) {
+        if index < self.entries.len() {
+            self.entries.remove(index);
+            self.entries.push(None);
+        }
+    }
 }
 
 fn role_color(role: Role) -> Color {
@@ -91,6 +100,6 @@ fn role_color(role: Role) -> Color {
         Role::User => Color::White,
         Role::Assistant => Color::Gray,
         Role::System => Color::Yellow,
-        Role::Tool => Color::DarkGray,
+        Role::Tool => Color::DarkGray, // fallback — tool messages bypass the cache
     }
 }
