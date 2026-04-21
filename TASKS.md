@@ -16,5 +16,3 @@
       compiler logs) with bounded summaries to manage context bloat.
 - [ ] Implement Doom Loop Detector: Track repeated execution of the same
       commands without code edits to detect infinite loops.
-- [ ] Refine Truncation Logic: Implement per-command output bounding (e.g., 24KB
-      for , 16KB for compiler errors) instead of relying on generic limits.

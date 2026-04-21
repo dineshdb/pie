@@ -104,6 +104,8 @@ pub fn build_chat_lines(
 
         if msg.role == Role::Tool {
             append_tool_lines(&mut lines, &msg.content, width);
+        } else if msg.role == Role::System && msg.content.starts_with("Welcome to") {
+            append_welcome_line(&mut lines, &msg.content, width);
         } else {
             // Add a gap before the assistant response (streaming or finalized)
             if msg.role == Role::Assistant && !lines.is_empty() {
@@ -136,6 +138,35 @@ pub fn build_chat_lines(
     }
 
     lines
+}
+
+/// Render the welcome message with colored "pie" and "?".
+fn append_welcome_line(lines: &mut Vec<Line<'static>>, content: &str, _width: usize) {
+    let yellow = Style::default().fg(Color::Yellow);
+    let cyan = Style::default().fg(Color::Cyan);
+    let green = Style::default().fg(Color::Green);
+
+    // "Welcome to pie! Type ? for help."
+    let mut spans = vec![Span::styled("  ", Style::default())];
+    let mut rest = content;
+    while let Some(pos) = rest.find("pie") {
+        if pos > 0 {
+            spans.push(Span::styled(rest[..pos].to_string(), yellow));
+        }
+        spans.push(Span::styled("pie", cyan));
+        rest = &rest[pos + 3..];
+    }
+    if let Some(pos) = rest.find('?') {
+        if pos > 0 {
+            spans.push(Span::styled(rest[..pos].to_string(), yellow));
+        }
+        spans.push(Span::styled("?", green));
+        rest = &rest[pos + 1..];
+    }
+    if !rest.is_empty() {
+        spans.push(Span::styled(rest.to_string(), yellow));
+    }
+    lines.push(Line::from(spans));
 }
 
 /// Render a tool call as exactly two lines using color to distinguish them:
