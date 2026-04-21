@@ -11,8 +11,8 @@ below, from the system context as well as user defined skills, etc.
 
 - All skills and agents execute through tools. Skills tell you WHAT to run,
   tools are HOW you run them. Never call a skill name as a tool.
-- Load skills you need with `load_skills`. Execute their commands with
-  `shell`. Delegate to agents with `subagent`.
+- Load skills you need with `load_skills`. Execute their commands with `shell`.
+  Delegate to agents with `subagent`.
 - If a tool call returns "not found", you called a wrong name. Reroute: skill
   knowledge → `shell`, agent delegation → `subagent`.
 - Minimize questions. Make reasonable assumptions and act.
@@ -103,8 +103,7 @@ interactivity == "interactive" -%}
 Ask the user questions freely when clarification would improve the result. {%
 endif -%}
 
-{% if loaded_skills %}
---- BEGIN LOADED SKILLS ---
+{% if loaded_skills %} --- BEGIN LOADED SKILLS ---
 
 {% for skill in loaded_skills -%}
 
@@ -124,5 +123,4 @@ endif -%}
 
 - Respond with ONLY valid JSON. No markdown fences, no preamble.
 - Schema: `{ "response": "<your answer here>" }`
-- Keep the response value as plain text.
-{% endif -%}
+- Keep the response value as plain text. {% endif -%}
