@@ -154,9 +154,12 @@ fn append_tool_lines(lines: &mut Vec<Line<'static>>, content: &str, width: usize
 
     if !output.is_empty() {
         let output_text = truncate_str(output, width.saturating_sub(4));
+        let dim = Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::DIM);
         lines.push(Line::from(vec![
-            Span::styled("  └ ", Style::default().fg(Color::DarkGray)),
-            Span::styled(output_text, Style::default().fg(Color::DarkGray)),
+            Span::styled("  └ ", dim),
+            Span::styled(output_text, dim),
         ]));
     }
 }

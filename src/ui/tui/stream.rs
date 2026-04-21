@@ -129,11 +129,12 @@ struct CompletedToolCall {
 impl From<CompletedToolCall> for StreamEvent {
     fn from(call: CompletedToolCall) -> StreamEvent {
         let display = if call.params.is_empty() {
-            call.name
+            call.name.clone()
         } else {
-            format!("{}({})", call.name, call.params)
+            format!("{}: {}", call.name, call.params)
         };
         StreamEvent::ToolCall {
+            name: call.name,
             display,
             output: call.output,
         }
@@ -167,7 +168,7 @@ fn format_tool_params(input: &serde_json::Value) -> String {
                     .join(", "),
                 other => other.to_string(),
             };
-            format!("{k}: {val}")
+            format!("{k}={val}")
         })
         .collect();
     parts.join(", ")

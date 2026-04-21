@@ -4,8 +4,9 @@
 
 use crate::ui::tui::realm::{Msg, StreamEvent};
 use crate::ui::tui::state::ChatMessage;
-use crate::ui::tui::widgets::chat::{self, ChatState, ChatView, truncate_str};
+use crate::ui::tui::widgets::chat::{self, ChatState, ChatView};
 use crate::ui::tui::widgets::render_cache::MessageRenderCache;
+use crate::ui::tui::widgets::tool_display::ToolCallResult;
 use tuirealm::command::{Cmd, CmdResult};
 use tuirealm::component::{AppComponent, Component};
 use tuirealm::event::{Event, Key, KeyModifiers};
@@ -146,12 +147,17 @@ impl AppComponent<Msg, StreamEvent> for ChatComponent {
                 self.stream_error(s);
                 Some(Msg::StreamError(s.clone()))
             }
-            Event::User(StreamEvent::ToolCall { display, output }) => {
-                let truncated = truncate_str(output, 120);
-                let content = if truncated.is_empty() {
+            Event::User(StreamEvent::ToolCall {
+                name,
+                display,
+                output,
+            }) => {
+                let tool = ToolCallResult::new(name, output);
+                let result_line = tool.to_string();
+                let content = if result_line.is_empty() {
                     display.clone()
                 } else {
-                    format!("{display} → {truncated}")
+                    format!("{display} → {result_line}")
                 };
                 self.add_message(ChatMessage::tool(&content));
                 None

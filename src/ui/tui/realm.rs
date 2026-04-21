@@ -14,7 +14,11 @@ pub enum StreamEvent {
     Delta(String),
     Done(String),
     Error(String),
-    ToolCall { display: String, output: String },
+    ToolCall {
+        name: String,
+        display: String,
+        output: String,
+    },
 }
 
 /// Messages returned by `AppComponent::on()` — processed in the update function.

@@ -15,17 +15,20 @@ After each change, run following tests to verify if the change is valid.
 - Tests should check the behavior of the program (specs) instead of
   implementation details
 
-## Rules
+## Architecture
 
-- Always use /simplify at the end of a feature request to find and fix any
-  redundancies, extra code, unneeded features, etc.
 - You should always rethink the available codebase in terms of new feature being
   added. Identify how it diverges, identifying places to trim, changes in
   architecture and organization to slim down and /simplify the codebase to keep
   it lean and clean.
 
 ## Simplification
+
 - follow rust 2024 ergonomics
 - use early return patterns and other patterns for simpler logic
 - try to use dry principle but not always.
--
+- use From impl instead of from_ to_ methods.
+- Try to reduce copies for simple tasks, use &'str and other references.
+  However, don't complicate structs with references. Instead, opt to rearchitect
+  the problem in a way copies are unnecessary. Hexagonal architecture, MVU
+  patterns, etc help with this.

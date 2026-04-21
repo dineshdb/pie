@@ -158,11 +158,7 @@ cargo build --release
 # Unit tests
 cargo test
 
-# Integration tests (offline — skips model-dependent tests)
-uv run scripts/test.py offline
-
-# Integration tests (requires model server on localhost:8000)
-uv run scripts/test.py
+scripts/test.py
 ```
 
 ## License
