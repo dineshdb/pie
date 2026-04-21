@@ -93,10 +93,6 @@ struct Cli {
     /// Continue the last session for this directory
     #[arg(short, long)]
     r#continue: bool,
-
-    /// Use persistent file-backed database instead of in-memory
-    #[arg(long)]
-    persistent: bool,
 }
 
 fn resolve_session(pool: Arc<DbPool>, resume: bool) -> anyhow::Result<Session> {
@@ -126,9 +122,6 @@ async fn main() -> anyhow::Result<()> {
         cli.base_url.as_deref(),
         cli.api_key.as_deref(),
     )?;
-
-    let persistent = cli.persistent || cli.r#continue || std::env::var("PERSISTENT").is_ok();
-    let pool = Arc::new(db::create_pool(persistent)?);
 
     let piped_stdin = read_piped_stdin();
 
@@ -170,8 +163,8 @@ async fn main() -> anyhow::Result<()> {
             }
         };
 
-        let mem_pool = Arc::new(db::create_pool(false)?);
-        let mut session = Session::create(mem_pool)?;
+        let pool = Arc::new(db::create_memory_pool()?);
+        let mut session = Session::create(pool)?;
         return handler::handle_query(
             &mut model,
             &full_query,
@@ -183,6 +176,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Interactive mode: session-based REPL with file logging
+    let pool = Arc::new(db::create_persistent_pool()?);
     let session = resolve_session(pool, cli.r#continue)?;
     init_file_subscriber(&session.id.to_string(), cli.debug);
     ui::tui::run_tui(model, session, sandbox_settings).await
@@ -256,14 +250,14 @@ mod tests {
 
     #[test]
     fn resolve_session_creates_new_when_not_resuming() {
-        let pool = Arc::new(db::create_pool(false).unwrap());
+        let pool = Arc::new(db::create_memory_pool().unwrap());
         let session = resolve_session(pool, false).unwrap();
         assert!(session.history_entries().is_empty());
     }
 
     #[test]
     fn resolve_session_restores_when_resuming() {
-        let pool = Arc::new(db::create_pool(true).unwrap());
+        let pool = Arc::new(db::create_persistent_pool().unwrap());
         let mut original = Session::create(pool.clone()).unwrap();
         original.add_user("hello").unwrap();
         original.add_assistant("world").unwrap();

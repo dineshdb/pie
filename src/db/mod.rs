@@ -41,15 +41,6 @@ pub fn create_persistent_pool() -> Result<DbPool> {
     Ok(pool)
 }
 
-/// Create database pool. Uses in-memory unless `persistent` is true.
-pub fn create_pool(persistent: bool) -> Result<DbPool> {
-    if persistent {
-        create_persistent_pool()
-    } else {
-        create_memory_pool()
-    }
-}
-
 #[cfg(test)]
 pub fn create_test_pool() -> Result<DbPool> {
     create_memory_pool()

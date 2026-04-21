@@ -41,7 +41,7 @@ For each issue found, report:
 
 Also report a summary:
 - Total LLM calls (count "raw model response" lines)
-- Total tool calls (count "shell_tool", "subagent", "load_skills", "load_references")
+- Total tool calls (count "shell", "subagent", "load_skills", "load_references")
 - Efficiency score: 1-5 (5 = optimal, 1 = very wasteful)
 
 Be specific. Reference actual commands and line content from the log. Skip a section if no issues are found."""

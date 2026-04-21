@@ -1,7 +1,7 @@
-//! InputComponent — text input area with history, completion, hints, and effects.
+//! `InputComponent` — text input area with history, completion, hints, and effects.
 //!
 //! Not mounted in the tuirealm App — accessed directly from the main loop.
-//! Only ChatComponent is the active tuirealm component.
+//! Only `ChatComponent` is the active tuirealm component.
 
 use crate::config::pie_home;
 use crate::providers::Model;

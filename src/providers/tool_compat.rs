@@ -3,7 +3,7 @@ use aisdk::core::tools::ToolCallInfo;
 
 /// Pass through tool calls as-is. If the tool name doesn't match a registered
 /// tool, `ToolList::execute` returns "Tool not found" and the model self-corrects
-/// to use `shell_tool` directly (since skill content is already in the system prompt).
+/// to use `shell` directly (since skill content is already in the system prompt).
 fn normalize_tool_call(name: &str, input: serde_json::Value) -> LanguageModelResponseContentType {
     let mut info = ToolCallInfo::new(name);
     info.input(input);

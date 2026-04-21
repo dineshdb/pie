@@ -1,4 +1,4 @@
-pub use shell::shell_tool;
+pub use shell::shell;
 pub use skills::{load_references_tool, load_skills_tool};
 pub use subagent::subagent_tool;
 

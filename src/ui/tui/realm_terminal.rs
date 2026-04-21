@@ -1,9 +1,9 @@
 //! tuirealm-based TUI entry point.
 //!
-//! ChatComponent is the active tuirealm component — it routes all keyboard events,
-//! delegating editing keys to InputComponent via `Msg::KeyboardToInput`.
+//! `ChatComponent` is the active tuirealm component — it routes all keyboard events,
+//! delegating editing keys to `InputComponent` via `Msg::KeyboardToInput`.
 //!
-//! InputComponent is held directly (not mounted in the App) since it never receives
+//! `InputComponent` is held directly (not mounted in the App) since it never receives
 //! events through tuirealm's event system — all interaction goes through direct calls.
 //!
 //! Each frame: drain all events, merge them, then render once.
@@ -28,7 +28,7 @@ type Terminal = tuirealm::ratatui::Terminal<CrosstermBackend<std::io::Stdout>>;
 /// Target frame interval. 30 fps ≈ 33ms.
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 
-/// Helper to downcast ChatComponent mutably.
+/// Helper to downcast `ChatComponent` mutably.
 macro_rules! chat_mut {
     ($app:expr) => {
         $app.get_component_mut(&Id::Chat)
@@ -36,7 +36,7 @@ macro_rules! chat_mut {
     };
 }
 
-/// Helper to downcast ChatComponent immutably.
+/// Helper to downcast `ChatComponent` immutably.
 macro_rules! chat_ref {
     ($app:expr) => {
         $app.get_component(&Id::Chat)
@@ -45,7 +45,7 @@ macro_rules! chat_ref {
 }
 
 /// Drain all pending events into a single Vec.
-/// Blocks on the first poll (up to FRAME_INTERVAL), then drains non-blocking.
+/// Blocks on the first poll (up to `FRAME_INTERVAL`), then drains non-blocking.
 fn drain_all(app: &mut App) -> DrainResult {
     let mut msgs = Vec::new();
     let mut listener_dead = false;
@@ -229,7 +229,7 @@ pub async fn run_tui(model: Model, session: Session, sandbox_settings: PathBuf) 
         }
 
         // ── Phase 2: Merge + apply ────────────────────────────────────
-        let streaming = chat_ref!(app).is_some_and(|c| c.is_streaming());
+        let streaming = chat_ref!(app).is_some_and(ChatComponent::is_streaming);
 
         if !msgs.is_empty() || streaming {
             let frame = FrameUpdate::from_msgs(msgs, &mut app, &mut input, &tx);
@@ -238,13 +238,13 @@ pub async fn run_tui(model: Model, session: Session, sandbox_settings: PathBuf) 
             }
 
             // Apply net scroll delta (merged from all ScrollUp/ScrollDown)
-            if frame.scroll_up > 0 || frame.scroll_down > 0 {
-                if let Some(chat) = chat_mut!(app) {
-                    if frame.scroll_up > frame.scroll_down {
-                        chat.scroll_up(frame.scroll_up - frame.scroll_down);
-                    } else {
-                        chat.scroll_down(frame.scroll_down - frame.scroll_up);
-                    }
+            if (frame.scroll_up > 0 || frame.scroll_down > 0)
+                && let Some(chat) = chat_mut!(app)
+            {
+                if frame.scroll_up > frame.scroll_down {
+                    chat.scroll_up(frame.scroll_up - frame.scroll_down);
+                } else {
+                    chat.scroll_down(frame.scroll_down - frame.scroll_up);
                 }
             }
 
@@ -266,6 +266,7 @@ pub async fn run_tui(model: Model, session: Session, sandbox_settings: PathBuf) 
 fn render(app: &mut App, input: &mut InputComponent, terminal: &mut Terminal) -> Result<()> {
     terminal.draw(|f| {
         let area = f.area();
+        #[allow(clippy::cast_possible_truncation)]
         let input_lines = input.input_line_count().clamp(1, 8) as u16;
         let input_height = input_lines + 2;
 
@@ -282,7 +283,7 @@ fn render(app: &mut App, input: &mut InputComponent, terminal: &mut Terminal) ->
 
         app.view(&Id::Chat, f, messages_area);
 
-        let is_streaming = chat_ref!(app).is_some_and(|c| c.is_streaming());
+        let is_streaming = chat_ref!(app).is_some_and(ChatComponent::is_streaming);
         input.render(f, input_area, is_streaming);
     })?;
     Ok(())

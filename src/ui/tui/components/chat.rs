@@ -1,4 +1,4 @@
-//! ChatComponent — tuirealm component for the chat message display.
+//! `ChatComponent` — tuirealm component for the chat message display.
 //!
 //! Owns the message list, render cache, scroll state, and streaming response tracking.
 
@@ -10,8 +10,8 @@ use tuirealm::command::{Cmd, CmdResult};
 use tuirealm::component::{AppComponent, Component};
 use tuirealm::event::{Event, Key, KeyModifiers};
 use tuirealm::props::{AttrValue, Attribute, QueryResult};
-use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::Frame;
+use tuirealm::ratatui::layout::Rect;
 use tuirealm::state::State;
 
 const MAX_MESSAGES: usize = 1_000;
@@ -102,25 +102,16 @@ impl ChatComponent {
     pub fn scroll_down(&mut self, amount: u16) {
         self.chat_state.scroll_down(amount);
     }
-
 }
-
 
 impl Component for ChatComponent {
     fn view(&mut self, frame: &mut Frame, area: Rect) {
         if self.show_help {
             frame.render_widget(super::super::widgets::help::HelpOverlay, area);
         } else {
-            let lines = chat::build_chat_lines(
-                &self.messages,
-                &mut self.render_cache,
-                area.width as usize,
-            );
-            frame.render_stateful_widget(
-                ChatView { lines: &lines },
-                area,
-                &mut self.chat_state,
-            );
+            let lines =
+                chat::build_chat_lines(&self.messages, &mut self.render_cache, area.width as usize);
+            frame.render_stateful_widget(ChatView { lines: &lines }, area, &mut self.chat_state);
         }
     }
 
@@ -203,7 +194,10 @@ mod tests {
         let mut chat = ChatComponent::new(vec![ChatMessage::system("Welcome")]);
         chat.chat_state.auto_scroll = false;
         chat.add_message(ChatMessage::user("test"));
-        assert!(chat.chat_state.auto_scroll, "add_message should enable auto_scroll");
+        assert!(
+            chat.chat_state.auto_scroll,
+            "add_message should enable auto_scroll"
+        );
     }
 
     #[test]

@@ -2,7 +2,7 @@ use crate::agent::Agent;
 use crate::prompt;
 use crate::providers::Model;
 use crate::skill::Skill;
-use crate::tools::{load_references_tool, load_skills_tool, shell_tool};
+use crate::tools::{load_references_tool, load_skills_tool, shell};
 use aisdk::core::LanguageModelRequest;
 use aisdk::core::tools::{Tool, ToolExecute};
 use aisdk::core::utils::step_count_is;
@@ -78,7 +78,7 @@ impl Subagent {
             .find(|a| a.name == name)
             .map(|a| a.name.as_str());
         prompt::subagent_prompt(
-            crate::utils::git_repo_root(),
+            crate::utils::git_repo_root().as_deref(),
             &self.skills,
             &self.agents,
             agent_name,
@@ -88,7 +88,7 @@ impl Subagent {
 
     fn build_tools(&self, depth: u32, parent_id: Option<Uuid>) -> Vec<Tool> {
         let mut tools = vec![
-            shell_tool(self.sandbox_settings.clone()),
+            shell(self.sandbox_settings.clone()),
             load_skills_tool(self.skills.clone(), Some(self.loaded_skills.clone())),
             load_references_tool(self.loaded_refs.clone()),
         ];
@@ -412,10 +412,7 @@ mod tests {
         for depth in 0..=2 {
             let tools = sub.build_tools(depth, None);
             let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-            assert!(
-                names.contains(&"shell_tool"),
-                "depth {depth}: must have shell_tool"
-            );
+            assert!(names.contains(&"shell"), "depth {depth}: must have shell");
             assert!(
                 names.contains(&"load_skills"),
                 "depth {depth}: must have load_skills"

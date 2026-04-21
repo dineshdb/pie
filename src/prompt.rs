@@ -8,13 +8,13 @@ use std::collections::HashSet;
 const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../.pie/SYSTEM.md");
 
 /// Render a `MiniJinja` template with context, falling back to raw template on error.
-#[allow(clippy::panic, clippy::unwrap_used)]
+#[allow(clippy::expect_used)]
 fn render_template(template_name: &str, template: &str, ctx: minijinja::Value) -> String {
     let mut env = Environment::new();
     env.add_template(template_name, template)
-        .unwrap_or_else(|e| panic!("invalid {template_name} template: {e}"));
+        .expect("invalid template");
     env.get_template(template_name)
-        .unwrap()
+        .expect("template just added")
         .render(ctx)
         .unwrap_or_else(|e| {
             tracing::warn!("{template_name} template render error: {e}, using raw template");
@@ -67,9 +67,8 @@ pub fn system_prompt_with_loaded(
     )
 }
 
-#[allow(clippy::needless_pass_by_value)]
 pub fn subagent_prompt(
-    repo_root: Option<String>,
+    repo_root: Option<&str>,
     skills: &[Skill],
     agents: &[Agent],
     agent_name: Option<&str>,
@@ -300,10 +299,7 @@ mod tests {
     #[test]
     fn main_agent_instructs_tool_use() {
         let result = render_main(&[], None, false);
-        assert!(
-            result.contains("shell_tool"),
-            "main agent must reference shell_tool"
-        );
+        assert!(result.contains("shell"), "main agent must reference shell");
         assert!(
             result.contains("load_skills"),
             "main agent prompt must reference load_skills in skills section"
@@ -313,10 +309,7 @@ mod tests {
     #[test]
     fn subagent_has_core_tools() {
         let result = render_sub(None);
-        assert!(
-            result.contains("shell_tool"),
-            "subagent must reference shell_tool"
-        );
+        assert!(result.contains("shell"), "subagent must reference shell");
         assert!(
             result.contains("load_skills"),
             "subagent must reference load_skills"

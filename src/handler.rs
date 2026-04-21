@@ -4,7 +4,7 @@ use crate::prompt;
 use crate::providers::Model;
 use crate::session::{Role, Session};
 use crate::skill::get_all_skills;
-use crate::tools::{load_references_tool, load_skills_tool, shell_tool, subagent_tool};
+use crate::tools::{load_references_tool, load_skills_tool, shell, subagent_tool};
 use aisdk::core::LanguageModel;
 use aisdk::core::utils::step_count_is;
 use aisdk::core::{AssistantMessage, LanguageModelRequest, Message, UserMessage};
@@ -54,7 +54,7 @@ pub fn build_request(
         .model(model.clone())
         .system(&system)
         .messages(messages)
-        .with_tool(shell_tool(sandbox_settings.clone()))
+        .with_tool(shell(sandbox_settings.clone()))
         .with_tool(load_skills_tool(
             skills.clone(),
             Some(loaded_skills.clone()),
@@ -107,7 +107,7 @@ pub fn extract_output_text(
         .and_then(|results| {
             results
                 .iter()
-                .rfind(|r| r.tool.name == "shell_tool")
+                .rfind(|r| r.tool.name == "shell")
                 .or_else(|| results.last())
                 .and_then(|r| r.output.as_ref().ok())
                 .and_then(|v| v.as_str())
@@ -174,7 +174,7 @@ mod tests {
 
     #[test]
     fn extract_output_prefers_text_even_with_tool_results() {
-        let tool_results = vec![tool_result("shell_tool", "tool output")];
+        let tool_results = vec![tool_result("shell", "tool output")];
         let result = extract_output_text("the answer", Some(&tool_results));
         assert_eq!(result, "the answer");
     }
@@ -187,10 +187,10 @@ mod tests {
     }
 
     #[test]
-    fn extract_output_falls_back_to_shell_tool_result_when_no_text() {
+    fn extract_output_falls_back_to_shell_result_when_no_text() {
         let tool_results = vec![
             tool_result("other_tool", "other"),
-            tool_result("shell_tool", "shell output"),
+            tool_result("shell", "shell output"),
         ];
         let result = extract_output_text("", Some(&tool_results));
         assert_eq!(result, "shell output");

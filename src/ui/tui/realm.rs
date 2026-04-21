@@ -17,7 +17,7 @@ pub enum StreamEvent {
     ToolCall { display: String, output: String },
 }
 
-/// Messages returned by AppComponent::on() — processed in the update function.
+/// Messages returned by `AppComponent::on()` — processed in the update function.
 #[derive(Debug, PartialEq, Clone)]
 pub enum Msg {
     Submit(String),
@@ -34,7 +34,7 @@ pub enum Msg {
     KeyboardToInput(KeyEvent),
 }
 
-/// Bridges tokio mpsc events into tuirealm's SyncPort system.
+/// Bridges tokio mpsc events into tuirealm's `SyncPort` system.
 pub struct StreamPort {
     rx: tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
 }

@@ -11,10 +11,10 @@ struct ShellInput {
 
 /// Execute a shell command inside the sandbox and return its stdout, stderr, and exit code.
 #[allow(clippy::unwrap_used)]
-pub fn shell_tool(sandbox_settings: PathBuf) -> Tool {
+pub fn shell(sandbox_settings: PathBuf) -> Tool {
     let sandbox_settings = Arc::new(sandbox_settings);
     Tool::builder()
-        .name("shell_tool")
+        .name("shell")
         .description("Execute a system command, bash tools, clis, etc.")
         .input_schema(schemars::schema_for!(ShellInput))
         .execute(ToolExecute::from_sync(move |_ctx, params| {
@@ -37,7 +37,7 @@ pub fn shell_tool(sandbox_settings: PathBuf) -> Tool {
                     (stdout, stderr, exit_code)
                 }
                 Err(e) => {
-                    tracing::debug!(error = %e, "shell_tool failed");
+                    tracing::debug!(error = %e, "shell failed");
                     (String::new(), e.to_string(), -1)
                 }
             };

@@ -101,7 +101,7 @@ impl Session {
         let conn = pool.get()?;
         let id_str = conn
             .query_row(
-                "SELECT id FROM sessions WHERE cwd = ? ORDER BY created_at DESC LIMIT 1",
+                "SELECT id FROM sessions WHERE cwd = ? ORDER BY updated_at DESC LIMIT 1",
                 rusqlite::params![cwd],
                 |row| row.get::<_, String>(0),
             )
@@ -122,14 +122,14 @@ impl Session {
 
     fn add_message(&mut self, role: Role, content: &str) -> anyhow::Result<()> {
         let conn = self.pool.get()?;
+        let now_ms = chrono::Utc::now().timestamp_millis();
         conn.execute(
             "INSERT INTO messages (session_id, ts, role, content) VALUES (?, ?, ?, ?)",
-            rusqlite::params![
-                self.id.to_string(),
-                chrono::Utc::now().timestamp_micros(),
-                role,
-                content,
-            ],
+            rusqlite::params![self.id.to_string(), now_ms * 1000, role, content,],
+        )?;
+        conn.execute(
+            "UPDATE sessions SET updated_at = ? WHERE id = ?",
+            rusqlite::params![now_ms, self.id.to_string()],
         )?;
         self.cache.push(HistoryEntry {
             role,
