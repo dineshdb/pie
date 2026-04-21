@@ -43,7 +43,7 @@ fn parse_shell_output(output: &str) -> ToolCallResult<'static> {
     };
 
     let exit_code = obj
-        .get("exitCode")
+        .get("code")
         .and_then(serde_json::Value::as_i64)
         .map_or(0, |v| {
             #[allow(clippy::cast_possible_truncation)]

@@ -1,7 +1,8 @@
 [package]
-name = "pie"
+name = "p1e"
 version = "0.1.0"
 edition = "2024"
+default-run = "pie"
 
 [dependencies]
 aisdk = { git = "https://github.com/qretaio/aisdk", features = ["openaicompatible", "openai"] }
@@ -42,3 +43,11 @@ tempfile = "3"
 lto = true
 panic = "abort"
 strip = true
+
+[[bin]]
+name = "p1e"
+path = "src/main.rs"
+
+[[bin]]
+name = "pie"
+path = "src/main.rs"

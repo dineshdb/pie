@@ -43,10 +43,9 @@ pub fn shell(sandbox_settings: PathBuf) -> Tool {
             };
             let result = json!({
                 "cmd": cmd,
-                "exitCode": exit_code,
+                "code": exit_code,
                 "stdout": stdout,
                 "stderr": stderr,
-                "success": exit_code == 0
             });
             tracing::trace!(%result, "shell:");
             Ok(serde_json::to_string(&result).unwrap_or_default())
