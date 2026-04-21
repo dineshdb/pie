@@ -1,7 +1,7 @@
 use crate::handler::{build_request, extract_output_text, strip_control_tokens};
 use crate::providers::Model;
 use crate::session::Session;
-use crate::ui::tui::event::AppEvent;
+use crate::ui::tui::realm::StreamEvent;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -12,7 +12,7 @@ pub fn spawn_stream(
     sandbox: PathBuf,
     session_id: uuid::Uuid,
     pool: Arc<crate::db::DbPool>,
-    event_tx: mpsc::UnboundedSender<AppEvent>,
+    event_tx: mpsc::UnboundedSender<StreamEvent>,
     abort_rx: mpsc::UnboundedReceiver<()>,
 ) {
     tokio::spawn(run_stream(
@@ -26,7 +26,7 @@ async fn run_stream(
     sandbox: PathBuf,
     session_id: uuid::Uuid,
     pool: Arc<crate::db::DbPool>,
-    event_tx: mpsc::UnboundedSender<AppEvent>,
+    event_tx: mpsc::UnboundedSender<StreamEvent>,
     mut abort_rx: mpsc::UnboundedReceiver<()>,
 ) {
     use aisdk::core::LanguageModelStreamChunkType;
@@ -44,7 +44,7 @@ async fn run_stream(
     let mut response = match stream_result {
         Ok(r) => r,
         Err(e) => {
-            let _ = event_tx.send(AppEvent::StreamError(e.to_string()));
+            let _ = event_tx.send(StreamEvent::Error(e.to_string()));
             return;
         }
     };
@@ -60,7 +60,7 @@ async fn run_stream(
                         let cleaned = strip_control_tokens(&delta);
                         if !cleaned.is_empty() {
                             accumulated.push_str(&cleaned);
-                            let _ = event_tx.send(AppEvent::StreamDelta(accumulated.clone()));
+                            let _ = event_tx.send(StreamEvent::Delta(accumulated.clone()));
                         }
                     }
                     Some(LanguageModelStreamChunkType::ToolCallStart(details)) => {
@@ -79,7 +79,7 @@ async fn run_stream(
                         let _ = event_tx.send(event.into());
                     }
                     Some(LanguageModelStreamChunkType::Failed(err)) => {
-                        let _ = event_tx.send(AppEvent::StreamError(err.clone()));
+                        let _ = event_tx.send(StreamEvent::Error(err.clone()));
                         break;
                     }
                     None => break,
@@ -110,7 +110,7 @@ async fn run_stream(
         }
     }
 
-    let _ = event_tx.send(AppEvent::StreamDone(output));
+    let _ = event_tx.send(StreamEvent::Done(output));
 }
 
 /// Accumulates tool call state across Start/Available/End chunks.
@@ -126,14 +126,14 @@ struct CompletedToolCall {
     output: String,
 }
 
-impl From<CompletedToolCall> for AppEvent {
-    fn from(call: CompletedToolCall) -> AppEvent {
+impl From<CompletedToolCall> for StreamEvent {
+    fn from(call: CompletedToolCall) -> StreamEvent {
         let display = if call.params.is_empty() {
             call.name
         } else {
             format!("{}({})", call.name, call.params)
         };
-        AppEvent::ToolCall {
+        StreamEvent::ToolCall {
             display,
             output: call.output,
         }

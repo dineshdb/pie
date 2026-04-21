@@ -1,11 +1,11 @@
 use crate::session::Role;
 use crate::ui::tui::state::ChatMessage;
 use crate::ui::tui::widgets::render_cache::MessageRenderCache;
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, StatefulWidget, Widget};
+use tuirealm::ratatui::buffer::Buffer;
+use tuirealm::ratatui::layout::Rect;
+use tuirealm::ratatui::style::{Color, Modifier, Style};
+use tuirealm::ratatui::text::{Line, Span};
+use tuirealm::ratatui::widgets::{Paragraph, StatefulWidget, Widget};
 
 const PREFIX_WIDTH: usize = 2;
 const RIGHT_PAD: usize = 1;
@@ -178,7 +178,7 @@ fn continuation_prefix() -> Span<'static> {
     Span::styled("  ", Style::default().fg(Color::DarkGray))
 }
 
-fn truncate_str(s: &str, max_len: usize) -> String {
+pub(crate) fn truncate_str(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         return s.to_string();
     }
@@ -190,8 +190,8 @@ fn truncate_str(s: &str, max_len: usize) -> String {
 #[allow(clippy::indexing_slicing)]
 mod tests {
     use super::*;
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
+    use tuirealm::ratatui::Terminal;
+    use tuirealm::ratatui::backend::TestBackend;
 
     fn render_chat(messages: &[ChatMessage], width: u16, height: u16) -> Buffer {
         let backend = TestBackend::new(width, height);

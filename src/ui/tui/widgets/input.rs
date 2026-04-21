@@ -1,8 +1,8 @@
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+use tuirealm::ratatui::buffer::Buffer;
+use tuirealm::ratatui::layout::Rect;
+use tuirealm::ratatui::style::{Color, Modifier, Style};
+use tuirealm::ratatui::text::{Line, Span};
+use tuirealm::ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 const PROMPT: &str = "> ";
 
@@ -52,21 +52,21 @@ impl Widget for InputView<'_> {
                 if show_prompt && j == 0 {
                     spans.push(Span::styled(PROMPT, prompt_style));
                 }
-                if show_placeholder && j == 0 {
+
+                spans.push(Span::raw(segment));
+                if show_placeholder && show_prompt && j == 0 {
                     spans.push(Span::styled(
                         self.placeholder,
                         Style::default().fg(Color::DarkGray),
                     ));
-                } else {
-                    spans.push(Span::raw(segment));
-                    if show_hint && show_prompt && j == 0 {
-                        spans.push(Span::styled(
-                            self.hint,
-                            Style::default()
-                                .fg(Color::DarkGray)
-                                .add_modifier(Modifier::ITALIC),
-                        ));
-                    }
+                }
+                if show_hint && show_prompt && j == 0 {
+                    spans.push(Span::styled(
+                        self.hint,
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::ITALIC),
+                    ));
                 }
                 rendered.push(Line::from(spans));
             }
@@ -95,8 +95,8 @@ pub fn cursor_position(area: Rect, cursor_row: usize, cursor_col: usize) -> (u16
 #[allow(clippy::indexing_slicing)]
 mod tests {
     use super::*;
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
+    use tuirealm::ratatui::Terminal;
+    use tuirealm::ratatui::backend::TestBackend;
 
     fn render_input(view: InputView<'_>, width: u16, height: u16) -> Buffer {
         let backend = TestBackend::new(width, height);

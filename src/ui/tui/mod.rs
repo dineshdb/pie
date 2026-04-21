@@ -1,9 +1,9 @@
 pub mod command;
-pub mod event;
-pub mod model;
+pub mod components;
+pub mod realm;
+pub mod realm_terminal;
 pub mod state;
 pub mod stream;
-pub mod terminal;
 pub mod widgets;
 
-pub use terminal::run_tui;
+pub use realm_terminal::run_tui;

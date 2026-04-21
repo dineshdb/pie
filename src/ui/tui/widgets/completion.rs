@@ -1,8 +1,8 @@
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+use tuirealm::ratatui::buffer::Buffer;
+use tuirealm::ratatui::layout::Rect;
+use tuirealm::ratatui::style::{Color, Modifier, Style};
+use tuirealm::ratatui::text::{Line, Span};
+use tuirealm::ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 pub struct CompletionPopup<'a> {
     pub candidates: &'a [String],

@@ -36,8 +36,9 @@ below, from the system context as well as user defined skills, etc.
 - ps aux: running processes
 - jq: parse JSON
 
-Keep shell commands simple: one action per command. Do NOT chain with `&&`.
-If you need to write a complex script for actions try:
+Keep shell commands simple: one action per command. Do NOT chain with `&&`. If
+you need to write a complex script for actions try:
+
 - writing a reusable cli tool
 - write a custom tool and execute it via bash tool
 - always save the reusable tools in ~/.pie/bin/ or .pie/bin/

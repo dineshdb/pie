@@ -1,5 +1,5 @@
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use tuirealm::ratatui::style::{Color, Modifier, Style};
+use tuirealm::ratatui::text::{Line, Span};
 
 /// Render a markdown string into ratatui [`Line`]s with styled spans.
 #[allow(clippy::too_many_lines)]

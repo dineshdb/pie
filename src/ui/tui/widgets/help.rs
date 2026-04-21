@@ -1,12 +1,12 @@
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, Paragraph, Widget};
+use tuirealm::ratatui::layout::Rect;
+use tuirealm::ratatui::style::{Color, Modifier, Style};
+use tuirealm::ratatui::text::{Line, Span};
+use tuirealm::ratatui::widgets::{Clear, Paragraph, Widget};
 
 pub struct HelpOverlay;
 
 impl Widget for HelpOverlay {
-    fn render(self, area: Rect, buf: &mut ratatui::buffer::Buffer) {
+    fn render(self, area: Rect, buf: &mut tuirealm::ratatui::buffer::Buffer) {
         Clear.render(area, buf);
 
         let lines: Vec<Line> = vec![

@@ -1,6 +1,6 @@
 use crate::session::Role;
-use ratatui::style::{Color, Style};
-use ratatui::text::Line;
+use tuirealm::ratatui::style::{Color, Style};
+use tuirealm::ratatui::text::Line;
 
 struct RenderedCache {
     width: usize,

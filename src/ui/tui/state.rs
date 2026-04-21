@@ -1,11 +1,5 @@
 use crate::session::Role;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamState {
-    Idle,
-    Active,
-}
-
 /// Why this message exists — controls rendering order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageKind {

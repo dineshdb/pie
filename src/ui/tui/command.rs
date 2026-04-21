@@ -31,11 +31,10 @@ impl Command {
                 "/skills" | "/ls" => Self::ListSkills,
                 "/clear" => Self::Clear,
                 rest => {
-                    // Try to resolve /name to an agent or skill
                     let without_slash = &rest[1..];
                     let (name, query) = match without_slash.split_once(' ') {
                         Some((n, q)) => (n, q.trim()),
-                        None => (without_slash, ""),
+                        _ => (without_slash, ""),
                     };
                     let agents = crate::agent::get_all_agents();
                     if agents.iter().any(|a| a.name == name) {
@@ -53,7 +52,6 @@ impl Command {
                             is_agent: false,
                         };
                     }
-                    // Unknown /command — send as-is so the LLM can handle it
                     Self::Send(input.to_string())
                 }
             }
@@ -61,17 +59,41 @@ impl Command {
             Self::Send(input.to_string())
         }
     }
+
+    /// Map a parsed command into the action the app should take.
+    pub fn dispatch(self) -> CommandAction {
+        match self {
+            Self::Quit => CommandAction::Quit,
+            Self::Help => CommandAction::AddMessage(ChatMessage::system(HELP_TEXT)),
+            Self::ListSkills => {
+                let text = build_skills_list();
+                CommandAction::AddMessage(ChatMessage::system(&text))
+            }
+            Self::Clear => CommandAction::ClearMessages,
+            Self::Send(query) => CommandAction::Stream(query),
+            Self::Invoke {
+                name,
+                query,
+                is_agent,
+            } => {
+                let rewritten = if is_agent {
+                    format!("Use the subagent tool with agent_name=\"{name}\" to handle: {query}")
+                } else if query.is_empty() {
+                    format!("/{name}")
+                } else {
+                    format!("/{name} {query}")
+                };
+                CommandAction::Stream(rewritten)
+            }
+        }
+    }
 }
 
 /// Result of executing a command — what the app should do next.
 pub enum CommandAction {
-    /// Add this message to the chat.
     AddMessage(ChatMessage),
-    /// Clear all messages.
     ClearMessages,
-    /// Begin streaming a response for this query.
     Stream(String),
-    /// Shut down.
     Quit,
 }
 
@@ -103,4 +125,13 @@ pub fn build_all_completions() -> Vec<String> {
         cmds.push(format!("/{}", skill.name));
     }
     cmds
+}
+
+fn build_skills_list() -> String {
+    let agents = crate::agent::get_all_agents();
+    if agents.is_empty() {
+        return "No agents found.".to_string();
+    }
+    let names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
+    format!("Agents: {}", names.join(", "))
 }
