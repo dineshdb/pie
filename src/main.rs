@@ -56,10 +56,6 @@ use tracing_subscriber::EnvFilter;
 #[command(about = "Minimal Pi-like agent using OpenAI-compatible providers")]
 #[allow(clippy::struct_excessive_bools)]
 struct Cli {
-    /// Explicitly use a specific skill
-    #[arg(short, long)]
-    skill: Option<String>,
-
     #[arg(short, long)]
     debug: bool,
 
@@ -144,10 +140,6 @@ async fn main() -> anyhow::Result<()> {
         } else {
             cli_query
         };
-
-        if cli.skill.is_some() && query.is_empty() {
-            anyhow::bail!("Usage: pie -s <skill> '<query>'");
-        }
 
         let full_query = if query.is_empty() && piped_stdin.is_none() {
             anyhow::bail!(

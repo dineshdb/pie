@@ -68,7 +68,6 @@ pie "/explore summarize this repo"
 | `--base-url`  | API base URL                    |
 | `--api-key`   | API key                         |
 | `-c`          | Continue last session           |
-| `-s`          | Use a specific skill            |
 | `--md`        | Markdown output (single-shot)   |
 | `--json`      | JSON output (single-shot)       |
 | `-d`          | Debug logging                   |
