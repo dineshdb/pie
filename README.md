@@ -1,164 +1,83 @@
 # pie
 
-A minimal AI coding agent written in Rust. Runs on any OpenAI-compatible
-provider.
+A fast, minimal AI coding agent in Rust. Any OpenAI-compatible provider, persistent sessions, skill-based subagents, and sandboxed shell execution.
 
-Pie is a CLI agent that answers questions, runs shell commands, and delegates to
-skill-based subagents. It maintains persistent sessions per working directory
-backed by SQLite.
+## Quick start
+
+```bash
+# Interactive mode — just start talking
+pie
+
+# Continue your last conversation in this directory
+pie -c
+
+# Pipe a question
+echo "what does src/main.rs do?" | pie --md
+
+# Use a specific model
+pie -m claude-sonnet-4-20250514
+```
+
+## Features
+
+- **Persistent sessions** — conversations saved per directory, resume with `pie -c`
+- **Any provider** — works with OpenAI, Anthropic, Groq, Ollama, or any OpenAI-compatible API
+- **Skills & subagents** — markdown-based skills from [agentskills.io](https://agentskills.io), auto-loaded from queries
+- **Sandboxed commands** — all shell commands run through [srt](https://github.com/anthropic-experimental/sandbox-runtime) (OS-level isolation, no containers)
+- **Streaming TUI** — real-time tool calls, markdown rendering, command history
+- **Scriptable** — `--json` and `--md` flags for single-shot mode
 
 ## Usage
 
 ```bash
-# Interactive mode (default)
+# Interactive (default)
 pie
-pie "explain this function"
 
-# Continue the last session in this directory
+# Continue last session
 pie -c
 
-# Single-shot with explicit output format
-pie --json "what is 2+2"
+# Single-shot output
 pie --md "explain this function"
+pie --json "list files"   # pipe into jq, etc.
 
-# Use a specific model/provider
-pie --model gpt-4o --base-url https://api.openai.com/v1 --api-key sk-... "hello"
-
-# Explicit skill invocation
-pie -s "/search" "latest Rust features"
+# Use a specific skill
+pie "/explore summarize this repo"
 ```
-
-### Output Formats
-
-Unless `--md` or `--json` is specified, pie starts in interactive mode. Use
-these flags for single-shot, non-interactive output:
-
-```bash
-# Markdown output
-pie --md "list files in the current directory"
-
-# JSON output (for scripting / piping into jq)
-pie --json "list files in the current directory"
-```
-
-Returns:
-
-```json
-{
-  "response": "Cargo.toml  README.md  src/  tests/",
-  "session_id": "01960a1b-2c3d-7d4e-8f5a-6b7c8d9e0f1a",
-  "model_used": "gpt-4o",
-  "timestamp": "2026-04-10T12:34:56.789Z"
-}
-```
-
-Fields:
-
-| Field        | Description                           |
-| ------------ | ------------------------------------- |
-| `response`   | The agent's answer or command output  |
-| `session_id` | UUID of the session (for `-c` resume) |
-| `model_used` | Name of the model that was used       |
-| `timestamp`  | UTC timestamp of the response         |
 
 ### Interactive commands
 
-| Command            | Description                                   |
-| ------------------ | --------------------------------------------- |
-| `<query>`          | Ask a question (auto-detects relevant skills) |
-| `/<skill> <query>` | Use a specific skill                          |
-| `list-skills`      | Show available skills                         |
-| `help`             | Show help text                                |
-| `exit`             | Quit                                          |
-
-## Skills
-
-Browse and install skills at [agentskills.io](https://agentskills.io).
-
-Skills are markdown files placed in `~/.pie/skills/<name>/SKILL.md` with YAML
-frontmatter. They are auto-detected from queries mentioning `/<skill-name>` and
-injected into the prompt. Skills can reference other skills, which are resolved
-recursively.
-
-## Sandboxing
-
-Pie sandboxes **all** shell commands using
-[sandbox-runtime](https://github.com/anthropic-experimental/sandbox-runtime)
-(`srt`). This provides OS-level filesystem and network restrictions — no
-containers required.
-
-- **Required** — pie exits if `srt` is not on `PATH`
-- Install: `npm install -g @anthropic-ai/sandbox-runtime`
-
-### Sandbox configuration
-
-Place `~/.pie/sandbox.json` to customise restrictions (uses defaults if absent):
-
-```json
-{
-  "network": {
-    "allowedDomains": ["github.com", "*.github.com", "npmjs.org"],
-    "deniedDomains": []
-  },
-  "filesystem": {
-    "denyRead": ["~/.ssh", "~/.gnupg"],
-    "allowWrite": [".", "/tmp"],
-    "denyWrite": [".env", ".env.local"]
-  }
-}
-```
-
-| Setting                  | Default              | Description                         |
-| ------------------------ | -------------------- | ----------------------------------- |
-| `network.allowedDomains` | package registries   | Domains the agent may access        |
-| `network.deniedDomains`  | `[]`                 | Explicitly blocked domains          |
-| `filesystem.denyRead`    | `~/.ssh`, `~/.gnupg` | Paths the agent cannot read         |
-| `filesystem.allowWrite`  | `.`, `/tmp`          | Paths the agent may write to        |
-| `filesystem.denyWrite`   | `.env`, `.env.local` | Paths blocked even if in allowWrite |
+| Input              | Action                                  |
+| ------------------ | --------------------------------------- |
+| `<query>`          | Ask a question (auto-detects skills)    |
+| `/<skill> <query>` | Use a specific skill                    |
+| `?`                | Show help                               |
+| `Ctrl+C`           | Abort stream / quit                     |
 
 ## Configuration
 
-- **Config directory**: `~/.pie/`
-- **Sandbox config**: `~/.pie/sandbox.json`
-- **Project instructions**: Place `AGENTS.md` in your project root (or any
-  parent directory)
-- **Global instructions**: `~/.pie/AGENTS.md`
+```bash
+# .pie/sandbox.json — sandbox restrictions
+# .pie/skills/<name>/SKILL.md — custom skills
+# .pie/agents/<name>.md — custom subagents
+# AGENTS.md — project-level instructions
+```
 
-## Comparison
+| Flag          | Description                     |
+| ------------- | ------------------------------- |
+| `-m`          | Model name                      |
+| `--base-url`  | API base URL                    |
+| `--api-key`   | API key                         |
+| `-c`          | Continue last session           |
+| `-s`          | Use a specific skill            |
+| `--md`        | Markdown output (single-shot)   |
+| `--json`      | JSON output (single-shot)       |
+| `-d`          | Debug logging                   |
 
-|                     | **Pie**                | **Claude Code**            | **Codex CLI**    | **Pi**                |
-| ------------------- | ---------------------- | -------------------------- | ---------------- | --------------------- |
-| Language            | Rust                   | TypeScript                 | Rust             | Python                |
-| Runtime             | Single binary          | Node.js                    | Single binary    | Python + venv         |
-| Provider            | Any OpenAI-compatible  | Anthropic only             | OpenAI only      | Any OpenAI-compatible |
-| Session persistence | SQLite per directory   | JSON per project           | None             | Per conversation      |
-| Skill system        | Markdown + frontmatter | CLAUDE.md + slash commands | None             | Markdown skills       |
-| Subagents           | Skill-based delegation | Task agents                | None             | Skill-based           |
-| Sandboxing          | srt (OS-level)         | srt (OS-level)             | Docker container | None                  |
-| JSON output         | `--json`               | `--output-format json`     | `--format json`  | None                  |
-| Markdown output     | `--md`                 | N/A                        | N/A              | N/A                   |
-| Interactive mode    | REPL                   | REPL                       | No               | REPL                  |
-| Streaming           | Yes                    | Yes                        | Yes              | Yes                   |
-| License             | MIT                    | MIT (OSS) / prop (hosted)  | Apache-2.0       | MIT                   |
-
-## Architecture
-
-The agent uses [aisdk](https://github.com/qretaio/aisdk) for provider-agnostic
-LLM calls with streaming, tool use, and step-limited execution loops.
-
-## Build
+## Build & test
 
 ```bash
 cargo build --release
-```
-
-## Test
-
-```bash
-# Unit tests
 cargo test
-
-scripts/test.py
 ```
 
 ## License

@@ -10,7 +10,7 @@ CREATE TABLE messages (
     id          INTEGER PRIMARY KEY,
     session_id  TEXT    NOT NULL REFERENCES sessions(id),
     ts          INTEGER NOT NULL,
-    role        TEXT    NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
+    role        TEXT    NOT NULL,
     content     TEXT    NOT NULL,
     compacted   INTEGER NOT NULL DEFAULT 0
 );

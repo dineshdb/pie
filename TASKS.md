@@ -8,7 +8,7 @@
 - [x] Batching the tool calls for faster iterations.
 - [x] Unless --md or --json is mentioned, pie starts in interactive mode.
 - [ ] So progress updates as model continues working.
-- [ ] Show tool calls in message history
+- [x] Show tool calls in message history
 - [x] rendered markdown is not selectable for copying
 - [ ] Parse input into Query which extracts skills and agent names from it.
 - [ ] /model for model info and switching models

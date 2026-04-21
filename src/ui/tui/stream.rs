@@ -2,6 +2,7 @@ use crate::handler::{build_request, extract_output_text, strip_control_tokens};
 use crate::providers::Model;
 use crate::session::Session;
 use crate::ui::tui::realm::StreamEvent;
+use crate::ui::tui::widgets::tool_display::ToolCallResult;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -32,9 +33,19 @@ async fn run_stream(
     use aisdk::core::LanguageModelStreamChunkType;
     use futures::StreamExt;
 
-    let history = Session::load(pool.clone(), session_id)
-        .map(|s| s.history_entries().to_vec())
-        .unwrap_or_default();
+    let mut session = match Session::load(pool, session_id) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("failed to load session: {e}");
+            let _ = event_tx.send(StreamEvent::Error(e.to_string()));
+            return;
+        }
+    };
+
+    let history = session.history_entries().to_vec();
+
+    // Persist user message before streaming so tool calls land after it in DB order.
+    let _ = session.add_user(&query);
 
     let query_for_req = query.strip_prefix('/').unwrap_or(&query);
     let mut req = build_request(&model, query_for_req, &history, sandbox);
@@ -76,6 +87,12 @@ async fn run_stream(
                             params: std::mem::take(&mut pending_tool.params),
                             output,
                         };
+                        let display = if event.params.is_empty() {
+                            event.name.clone()
+                        } else {
+                            format!("{}: {}", event.name, event.params)
+                        };
+                        persist_tool_call(&mut session, &event.name, &display, &event.output);
                         let _ = event_tx.send(event.into());
                     }
                     Some(LanguageModelStreamChunkType::Failed(err)) => {
@@ -103,14 +120,23 @@ async fn run_stream(
     let output = extract_output_text(&accumulated, tool_results.as_deref());
     let output = strip_control_tokens(&output);
 
-    if let Ok(mut session) = Session::load(pool, session_id) {
-        let _ = session.add_user(&query);
-        if !output.is_empty() {
-            let _ = session.add_assistant(&output);
-        }
+    if !output.is_empty() {
+        let _ = session.add_assistant(&output);
     }
 
     let _ = event_tx.send(StreamEvent::Done(output));
+}
+
+/// Format and persist a tool call to the session DB.
+fn persist_tool_call(session: &mut Session, name: &str, display: &str, output: &str) {
+    let tool = ToolCallResult::new(name, output);
+    let result_line = tool.to_string();
+    let content = if result_line.is_empty() {
+        display.to_string()
+    } else {
+        format!("{display} → {result_line}")
+    };
+    let _ = session.add_tool(&content);
 }
 
 /// Accumulates tool call state across Start/Available/End chunks.

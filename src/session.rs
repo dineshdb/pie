@@ -146,6 +146,10 @@ impl Session {
         self.add_message(Role::Assistant, content)
     }
 
+    pub fn add_tool(&mut self, content: &str) -> anyhow::Result<()> {
+        self.add_message(Role::Tool, content)
+    }
+
     fn rebuild_cache(&mut self) -> anyhow::Result<()> {
         let conn = self.pool.get()?;
         let mut stmt = conn.prepare(
