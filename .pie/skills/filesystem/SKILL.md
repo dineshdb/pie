@@ -5,8 +5,8 @@ description: Comprehensive file operations: read, write, edit, find, and search 
 
 # Filesystem Operations
 
-You manipulate files exclusively through available tools. Follow these patterns to
-read, write, edit, find, and search files reliably.
+You manipulate files exclusively through available tools. Follow these patterns
+to read, write, edit, find, and search files reliably.
 
 ## Core Principle
 
