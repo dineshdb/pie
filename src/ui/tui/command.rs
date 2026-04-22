@@ -18,6 +18,8 @@ pub enum Command {
     ListSkills,
     /// Clear the message history.
     Clear,
+    /// Start a new session.
+    New,
 }
 
 impl Command {
@@ -30,6 +32,7 @@ impl Command {
                 "/help" | "/h" => Self::Help,
                 "/skills" | "/ls" => Self::ListSkills,
                 "/clear" => Self::Clear,
+                "/new" => Self::New,
                 rest => {
                     let without_slash = &rest[1..];
                     let (name, query) = match without_slash.split_once(' ') {
@@ -70,6 +73,7 @@ impl Command {
                 CommandAction::AddMessage(ChatMessage::system(&text))
             }
             Self::Clear => CommandAction::ClearMessages,
+            Self::New => CommandAction::NewSession,
             Self::Send(query) => CommandAction::Stream(query),
             Self::Invoke {
                 name,
@@ -93,20 +97,22 @@ impl Command {
 pub enum CommandAction {
     AddMessage(ChatMessage),
     ClearMessages,
+    NewSession,
     Stream(String),
     Quit,
 }
 
 /// All slash commands and their aliases, used for tab-completion.
 pub const SLASH_COMMANDS: &[&str] = &[
-    "/help", "/h", "/exit", "/quit", "/q", "/skills", "/ls", "/clear",
+    "/help", "/h", "/exit", "/quit", "/q", "/skills", "/ls", "/clear", "/new",
 ];
 
 /// The static help text shown by /help.
 pub const HELP_TEXT: &str = r"
 Commands:
   /help, /h          Show this help          /skills, /ls  List agents
-  /clear             Clear conversation      /exit, /quit, /q  Exit
+  /clear             Clear conversation      /new  New session
+  /exit, /quit, /q   Exit
 
 Keys:
   Enter              Send message            Ctrl+Enter  New line

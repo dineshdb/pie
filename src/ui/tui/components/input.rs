@@ -345,6 +345,19 @@ impl InputComponent {
         self.stream_abort = None;
     }
 
+    /// Reset to a new session: update `session_id`, create fresh history, clear input.
+    pub fn reset_session(&mut self, session_id: uuid::Uuid) {
+        self.session_id = session_id;
+        let history_dir = pie_home().join("history");
+        let history_path = history_dir.join(format!("{session_id}.txt"));
+        self.history = InputHistory::new(history_path);
+        self.completion.reset();
+        self.current_hint.clear();
+        let mut empty = TextArea::default();
+        apply_textarea_style(&mut empty);
+        self.textarea = empty;
+    }
+
     // ── Rendering ────────────────────────────────────────────────────
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, is_streaming: bool) {

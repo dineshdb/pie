@@ -149,6 +149,17 @@ impl FrameUpdate {
                             chat.clear_messages();
                         }
                     }
+                    CommandAction::NewSession => {
+                        if let Ok(new_session) = Session::create(input.session_pool.clone()) {
+                            if let Some(chat) = chat_mut!(app) {
+                                chat.clear_messages();
+                                chat.add_message(ChatMessage::system(
+                                    "Welcome to pie! Type ? for help.",
+                                ));
+                            }
+                            input.reset_session(new_session.id);
+                        }
+                    }
                     CommandAction::Stream(query) => {
                         if let Some(chat) = chat_mut!(app) {
                             chat.add_message(ChatMessage::user(&query));
