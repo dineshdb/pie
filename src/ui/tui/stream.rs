@@ -15,9 +15,10 @@ pub fn spawn_stream(
     pool: Arc<crate::db::DbPool>,
     event_tx: mpsc::UnboundedSender<StreamEvent>,
     abort_rx: mpsc::UnboundedReceiver<()>,
+    max_steps: u32,
 ) {
     tokio::spawn(run_stream(
-        query, model, sandbox, session_id, pool, event_tx, abort_rx,
+        query, model, sandbox, session_id, pool, event_tx, abort_rx, max_steps,
     ));
 }
 
@@ -29,6 +30,7 @@ async fn run_stream(
     pool: Arc<crate::db::DbPool>,
     event_tx: mpsc::UnboundedSender<StreamEvent>,
     mut abort_rx: mpsc::UnboundedReceiver<()>,
+    max_steps: u32,
 ) {
     use aisdk::core::LanguageModelStreamChunkType;
     use futures::StreamExt;
@@ -48,7 +50,7 @@ async fn run_stream(
     let _ = session.add_user(&query);
 
     let query_for_req = query.strip_prefix('/').unwrap_or(&query);
-    let mut req = build_request(&model, query_for_req, &history, sandbox);
+    let mut req = build_request(&model, query_for_req, &history, sandbox, max_steps);
 
     let stream_result = req.stream_text().await;
 

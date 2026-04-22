@@ -1,4 +1,5 @@
 use super::tool_compat::post_process_response;
+use crate::config::ResolvedProvider;
 use aisdk::core::DynamicModel;
 use aisdk::core::capabilities::{
     AudioInputSupport, AudioOutputSupport, ImageInputSupport, ImageOutputSupport, ReasoningSupport,
@@ -86,67 +87,20 @@ impl LanguageModel for Model {
     }
 }
 
-/// Build a model from CLI args + env vars.
-///
-/// Priority: CLI arg > env var > default.
-pub fn build_model(
-    model: Option<&str>,
-    base_url: Option<&str>,
-    api_key: Option<&str>,
-) -> Result<Model> {
-    let model_name = model
-        .map(ToString::to_string)
-        .or_else(|| std::env::var("OPENAI_MODEL").ok())
-        .context("model name is required (set --model or OPENAI_MODEL)")?;
-
-    let base_url = base_url
-        .map(ToString::to_string)
-        .or_else(|| std::env::var("OPENAI_BASE_URL").ok())
-        .or_else(|| std::env::var("OPENAI_API_BASE").ok())
-        .or_else(|| ollama_default(&model_name))
-        .context("base URL is required (set --base-url, OPENAI_BASE_URL, or OPENAI_API_BASE)")?;
-
-    let api_key = api_key
-        .map(ToString::to_string)
-        .or_else(|| std::env::var("OPENAI_API_KEY").ok())
-        .or_else(|| local_placeholder(&base_url))
-        .context("API key is required (set --api-key or OPENAI_API_KEY)")?;
-
-    let provider = OpenAICompatible::<DynamicModel>::builder()
-        .model_name(&model_name)
-        .base_url(&base_url)
-        .api_key(&api_key)
+/// Build a model from a fully resolved provider config.
+pub fn build_from_resolved(provider: &ResolvedProvider) -> Result<Model> {
+    let inner = OpenAICompatible::<DynamicModel>::builder()
+        .model_name(&provider.model)
+        .base_url(&provider.base_url)
+        .api_key(&provider.api_key)
         .build()
         .context("failed to build OpenAI-compatible provider")?;
 
-    tracing::debug!(model = %model_name, base_url = %base_url, "using OpenAI-compatible provider");
+    tracing::debug!(
+        model = %provider.model,
+        base_url = %provider.base_url,
+        "provider"
+    );
 
-    Ok(Model { inner: provider })
-}
-
-/// Well-known local model prefixes that default to Ollama.
-fn ollama_default(model: &str) -> Option<String> {
-    const LOCAL_PREFIXES: &[&str] = &[
-        "llama",
-        "mistral",
-        "phi",
-        "codellama",
-        "qwen",
-        "deepseek",
-        "gemma",
-    ];
-    if LOCAL_PREFIXES.iter().any(|p| model.starts_with(p)) {
-        Some("http://localhost:11434/v1".to_string())
-    } else {
-        None
-    }
-}
-
-/// Localhost servers don't need a real key — use a placeholder.
-fn local_placeholder(base_url: &str) -> Option<String> {
-    if base_url.contains("localhost") || base_url.contains("127.0.0.1") {
-        Some("ollama".to_string())
-    } else {
-        None
-    }
+    Ok(Model { inner })
 }

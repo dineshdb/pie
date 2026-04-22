@@ -42,7 +42,6 @@ mod tools;
 mod ui;
 mod utils;
 
-use crate::config::logs_dir;
 use crate::output::OutputFormat;
 use crate::{db::DbPool, session::Session};
 use clap::Parser;
@@ -55,6 +54,9 @@ use tracing_subscriber::EnvFilter;
 #[command(about = "Minimal Pi-like agent using OpenAI-compatible providers")]
 #[allow(clippy::struct_excessive_bools)]
 struct Cli {
+    #[command(flatten)]
+    provider: config::ProviderConfig,
+
     #[arg(short, long)]
     debug: bool,
 
@@ -66,17 +68,9 @@ struct Cli {
     #[arg(long)]
     md: bool,
 
-    /// Model name (e.g. llama3, gpt-4o, claude-3.5-sonnet)
+    /// Config profile name (from ~/.pie/config.toml or .pie/config.toml)
     #[arg(short, long)]
-    model: Option<String>,
-
-    /// API base URL for OpenAI-compatible providers
-    #[arg(long)]
-    base_url: Option<String>,
-
-    /// API key for OpenAI-compatible providers
-    #[arg(long)]
-    api_key: Option<String>,
+    profile: Option<String>,
 
     /// Query to process
     query: Vec<String>,
@@ -111,11 +105,14 @@ async fn main() -> anyhow::Result<()> {
 
     let sandbox_settings = p1e_srt::load(&config::pie_home());
 
-    let mut model = providers::build_model(
-        cli.model.as_deref(),
-        cli.base_url.as_deref(),
-        cli.api_key.as_deref(),
+    let resolved = config::resolve(
+        &cli.provider,
+        cli.profile.as_deref(),
+        cli.debug,
+        cli.json,
+        cli.md,
     )?;
+    let mut model = providers::build_from_resolved(&resolved.provider)?;
 
     let piped_stdin = read_piped_stdin();
 
@@ -124,13 +121,13 @@ async fn main() -> anyhow::Result<()> {
     } else if cli.md {
         OutputFormat::Markdown
     } else {
-        OutputFormat::Default
+        resolved.output_format
     };
 
     // --md or --json → single-shot mode (logs to stderr)
     // Otherwise → interactive mode (logs to .pie/logs/<session-id>.log)
     if format.is_explicit() {
-        init_stderr_subscriber(cli.debug);
+        init_stderr_subscriber(cli.debug, &resolved.log_level);
 
         let cli_query = cli.query.join(" ");
         let query = if cli_query.is_empty() {
@@ -161,6 +158,7 @@ async fn main() -> anyhow::Result<()> {
             &mut session,
             format,
             sandbox_settings,
+            resolved.max_steps,
         )
         .await;
     }
@@ -168,16 +166,16 @@ async fn main() -> anyhow::Result<()> {
     // Interactive mode: session-based REPL with file logging
     let pool = Arc::new(db::create_persistent_pool()?);
     let session = resolve_session(pool, cli.r#continue)?;
-    init_file_subscriber(&session.id.to_string(), cli.debug);
-    ui::tui::run_tui(model, session, sandbox_settings).await
+    init_file_subscriber(&session.id.to_string(), cli.debug, &resolved.log_level);
+    ui::tui::run_tui(model, session, sandbox_settings, resolved.max_steps).await
 }
 
 fn default_env_filter(default_level: &str) -> EnvFilter {
     EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level))
 }
 
-fn init_stderr_subscriber(debug: bool) {
-    let filter = default_env_filter(if debug { "debug" } else { "refinery=warn" });
+fn init_stderr_subscriber(debug: bool, config_level: &str) {
+    let filter = default_env_filter(if debug { "debug" } else { config_level });
 
     let subscriber = tracing_subscriber::fmt()
         .with_target(false)
@@ -192,10 +190,10 @@ fn init_stderr_subscriber(debug: bool) {
     }
 }
 
-fn init_file_subscriber(session_id: &str, debug: bool) {
-    let filter = default_env_filter(if debug { "debug" } else { "warn" });
+fn init_file_subscriber(session_id: &str, debug: bool, config_level: &str) {
+    let filter = default_env_filter(if debug { "debug" } else { config_level });
 
-    let log_path = logs_dir().join(format!("{session_id}.log"));
+    let log_path = config::logs_dir().join(format!("{session_id}.log"));
     let file = match std::fs::File::create(&log_path) {
         Ok(f) => f,
         Err(e) => {

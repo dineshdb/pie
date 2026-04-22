@@ -36,11 +36,17 @@ pub struct InputComponent {
     pub session_id: uuid::Uuid,
     pub session_pool: Arc<crate::db::DbPool>,
     pub sandbox_settings: Arc<SandboxConfig>,
+    pub max_steps: u32,
     pub stream_abort: Option<mpsc::UnboundedSender<()>>,
 }
 
 impl InputComponent {
-    pub fn new(model: Model, session: &Session, sandbox_settings: Arc<SandboxConfig>) -> Self {
+    pub fn new(
+        model: Model,
+        session: &Session,
+        sandbox_settings: Arc<SandboxConfig>,
+        max_steps: u32,
+    ) -> Self {
         let session_id = session.id;
         let session_pool = session.pool().clone();
 
@@ -67,6 +73,7 @@ impl InputComponent {
             session_id,
             session_pool,
             sandbox_settings,
+            max_steps,
             stream_abort: None,
         }
     }
@@ -334,6 +341,7 @@ impl InputComponent {
             self.session_pool.clone(),
             tx.clone(),
             abort_rx,
+            self.max_steps,
         );
     }
 

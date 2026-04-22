@@ -201,6 +201,7 @@ pub async fn run_tui(
     model: Model,
     session: Session,
     sandbox_settings: Arc<SandboxConfig>,
+    max_steps: u32,
 ) -> Result<()> {
     let mut terminal = tuirealm::ratatui::init();
     terminal.clear()?;
@@ -225,7 +226,7 @@ pub async fn run_tui(
         .tick_interval(FRAME_INTERVAL);
 
     let mut app = App::init(listener_cfg);
-    let mut input = InputComponent::new(model, &session, sandbox_settings);
+    let mut input = InputComponent::new(model, &session, sandbox_settings, max_steps);
 
     app.mount(Id::Chat, Box::new(ChatComponent::new(messages)), vec![])?;
     app.active(&Id::Chat)?;

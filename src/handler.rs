@@ -19,6 +19,7 @@ pub fn build_request(
     query: &str,
     history: &[crate::session::HistoryEntry],
     sandbox_settings: Arc<SandboxConfig>,
+    max_steps: u32,
 ) -> LanguageModelRequest<Model> {
     let skills = get_all_skills();
 
@@ -67,7 +68,7 @@ pub fn build_request(
             agents,
             sandbox_settings,
         ))
-        .stop_when(step_count_is(25))
+        .stop_when(step_count_is(max_steps as usize))
         .build()
 }
 
@@ -123,8 +124,15 @@ pub async fn handle_query(
     session: &mut Session,
     format: OutputFormat,
     sandbox_settings: Arc<SandboxConfig>,
+    max_steps: u32,
 ) -> Result<()> {
-    let mut req = build_request(model, query, session.history_entries(), sandbox_settings);
+    let mut req = build_request(
+        model,
+        query,
+        session.history_entries(),
+        sandbox_settings,
+        max_steps,
+    );
 
     let response = req.generate_text().await.context("generate_text failed")?;
     let assistant_text = response.text().unwrap_or_default();
