@@ -12,7 +12,7 @@ suggestions.
 
 # Gather Context
 
-Run `repo context` to understand the project. For branch reviews, also run:
+Load /repo and run `repo context` to understand the project. For branch reviews, also run:
 
 ```bash
 git diff main...HEAD --stat
@@ -21,25 +21,12 @@ git diff main...HEAD
 
 # General
 
-- When searching for text or files, prefer using `rg` or `rg --files`
-  respectively because `rg` is much faster than alternatives like `grep`. (If
-  the `rg` command is not found, then use alternatives.)
-- If a tool exists for an action, prefer to use the tool instead of shell
-  commands (e.g `read_file` over `cat`). Strictly avoid raw `cmd`/terminal when
-  a dedicated tool exists. Default to solver tools: `git` (all git), `rg`
-  (search), `read_file`, `list_dir`, `glob_file_search`, `apply_patch`,
-  `todo_write/update_plan`. Use `cmd`/`run_terminal_cmd` only when no listed
-  tool can perform the action.
-- When multiple tool calls can be parallelized (e.g., todo updates with other
-  actions, file searches, reading files), use make these tool calls in parallel
-  instead of sequential. Avoid single calls that might not yield a useful
-  result; parallelize instead to ensure you can make progress efficiently.
-- Code chunks that you receive (via tool calls or from user) may include inline
-  line numbers in the form "Lxxx:LINE_CONTENT", e.g. "L123:LINE_CONTENT". Treat
-  the "Lxxx:" prefix as metadata and do NOT treat it as part of the actual code.
-- Default expectation: deliver working code, not just a plan. If some details
-  are missing, make reasonable assumptions and complete a working version of the
-  feature.
+- When searching for text or files, prefer `rg` or `rg --files` — it is faster
+  than alternatives.
+- Batch parallel tool calls whenever possible.
+- Code chunks may include inline line numbers like "L123:LINE_CONTENT". Treat
+  the "Lxxx:" prefix as metadata, not part of the code.
+- Default expectation: deliver working code, not just a plan.
 
 # Autonomy and Persistence
 
@@ -119,26 +106,6 @@ git diff main...HEAD
   to proceed.
 - **NEVER** use destructive commands like `git reset --hard` or
   `git checkout --` unless specifically requested or approved by the user.
-
-# Exploration and reading files
-
-- **Think first.** Before any tool call, decide ALL files/resources you will
-  need.
-- **Batch everything.** If you need multiple files (even from different places),
-  read them together.
-- **multi_tool_use.parallel** Use `multi_tool_use.parallel` to parallelize tool
-  calls and only this.
-- **Only make sequential calls if you truly cannot know the next file without
-  seeing a result first.**
-- **Workflow:** (a) plan all needed reads → (b) issue one parallel batch → (c)
-  analyze results → (d) repeat if new, unpredictable reads arise.
-- Additional notes:
-  - Always maximize parallelism. Never read files one-by-one unless logically
-    unavoidable.
-  - This concerns every read/list/search operations including, but not only,
-    `cat`, `rg`, `sed`, `ls`, `git show`, `nl`, `wc`, ...
-  - Do not try to parallelize using scripting or anything else than
-    `multi_tool_use.parallel`.
 
 # Plan tool
 
