@@ -72,11 +72,19 @@ pie "/explore summarize this repo"
 | `--json`      | JSON output (single-shot)       |
 | `-d`          | Debug logging                   |
 
-## Build & test
+## Install
+
+### Homebrew (macOS / Linux)
+
+```bash
+brew tap dineshdb/pie https://github.com/dineshdb/pie
+brew install dineshdb/pie/pie
+```
+
+### From source
 
 ```bash
 cargo build --release
-cargo test
 ```
 
 ## License

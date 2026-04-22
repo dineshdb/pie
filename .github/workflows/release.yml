@@ -1,0 +1,143 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 0.2.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Bump version
+        run: |
+          CURRENT=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          if [ "$CURRENT" = "${{ inputs.version }}" ]; then
+            echo "Version already $CURRENT, skipping"
+          else
+            sed -i 's/^version = ".*"/version = "${{ inputs.version }}"/' Cargo.toml
+            sed -i 's/^version = ".*"/version = "${{ inputs.version }}"/' crates/p1e-srt/Cargo.toml
+          fi
+
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools gcc-aarch64-linux-gnu
+
+      - name: Build
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+          tar -czf pie-${{ inputs.version }}-${{ matrix.target }}.tar.gz \
+            -C target/${{ matrix.target }}/release pie p1e
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pie-${{ matrix.target }}
+          path: pie-${{ inputs.version }}-${{ matrix.target }}.tar.gz
+
+  publish:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum *.tar.gz > checksums.txt
+
+      - name: Release commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Bump Cargo.toml versions
+          sed -i 's/^version = ".*"/version = "${{ inputs.version }}"/' Cargo.toml
+          sed -i 's/^version = ".*"/version = "${{ inputs.version }}"/' crates/p1e-srt/Cargo.toml
+
+          # Update homebrew formula
+          ARM_SHA=$(grep 'aarch64-apple-darwin' dist/checksums.txt | awk '{print $1}')
+          INTEL_SHA=$(grep 'x86_64-unknown-linux-gnu' dist/checksums.txt | awk '{print $1}')
+
+          sed -i "s|^  url .*|  url \"https://github.com/${{ github.repository }}/releases/download/v${{ inputs.version }}/pie-${{ inputs.version }}-aarch64-apple-darwin.tar.gz\"|" Formula/pie.rb
+          sed -i "s|^  sha256 .*|  sha256 \"${ARM_SHA}\"|" Formula/pie.rb
+          sed -i "s|^  version .*|  version \"${{ inputs.version }}\"|" Formula/pie.rb
+          sed -i "/on_intel/,/end/{
+            s|^    url .*|    url \"https://github.com/${{ github.repository }}/releases/download/v${{ inputs.version }}/pie-${{ inputs.version }}-x86_64-unknown-linux-gnu.tar.gz\"|
+            s|^    sha256 .*|    sha256 \"${INTEL_SHA}\"|
+          }" Formula/pie.rb
+
+          # Single commit, tag, push
+          git add Cargo.toml crates/p1e-srt/Cargo.toml Formula/pie.rb
+          git commit -m "release: v${{ inputs.version }}"
+          git tag "v${{ inputs.version }}"
+          git push origin HEAD:refs/heads/main
+          git push origin "v${{ inputs.version }}"
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          LAST_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
+          if [ -n "$LAST_TAG" ]; then
+            NOTES=$(git log --oneline "${LAST_TAG}..HEAD" | sed 's/^/- /')
+          else
+            NOTES=$(git log --oneline | sed 's/^/- /')
+          fi
+          {
+            echo "notes<<EOF"
+            echo "## What's Changed"
+            echo ""
+            echo "$NOTES"
+            echo ""
+            echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${LAST_TAG}...v${{ inputs.version }}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2.2.2
+        with:
+          tag_name: v${{ inputs.version }}
+          body: ${{ steps.notes.outputs.notes }}
+          files: |
+            dist/*.tar.gz
+            dist/checksums.txt
