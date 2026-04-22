@@ -1,6 +1,7 @@
 # pie
 
-A fast, minimal AI coding agent in Rust. Any OpenAI-compatible provider, persistent sessions, skill-based subagents, and sandboxed shell execution.
+A fast, minimal AI coding agent in Rust. Any OpenAI-compatible provider,
+persistent sessions, skill-based subagents, and sandboxed shell execution.
 
 ## Quick start
 
@@ -20,10 +21,15 @@ pie -m claude-sonnet-4-20250514
 
 ## Features
 
-- **Persistent sessions** — conversations saved per directory, resume with `pie -c`
-- **Any provider** — works with OpenAI, Anthropic, Groq, Ollama, or any OpenAI-compatible API
-- **Skills & subagents** — markdown-based skills from [agentskills.io](https://agentskills.io), auto-loaded from queries
-- **Sandboxed commands** — all shell commands run through [srt](https://github.com/anthropic-experimental/sandbox-runtime) (OS-level isolation, no containers)
+- **Persistent sessions** — conversations saved per directory, resume with
+  `pie -c`
+- **Any provider** — works with OpenAI, Anthropic, Groq, Ollama, or any
+  OpenAI-compatible API
+- **Skills & subagents** — markdown-based skills from
+  [agentskills.io](https://agentskills.io), auto-loaded from queries
+- **Sandboxed commands** — all shell commands run through
+  [srt](https://github.com/anthropic-experimental/sandbox-runtime) (OS-level
+  isolation, no containers)
 - **Streaming TUI** — real-time tool calls, markdown rendering, command history
 - **Scriptable** — `--json` and `--md` flags for single-shot mode
 
@@ -46,12 +52,12 @@ pie "/explore summarize this repo"
 
 ### Interactive commands
 
-| Input              | Action                                  |
-| ------------------ | --------------------------------------- |
-| `<query>`          | Ask a question (auto-detects skills)    |
-| `/<skill> <query>` | Use a specific skill                    |
-| `?`                | Show help                               |
-| `Ctrl+C`           | Abort stream / quit                     |
+| Input              | Action                               |
+| ------------------ | ------------------------------------ |
+| `<query>`          | Ask a question (auto-detects skills) |
+| `/<skill> <query>` | Use a specific skill                 |
+| `?`                | Show help                            |
+| `Ctrl+C`           | Abort stream / quit                  |
 
 ## Configuration
 
@@ -62,15 +68,15 @@ pie "/explore summarize this repo"
 # AGENTS.md — project-level instructions
 ```
 
-| Flag          | Description                     |
-| ------------- | ------------------------------- |
-| `-m`          | Model name                      |
-| `--base-url`  | API base URL                    |
-| `--api-key`   | API key                         |
-| `-c`          | Continue last session           |
-| `--md`        | Markdown output (single-shot)   |
-| `--json`      | JSON output (single-shot)       |
-| `-d`          | Debug logging                   |
+| Flag         | Description                   |
+| ------------ | ----------------------------- |
+| `-m`         | Model name                    |
+| `--base-url` | API base URL                  |
+| `--api-key`  | API key                       |
+| `-c`         | Continue last session         |
+| `--md`       | Markdown output (single-shot) |
+| `--json`     | JSON output (single-shot)     |
+| `-d`         | Debug logging                 |
 
 ## Install
 
