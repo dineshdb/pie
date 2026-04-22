@@ -98,14 +98,15 @@ impl Session {
     }
 
     pub fn find_latest_for_cwd(pool: Arc<DbPool>, cwd: &str) -> anyhow::Result<Option<Self>> {
-        let conn = pool.get()?;
-        let id_str = conn
-            .query_row(
+        let id_str = {
+            let conn = pool.get()?;
+            conn.query_row(
                 "SELECT id FROM sessions WHERE cwd = ? ORDER BY updated_at DESC LIMIT 1",
                 rusqlite::params![cwd],
                 |row| row.get::<_, String>(0),
             )
-            .ok();
+            .ok()
+        };
         let Some(id_str) = id_str else {
             return Ok(None);
         };

@@ -22,7 +22,7 @@ pub fn create_memory_pool() -> Result<DbPool> {
         migrate(conn).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         Ok(())
     });
-    let pool = Pool::builder().max_size(4).build(manager)?;
+    let pool = Pool::builder().max_size(1).build(manager)?;
     Ok(pool)
 }
 
