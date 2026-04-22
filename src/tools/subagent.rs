@@ -6,8 +6,8 @@ use crate::tools::{load_references_tool, load_skills_tool, shell};
 use aisdk::core::LanguageModelRequest;
 use aisdk::core::tools::{Tool, ToolExecute};
 use aisdk::core::utils::step_count_is;
+use p1e_srt::SandboxConfig;
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
@@ -18,7 +18,7 @@ pub(crate) struct Subagent {
     model: Model,
     skills: Vec<Skill>,
     agents: Vec<Agent>,
-    sandbox_settings: PathBuf,
+    sandbox_settings: Arc<SandboxConfig>,
     loaded_skills: Arc<Mutex<HashSet<String>>>,
     loaded_refs: Arc<Mutex<HashSet<String>>>,
 }
@@ -28,7 +28,7 @@ impl Subagent {
         model: Model,
         skills: Vec<Skill>,
         agents: Vec<Agent>,
-        sandbox_settings: PathBuf,
+        sandbox_settings: Arc<SandboxConfig>,
     ) -> Self {
         Self {
             model,
@@ -166,7 +166,7 @@ fn make_subagent_tool(
     model: Model,
     skills: Vec<Skill>,
     agents: Vec<Agent>,
-    sandbox_settings: PathBuf,
+    sandbox_settings: Arc<SandboxConfig>,
     parent_id: Option<Uuid>,
     depth: u32,
 ) -> Tool {
@@ -202,7 +202,7 @@ pub fn subagent_tool(
     model: Model,
     skills: Vec<Skill>,
     agents: Vec<Agent>,
-    sandbox_settings: PathBuf,
+    sandbox_settings: Arc<SandboxConfig>,
 ) -> Tool {
     make_subagent_tool(model, skills, agents, sandbox_settings, None, 0)
 }
@@ -242,7 +242,7 @@ mod tests {
             dummy_model()?,
             skills,
             agents,
-            PathBuf::from("/tmp"),
+            Arc::new(SandboxConfig::default()),
         ))
     }
 
@@ -452,7 +452,7 @@ mod tests {
             dummy_model()?,
             vec![],
             vec![],
-            PathBuf::from("/tmp"),
+            Arc::new(SandboxConfig::default()),
             None,
             0,
         );

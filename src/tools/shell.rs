@@ -1,7 +1,6 @@
-use crate::sandbox;
 use aisdk::core::tools::{Tool, ToolExecute};
+use p1e_srt::{SandboxConfig, build_command};
 use serde_json::json;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -11,8 +10,7 @@ struct ShellInput {
 
 /// Execute a shell command inside the sandbox and return its stdout, stderr, and exit code.
 #[allow(clippy::unwrap_used)]
-pub fn shell(sandbox_settings: PathBuf) -> Tool {
-    let sandbox_settings = Arc::new(sandbox_settings);
+pub fn shell(sandbox_settings: Arc<SandboxConfig>) -> Tool {
     Tool::builder()
         .name("shell")
         .description("Execute a system command, bash tools, clis, etc.")
@@ -23,7 +21,7 @@ pub fn shell(sandbox_settings: PathBuf) -> Tool {
             };
             let cmd = cmd.to_string();
             tracing::debug!(cmd = %cmd, "shell:");
-            let output = sandbox::build_command(&cmd, &sandbox_settings)
+            let output = build_command(&cmd, &sandbox_settings)
                 .env("GIT_TERMINAL_PROMPT", "0")
                 .env("PAGER", "cat")
                 .env("EDITOR", "true")

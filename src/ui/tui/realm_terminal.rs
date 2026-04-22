@@ -16,7 +16,8 @@ use crate::ui::tui::components::input::InputComponent;
 use crate::ui::tui::realm::{App, Id, Msg, StreamEvent, StreamPort};
 use crate::ui::tui::state::ChatMessage;
 use anyhow::Result;
-use std::path::PathBuf;
+use p1e_srt::SandboxConfig;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tuirealm::application::PollStrategy;
@@ -185,7 +186,11 @@ impl FrameUpdate {
     }
 }
 
-pub async fn run_tui(model: Model, session: Session, sandbox_settings: PathBuf) -> Result<()> {
+pub async fn run_tui(
+    model: Model,
+    session: Session,
+    sandbox_settings: Arc<SandboxConfig>,
+) -> Result<()> {
     let mut terminal = tuirealm::ratatui::init();
     terminal.clear()?;
 

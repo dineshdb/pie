@@ -3,14 +3,14 @@ use crate::providers::Model;
 use crate::session::Session;
 use crate::ui::tui::realm::StreamEvent;
 use crate::ui::tui::widgets::tool_display::ToolCallResult;
-use std::path::PathBuf;
+use p1e_srt::SandboxConfig;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
 pub fn spawn_stream(
     query: String,
     model: Model,
-    sandbox: PathBuf,
+    sandbox: Arc<SandboxConfig>,
     session_id: uuid::Uuid,
     pool: Arc<crate::db::DbPool>,
     event_tx: mpsc::UnboundedSender<StreamEvent>,
@@ -24,7 +24,7 @@ pub fn spawn_stream(
 async fn run_stream(
     query: String,
     model: Model,
-    sandbox: PathBuf,
+    sandbox: Arc<SandboxConfig>,
     session_id: uuid::Uuid,
     pool: Arc<crate::db::DbPool>,
     event_tx: mpsc::UnboundedSender<StreamEvent>,

@@ -11,7 +11,7 @@ use crate::ui::tui::realm::{Msg, StreamEvent};
 use crate::ui::tui::widgets::completion::{CompletionPopup, CompletionState, Direction};
 use crate::ui::tui::widgets::history::InputHistory;
 use crate::ui::tui::widgets::input::{InputView, cursor_position};
-use std::path::PathBuf;
+use p1e_srt::SandboxConfig;
 use std::sync::Arc;
 use std::time::Instant;
 use tachyonfx::{CellFilter, EffectManager, fx};
@@ -35,12 +35,12 @@ pub struct InputComponent {
     pub model: Model,
     pub session_id: uuid::Uuid,
     pub session_pool: Arc<crate::db::DbPool>,
-    pub sandbox_settings: PathBuf,
+    pub sandbox_settings: Arc<SandboxConfig>,
     pub stream_abort: Option<mpsc::UnboundedSender<()>>,
 }
 
 impl InputComponent {
-    pub fn new(model: Model, session: &Session, sandbox_settings: PathBuf) -> Self {
+    pub fn new(model: Model, session: &Session, sandbox_settings: Arc<SandboxConfig>) -> Self {
         let session_id = session.id;
         let session_pool = session.pool().clone();
 

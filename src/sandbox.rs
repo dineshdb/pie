@@ -49,6 +49,8 @@ pub struct FilesystemConfig {
     #[serde(default)]
     pub deny_read: Vec<String>,
     #[serde(default)]
+    pub allow_read: Vec<String>,
+    #[serde(default)]
     pub allow_write: Vec<String>,
     #[serde(default)]
     pub deny_write: Vec<String>,

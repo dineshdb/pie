@@ -36,7 +36,6 @@ mod handler;
 mod output;
 mod prompt;
 mod providers;
-mod sandbox;
 mod session;
 mod skill;
 mod tools;
@@ -110,8 +109,7 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Sandbox: required — exits if srt is not installed
-    let sandbox_settings = sandbox::prepare(&sandbox::load_config())?;
+    let sandbox_settings = p1e_srt::load(&config::pie_home());
 
     let mut model = providers::build_model(
         cli.model.as_deref(),

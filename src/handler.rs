@@ -10,14 +10,15 @@ use aisdk::core::utils::step_count_is;
 use aisdk::core::{AssistantMessage, LanguageModelRequest, Message, UserMessage};
 use anyhow::{Context, Result};
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+
+use p1e_srt::SandboxConfig;
 
 pub fn build_request(
     model: &Model,
     query: &str,
     history: &[crate::session::HistoryEntry],
-    sandbox_settings: PathBuf,
+    sandbox_settings: Arc<SandboxConfig>,
 ) -> LanguageModelRequest<Model> {
     let skills = get_all_skills();
 
@@ -121,7 +122,7 @@ pub async fn handle_query(
     query: &str,
     session: &mut Session,
     format: OutputFormat,
-    sandbox_settings: PathBuf,
+    sandbox_settings: Arc<SandboxConfig>,
 ) -> Result<()> {
     let mut req = build_request(model, query, session.history_entries(), sandbox_settings);
 
