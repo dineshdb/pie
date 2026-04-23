@@ -4,7 +4,9 @@ use crate::prompt;
 use crate::providers::Model;
 use crate::session::{Role, Session};
 use crate::skill::get_all_skills;
-use crate::tools::{load_references_tool, load_skills_tool, shell, subagent_tool};
+use crate::tools::{
+    execute_skill_script_tool, load_references_tool, load_skills_tool, shell, subagent_tool,
+};
 use aisdk::core::LanguageModel;
 use aisdk::core::utils::step_count_is;
 use aisdk::core::{AssistantMessage, LanguageModelRequest, Message, UserMessage};
@@ -62,6 +64,7 @@ pub fn build_request(
             Some(loaded_skills.clone()),
         ))
         .with_tool(load_references_tool(loaded_refs))
+        .with_tool(execute_skill_script_tool(sandbox_settings.clone()))
         .with_tool(subagent_tool(
             model.clone(),
             skills,

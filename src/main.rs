@@ -42,7 +42,7 @@ mod tools;
 mod ui;
 mod utils;
 
-use crate::config::{ResolvedConfig, load_config};
+use crate::config::{ResolvedConfig, build_sandbox, load_config};
 use crate::output::OutputFormat;
 use crate::{db::DbPool, session::Session};
 use anyhow::Context;
@@ -127,7 +127,8 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(db::create_memory_pool()?)
     };
 
-    let config: ResolvedConfig = (cli.clone(), load_config()?).try_into()?;
+    let pie_config = load_config()?;
+    let config: ResolvedConfig = (cli.clone(), pie_config.clone()).try_into()?;
     let session = resolve_session(pool.clone(), cli.r#continue)?;
     if format.is_some() {
         init_stderr_subscriber(cli.debug, &config.log_level);
@@ -141,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let sandbox_settings = p1e_srt::load(&config::pie_home());
+    let sandbox_settings = build_sandbox(&pie_config);
 
     debug!(config = ?config, "config");
     let mut model = providers::build_from_resolved(&config.provider)?;

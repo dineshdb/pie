@@ -5,9 +5,11 @@ use figment::{
     Figment,
     providers::{Format, Toml},
 };
+use p1e_srt::SandboxConfig;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 pub fn pie_home() -> PathBuf {
     dirs::home_dir().unwrap_or_default().join(".pie")
@@ -39,12 +41,13 @@ pub struct ProviderConfig {
     pub temperature: Option<f32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct PieConfig {
     pub default_profile: Option<String>,
     #[serde(default)]
     pub profiles: HashMap<String, ProviderConfig>,
     pub agent: Option<AgentConfig>,
+    pub sandbox: Option<SandboxConfig>,
     pub output_format: Option<String>,
     pub log_level: Option<String>,
 }
@@ -63,7 +66,7 @@ impl PieConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct AgentConfig {
     pub max_steps: Option<u32>,
 }
@@ -163,4 +166,16 @@ pub fn load_config() -> anyhow::Result<PieConfig> {
     figment
         .extract()
         .map_err(|e| anyhow::anyhow!("config parse error: {e}"))
+}
+
+/// Build sandbox settings from config. Uses pie.toml `[sandbox]` if present,
+/// otherwise falls back to defaults.
+pub fn build_sandbox(pie_config: &PieConfig) -> Arc<SandboxConfig> {
+    let sandbox = pie_config.sandbox.clone().unwrap_or_default();
+    if let Err(warnings) = sandbox.validate() {
+        for w in &warnings {
+            tracing::warn!("sandbox config: {w}");
+        }
+    }
+    Arc::new(sandbox)
 }

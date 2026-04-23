@@ -1,9 +1,10 @@
 use crate::prompt;
 use crate::skill::{self, Skill};
 use aisdk::core::tools::{Tool, ToolExecute};
+use p1e_srt::{SandboxConfig, build_command};
+use serde_json::json;
 use std::collections::HashSet;
 use std::fmt::Write;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -80,19 +81,25 @@ struct LoadReferencesInput {
     references: Vec<String>,
 }
 
-/// Validate a reference filename: no path traversal, absolute paths, hidden files; must be .md.
-fn validate_ref_name(name: &str) -> Result<(), String> {
+/// Validate a filename: no path traversal, absolute paths, or hidden files; must match allowed extensions.
+fn validate_filename(name: &str, allowed_exts: &[&str]) -> Result<(), String> {
     if name.contains("..") || name.starts_with('/') || name.starts_with('.') {
         return Err(format!(
-            "Invalid reference '{name}': path traversal, absolute paths, and hidden files are not allowed"
+            "Invalid filename '{name}': path traversal, absolute paths, and hidden files are not allowed"
         ));
     }
-    let is_md = Path::new(name)
+    let ext = std::path::Path::new(name)
         .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"));
-    if !is_md {
+        .and_then(|e| e.to_str());
+    let valid = ext.is_some_and(|e| {
+        allowed_exts
+            .iter()
+            .any(|allowed| e.eq_ignore_ascii_case(allowed))
+    });
+    if !valid {
+        let list = allowed_exts.join(", .");
         return Err(format!(
-            "Invalid reference '{name}': only .md files are allowed"
+            "Invalid filename '{name}': only .{list} files are allowed"
         ));
     }
     Ok(())
@@ -120,7 +127,7 @@ pub fn load_references_tool(loaded_refs: Arc<Mutex<HashSet<String>>>) -> Tool {
             }
 
             for name in &ref_names {
-                validate_ref_name(name)?;
+                validate_filename(name, &["md"])?;
             }
 
             if !skill::skill_exists(&skill_name) {
@@ -149,4 +156,252 @@ pub fn load_references_tool(loaded_refs: Arc<Mutex<HashSet<String>>>) -> Tool {
         }))
         .build()
         .unwrap()
+}
+
+// ── execute_skill_script ──────────────────────────────────────────
+
+const SCRIPT_EXTENSIONS: &[&str] = &["sh", "bash", "py", "js", "ts", "rb", "pl"];
+
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct ExecuteSkillScriptInput {
+    skill: String,
+    script: String,
+    #[serde(default)]
+    args: Option<String>,
+}
+
+/// Run a command inside the sandbox. Returns JSON with stdout, stderr, exit code.
+#[allow(clippy::unwrap_used)]
+fn run_sandboxed(cmd: &str, cfg: &SandboxConfig) -> String {
+    let output = build_command(cmd, cfg)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("PAGER", "cat")
+        .output();
+    let (stdout, stderr, code) = match output {
+        Ok(out) => (
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+            out.status.code().unwrap_or(-1),
+        ),
+        Err(e) => (String::new(), e.to_string(), -1),
+    };
+    serde_json::to_string(&json!({
+        "cmd": cmd,
+        "code": code,
+        "stdout": stdout,
+        "stderr": stderr,
+    }))
+    .unwrap_or_default()
+}
+
+/// Execute a script from a skill directory. Only filesystem scripts are supported.
+#[allow(clippy::unwrap_used)]
+pub fn execute_skill_script_tool(sandbox_settings: Arc<SandboxConfig>) -> Tool {
+    Tool::builder()
+        .name("execute_skill_script")
+        .description("Execute a script from a skill directory. Runs inside a sandbox with read access to the skill directory.")
+        .input_schema(schemars::schema_for!(ExecuteSkillScriptInput))
+        .execute(ToolExecute::from_sync(move |_ctx, params| {
+            let Some(skill_name) = params.get("skill").and_then(|v| v.as_str()) else {
+                return Err("skill parameter is required".to_string());
+            };
+            let skill_name = skill_name.to_string();
+
+            let Some(script_name) = params.get("script").and_then(|v| v.as_str()) else {
+                return Err("script parameter is required".to_string());
+            };
+            let script_name = script_name.to_string();
+
+            validate_filename(&script_name, SCRIPT_EXTENSIONS)?;
+
+            let Some(dir) = skill::skill_dir(&skill_name) else {
+                return Err(format!("Skill '{skill_name}' not found"));
+            };
+
+            let script_path = dir.join(&script_name);
+            if !script_path.exists() {
+                return Err(format!(
+                    "Script '{script_name}' not found for skill '{skill_name}'"
+                ));
+            }
+
+            let args = params
+                .get("args")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            let cmd = if args.is_empty() {
+                format!("\"{}\"", script_path.display())
+            } else {
+                format!("\"{}\" {}", script_path.display(), args)
+            };
+
+            let mut sandbox = (*sandbox_settings).clone();
+            let skill_path = dir.to_string_lossy().to_string();
+            if !sandbox.allow_read.contains(&skill_path) {
+                sandbox.allow_read.push(skill_path);
+            }
+
+            Ok(run_sandboxed(&cmd, &sandbox))
+        }))
+        .build()
+        .unwrap()
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    use super::*;
+    use crate::config::pie_home;
+    use aisdk::core::ToolContext;
+    use std::fs;
+
+    /// Create a temporary skill in ~/.pie/skills/ with a SKILL.md and optional script files.
+    /// Returns the skill name and a guard that cleans up on drop.
+    fn setup_test_skill(scripts: &[(&str, &str)]) -> (String, TempSkillGuard) {
+        let id = uuid::Uuid::now_v7();
+        let name = format!("_test-{id}");
+        let skills_root = pie_home().join("skills");
+        let _ = fs::create_dir_all(&skills_root);
+        let dir = tempfile::TempDir::new_in(&skills_root).unwrap();
+        let tmp = dir.path();
+        fs::write(
+            tmp.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: test\n---\nTest skill"),
+        )
+        .unwrap();
+        for (filename, content) in scripts {
+            let path = tmp.join(filename);
+            fs::write(&path, content).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        let skill_path = skills_root.join(&name);
+        let _ = fs::remove_dir_all(&skill_path);
+        fs::rename(tmp, &skill_path).unwrap();
+        // Forget the TempDir so it doesn't try to clean up the (now-moved) random dir
+        // and let our guard handle the named path instead.
+        let _ = dir.keep();
+        (name, TempSkillGuard { path: skill_path })
+    }
+
+    /// RAII guard that removes a test skill directory on drop.
+    struct TempSkillGuard {
+        path: std::path::PathBuf,
+    }
+
+    impl Drop for TempSkillGuard {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn call_execute(params: serde_json::Value) -> Result<String, String> {
+        let tool = execute_skill_script_tool(Arc::new(SandboxConfig::default()));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(tool.execute.call(ToolContext::default(), params))
+            .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn execute_runs_filesystem_script() {
+        let (name, _guard) =
+            setup_test_skill(&[("echo.sh", "#!/bin/bash\necho hello-from-test\n")]);
+        let result = call_execute(json!({
+            "skill": name,
+            "script": "echo.sh"
+        }));
+        let out = result.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["code"], 0);
+        assert_eq!(parsed["stdout"], "hello-from-test");
+    }
+
+    #[test]
+    fn execute_reports_nonzero_exit() {
+        let (name, _guard) =
+            setup_test_skill(&[("fail.sh", "#!/bin/bash\necho oops >&2\nexit 1\n")]);
+        let result = call_execute(json!({
+            "skill": name,
+            "script": "fail.sh"
+        }));
+        let out = result.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["code"], 1);
+        assert_eq!(parsed["stderr"], "oops");
+    }
+
+    #[test]
+    fn execute_passes_args() {
+        let (name, _guard) = setup_test_skill(&[("args.sh", "#!/bin/bash\necho \"$1\" \"$2\"\n")]);
+        let result = call_execute(json!({
+            "skill": name,
+            "script": "args.sh",
+            "args": "foo bar"
+        }));
+        let out = result.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["code"], 0);
+        assert_eq!(parsed["stdout"], "foo bar");
+    }
+
+    #[test]
+    fn execute_rejects_path_traversal() {
+        let result = call_execute(json!({
+            "skill": "anything",
+            "script": "../etc/passwd"
+        }));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("path traversal"));
+    }
+
+    #[test]
+    fn execute_rejects_wrong_extension() {
+        let result = call_execute(json!({
+            "skill": "anything",
+            "script": "evil.exe"
+        }));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("only ."));
+    }
+
+    #[test]
+    fn execute_rejects_missing_skill() {
+        let result = call_execute(json!({
+            "skill": "nonexistent-skill-xyz-999",
+            "script": "test.sh"
+        }));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn execute_rejects_missing_script() {
+        let (name, _guard) = setup_test_skill(&[]);
+        let result = call_execute(json!({
+            "skill": name,
+            "script": "nonexistent.sh"
+        }));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn validate_filename_rejects_hidden() {
+        assert!(validate_filename(".hidden.sh", SCRIPT_EXTENSIONS).is_err());
+    }
+
+    #[test]
+    fn validate_filename_rejects_absolute() {
+        assert!(validate_filename("/etc/sh", SCRIPT_EXTENSIONS).is_err());
+    }
+
+    #[test]
+    fn validate_filename_accepts_valid_script() {
+        assert!(validate_filename("test.sh", SCRIPT_EXTENSIONS).is_ok());
+        assert!(validate_filename("run.py", SCRIPT_EXTENSIONS).is_ok());
+    }
 }

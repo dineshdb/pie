@@ -1,5 +1,5 @@
 pub use shell::shell;
-pub use skills::{load_references_tool, load_skills_tool};
+pub use skills::{execute_skill_script_tool, load_references_tool, load_skills_tool};
 pub use subagent::subagent_tool;
 
 mod shell;

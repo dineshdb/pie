@@ -2,7 +2,7 @@ use crate::agent::Agent;
 use crate::prompt;
 use crate::providers::Model;
 use crate::skill::Skill;
-use crate::tools::{load_references_tool, load_skills_tool, shell};
+use crate::tools::{execute_skill_script_tool, load_references_tool, load_skills_tool, shell};
 use aisdk::core::LanguageModelRequest;
 use aisdk::core::tools::{Tool, ToolExecute};
 use aisdk::core::utils::step_count_is;
@@ -91,6 +91,7 @@ impl Subagent {
             shell(self.sandbox_settings.clone()),
             load_skills_tool(self.skills.clone(), Some(self.loaded_skills.clone())),
             load_references_tool(self.loaded_refs.clone()),
+            execute_skill_script_tool(self.sandbox_settings.clone()),
         ];
         if depth < MAX_DEPTH {
             tools.push(make_subagent_tool(
@@ -420,6 +421,10 @@ mod tests {
             assert!(
                 names.contains(&"load_references"),
                 "depth {depth}: must have load_references"
+            );
+            assert!(
+                names.contains(&"execute_skill_script"),
+                "depth {depth}: must have execute_skill_script"
             );
         }
         Ok(())
