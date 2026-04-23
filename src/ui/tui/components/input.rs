@@ -333,16 +333,8 @@ impl InputComponent {
         let (abort_tx, abort_rx) = mpsc::unbounded_channel::<()>();
         self.stream_abort = Some(abort_tx);
 
-        super::super::stream::spawn_stream(
-            query.to_string(),
-            self.model.clone(),
-            self.sandbox_settings.clone(),
-            self.session_id,
-            self.session_pool.clone(),
-            tx.clone(),
-            abort_rx,
-            self.max_steps,
-        );
+        let ctx = super::super::stream::StreamContext::from(&*self);
+        super::super::stream::spawn_stream(ctx, query.to_string(), tx.clone(), abort_rx);
     }
 
     pub fn take_abort_handle(&mut self) -> Option<mpsc::UnboundedSender<()>> {

@@ -42,14 +42,18 @@ mod tools;
 mod ui;
 mod utils;
 
+use crate::config::{ResolvedConfig, load_config};
 use crate::output::OutputFormat;
 use crate::{db::DbPool, session::Session};
+use anyhow::Context;
 use clap::Parser;
+use core::option::Option::Some;
 use std::io::{self, IsTerminal, Read};
 use std::sync::Arc;
+use tracing::debug;
 use tracing_subscriber::EnvFilter;
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 #[command(name = "pie", version = "0.1.0")]
 #[command(about = "Minimal Pi-like agent using OpenAI-compatible providers")]
 #[allow(clippy::struct_excessive_bools)]
@@ -84,6 +88,20 @@ struct Cli {
     r#continue: bool,
 }
 
+impl Cli {
+    pub fn is_persistent(&self) -> bool {
+        self.r#continue && !self.md && !self.json
+    }
+
+    pub fn output_format(&self) -> OutputFormat {
+        match (self.json, self.md) {
+            (true, _) => OutputFormat::Json,
+            (false, true) => OutputFormat::Markdown,
+            _ => OutputFormat::Default,
+        }
+    }
+}
+
 fn resolve_session(pool: Arc<DbPool>, resume: bool) -> anyhow::Result<Session> {
     let cwd = std::env::current_dir()?.to_string_lossy().to_string();
     if resume && let Some(session) = Session::find_latest_for_cwd(pool.clone(), &cwd)? {
@@ -94,9 +112,29 @@ fn resolve_session(pool: Arc<DbPool>, resume: bool) -> anyhow::Result<Session> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    dotenvy::dotenv().ok();
-
     let cli = Cli::parse();
+    let format = if cli.json {
+        Some(OutputFormat::Json)
+    } else if cli.md {
+        Some(OutputFormat::Markdown)
+    } else {
+        None
+    };
+
+    let pool = if cli.is_persistent() {
+        Arc::new(db::create_persistent_pool()?)
+    } else {
+        Arc::new(db::create_memory_pool()?)
+    };
+
+    let config: ResolvedConfig = (cli.clone(), load_config()?).try_into()?;
+    let session = resolve_session(pool.clone(), cli.r#continue)?;
+    if format.is_some() {
+        init_stderr_subscriber(cli.debug, &config.log_level);
+    } else {
+        init_file_subscriber(&session.id.to_string(), &config.log_level)?;
+    }
+    debug!(config = ?config, "config");
 
     if cli.list_skills {
         cmd::handle_list_skills();
@@ -105,30 +143,21 @@ async fn main() -> anyhow::Result<()> {
 
     let sandbox_settings = p1e_srt::load(&config::pie_home());
 
-    let resolved = config::resolve(
-        &cli.provider,
-        cli.profile.as_deref(),
-        cli.debug,
-        cli.json,
-        cli.md,
-    )?;
-    let mut model = providers::build_from_resolved(&resolved.provider)?;
+    debug!(config = ?config, "config");
+    let mut model = providers::build_from_resolved(&config.provider)?;
 
     let piped_stdin = read_piped_stdin();
-
     let format = if cli.json {
         OutputFormat::Json
     } else if cli.md {
         OutputFormat::Markdown
     } else {
-        resolved.output_format
+        config.output_format
     };
 
     // --md or --json → single-shot mode (logs to stderr)
     // Otherwise → interactive mode (logs to .pie/logs/<session-id>.log)
     if format.is_explicit() {
-        init_stderr_subscriber(cli.debug, &resolved.log_level);
-
         let cli_query = cli.query.join(" ");
         let query = if cli_query.is_empty() {
             piped_stdin.as_deref().unwrap_or_default().to_string()
@@ -150,7 +179,6 @@ async fn main() -> anyhow::Result<()> {
             }
         };
 
-        let pool = Arc::new(db::create_memory_pool()?);
         let mut session = Session::create(pool)?;
         return handler::handle_query(
             &mut model,
@@ -158,16 +186,14 @@ async fn main() -> anyhow::Result<()> {
             &mut session,
             format,
             sandbox_settings,
-            resolved.max_steps,
+            config.max_steps,
         )
         .await;
     }
 
     // Interactive mode: session-based REPL with file logging
-    let pool = Arc::new(db::create_persistent_pool()?);
     let session = resolve_session(pool, cli.r#continue)?;
-    init_file_subscriber(&session.id.to_string(), cli.debug, &resolved.log_level);
-    ui::tui::run_tui(model, session, sandbox_settings, resolved.max_steps).await
+    ui::tui::run_tui(model, session, sandbox_settings, config.max_steps).await
 }
 
 fn default_env_filter(default_level: &str) -> EnvFilter {
@@ -190,25 +216,11 @@ fn init_stderr_subscriber(debug: bool, config_level: &str) {
     }
 }
 
-fn init_file_subscriber(session_id: &str, debug: bool, config_level: &str) {
-    let filter = default_env_filter(if debug { "debug" } else { config_level });
+fn init_file_subscriber(session_id: &str, log_level: &str) -> anyhow::Result<()> {
+    let filter = default_env_filter(log_level);
 
     let log_path = config::logs_dir().join(format!("{session_id}.log"));
-    let file = match std::fs::File::create(&log_path) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!(
-                "Warning: cannot create log file {}: {e}",
-                log_path.display()
-            );
-            // Fall back to stderr
-            tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .compact()
-                .init();
-            return;
-        }
-    };
+    let file = std::fs::File::create(&log_path).context("can't create log file")?;
 
     tracing_subscriber::fmt()
         .with_writer(file)
@@ -218,6 +230,8 @@ fn init_file_subscriber(session_id: &str, debug: bool, config_level: &str) {
         .with_env_filter(filter)
         .compact()
         .init();
+
+    Ok(())
 }
 
 /// Read piped stdin. Returns None if stdin is a terminal or empty.

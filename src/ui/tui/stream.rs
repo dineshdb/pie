@@ -7,35 +7,46 @@ use p1e_srt::SandboxConfig;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+/// Environment shared across stream invocations — held by [`InputComponent`].
+pub struct StreamContext {
+    pub model: Model,
+    pub sandbox: Arc<SandboxConfig>,
+    pub session_id: uuid::Uuid,
+    pub pool: Arc<crate::db::DbPool>,
+    pub max_steps: u32,
+}
+
+impl From<&crate::ui::tui::components::input::InputComponent> for StreamContext {
+    fn from(input: &crate::ui::tui::components::input::InputComponent) -> Self {
+        Self {
+            model: input.model.clone(),
+            sandbox: input.sandbox_settings.clone(),
+            session_id: input.session_id,
+            pool: input.session_pool.clone(),
+            max_steps: input.max_steps,
+        }
+    }
+}
+
 pub fn spawn_stream(
+    ctx: StreamContext,
     query: String,
-    model: Model,
-    sandbox: Arc<SandboxConfig>,
-    session_id: uuid::Uuid,
-    pool: Arc<crate::db::DbPool>,
     event_tx: mpsc::UnboundedSender<StreamEvent>,
     abort_rx: mpsc::UnboundedReceiver<()>,
-    max_steps: u32,
 ) {
-    tokio::spawn(run_stream(
-        query, model, sandbox, session_id, pool, event_tx, abort_rx, max_steps,
-    ));
+    tokio::spawn(run_stream(ctx, query, event_tx, abort_rx));
 }
 
 async fn run_stream(
+    ctx: StreamContext,
     query: String,
-    model: Model,
-    sandbox: Arc<SandboxConfig>,
-    session_id: uuid::Uuid,
-    pool: Arc<crate::db::DbPool>,
     event_tx: mpsc::UnboundedSender<StreamEvent>,
     mut abort_rx: mpsc::UnboundedReceiver<()>,
-    max_steps: u32,
 ) {
     use aisdk::core::LanguageModelStreamChunkType;
     use futures::StreamExt;
 
-    let mut session = match Session::load(pool, session_id) {
+    let mut session = match Session::load(ctx.pool, ctx.session_id) {
         Ok(s) => s,
         Err(e) => {
             tracing::error!("failed to load session: {e}");
@@ -50,7 +61,13 @@ async fn run_stream(
     let _ = session.add_user(&query);
 
     let query_for_req = query.strip_prefix('/').unwrap_or(&query);
-    let mut req = build_request(&model, query_for_req, &history, sandbox, max_steps);
+    let mut req = build_request(
+        &ctx.model,
+        query_for_req,
+        &history,
+        ctx.sandbox,
+        ctx.max_steps,
+    );
 
     let stream_result = req.stream_text().await;
 
