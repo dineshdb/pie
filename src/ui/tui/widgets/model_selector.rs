@@ -15,10 +15,11 @@ pub struct ModelSelectorOverlay<'a> {
 
 impl Widget for ModelSelectorOverlay<'_> {
     fn render(self, area: Rect, buf: &mut tuirealm::ratatui::buffer::Buffer) {
-        tracing::debug!(
+        tracing::info!(
             models = self.models.len(),
             loading = self.is_loading,
             error = ?self.error,
+            area = ?area,
             "rendering ModelSelectorOverlay"
         );
         let chunks = Layout::default()
@@ -66,6 +67,17 @@ impl Widget for ModelSelectorOverlay<'_> {
                 let x = m_area.x + (m_area.width.saturating_sub(text_len) / 2);
                 let y = m_area.y + (m_area.height / 2);
                 buf.set_string(x, y, loading_text, Style::default().fg(Color::Gray));
+            }
+            return;
+        }
+
+        if self.models.is_empty() {
+            if let Some(m_area) = chunks.get(1) {
+                let no_models_text = "No models found.";
+                let text_len = u16::try_from(no_models_text.len()).unwrap_or(u16::MAX);
+                let x = m_area.x + (m_area.width.saturating_sub(text_len) / 2);
+                let y = m_area.y + (m_area.height / 2);
+                buf.set_string(x, y, no_models_text, Style::default().fg(Color::Gray));
             }
             return;
         }
