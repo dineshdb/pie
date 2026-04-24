@@ -104,3 +104,54 @@ pub fn build_from_resolved(provider: &ResolvedProvider) -> Result<Model> {
 
     Ok(Model { inner })
 }
+
+/// Fetch available models from the provider.
+pub async fn fetch_models(provider: &ResolvedProvider) -> Result<Vec<String>> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .context("failed to build reqwest client")?;
+
+    let base_url = provider.base_url.trim_end_matches('/');
+    let url = if base_url.ends_with("/v1") {
+        format!("{base_url}/models")
+    } else {
+        format!("{base_url}/v1/models")
+    };
+
+    let mut request = client.get(&url);
+    if !provider.api_key.is_empty() {
+        request = request.header("Authorization", format!("Bearer {}", provider.api_key));
+    }
+
+    let response = request.send().await.context("failed to fetch models")?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "no error body".to_string());
+        anyhow::bail!("API error {status}: {error_text}");
+    }
+
+    let data: serde_json::Value = response
+        .json()
+        .await
+        .context("failed to parse models JSON")?;
+
+    let mut models = Vec::new();
+    if let Some(data_array) = data.get("data").and_then(|d| d.as_array()) {
+        for m in data_array {
+            if let Some(id) = m.get("id").and_then(|id| id.as_str()) {
+                models.push(id.to_string());
+            }
+        }
+    }
+
+    if models.is_empty() {
+        anyhow::bail!("No models found in provider response");
+    }
+
+    models.sort();
+    Ok(models)
+}

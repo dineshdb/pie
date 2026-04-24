@@ -14,6 +14,8 @@ pub enum Command {
     Quit,
     /// Show help text.
     Help,
+    /// List available models or switch to a specific one.
+    Model(Option<String>),
     /// List available skills and agents.
     ListSkills,
     /// Clear the message history.
@@ -30,10 +32,14 @@ impl Command {
             match trimmed {
                 "/exit" | "/quit" | "/q" => Self::Quit,
                 "/help" | "/h" => Self::Help,
+                "/model" => Self::Model(None),
                 "/skills" | "/ls" => Self::ListSkills,
                 "/clear" => Self::Clear,
                 "/new" => Self::New,
                 rest => {
+                    if let Some(model_name) = rest.strip_prefix("/model ") {
+                        return Self::Model(Some(model_name.trim().to_string()));
+                    }
                     let without_slash = &rest[1..];
                     let (name, query) = match without_slash.split_once(' ') {
                         Some((n, q)) => (n, q.trim()),
@@ -68,6 +74,7 @@ impl Command {
         match self {
             Self::Quit => CommandAction::Quit,
             Self::Help => CommandAction::AddMessage(ChatMessage::system(HELP_TEXT)),
+            Self::Model(name) => CommandAction::Model(name),
             Self::ListSkills => {
                 let text = build_skills_list();
                 CommandAction::AddMessage(ChatMessage::system(&text))
@@ -99,20 +106,21 @@ pub enum CommandAction {
     ClearMessages,
     NewSession,
     Stream(String),
+    Model(Option<String>),
     Quit,
 }
 
 /// All slash commands and their aliases, used for tab-completion.
 pub const SLASH_COMMANDS: &[&str] = &[
-    "/help", "/h", "/exit", "/quit", "/q", "/skills", "/ls", "/clear", "/new",
+    "/help", "/h", "/exit", "/quit", "/q", "/model", "/skills", "/ls", "/clear", "/new",
 ];
 
 /// The static help text shown by /help.
 pub const HELP_TEXT: &str = r"
 Commands:
   /help, /h          Show this help          /skills, /ls  List agents
-  /clear             Clear conversation      /new  New session
-  /exit, /quit, /q   Exit
+  /model             List/switch models      /clear        Clear conversation
+  /new               New session             /exit, /quit  Exit
 
 Keys:
   Enter              Send message            Ctrl+Enter  New line

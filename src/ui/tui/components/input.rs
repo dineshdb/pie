@@ -33,6 +33,7 @@ pub struct InputComponent {
     pub last_frame: Instant,
     stream_effect_active: bool,
     pub model: Model,
+    pub provider: crate::config::ResolvedProvider,
     pub session_id: uuid::Uuid,
     pub session_pool: Arc<crate::db::DbPool>,
     pub sandbox_settings: Arc<SandboxConfig>,
@@ -43,6 +44,7 @@ pub struct InputComponent {
 impl InputComponent {
     pub fn new(
         model: Model,
+        provider: crate::config::ResolvedProvider,
         session: &Session,
         sandbox_settings: Arc<SandboxConfig>,
         max_steps: u32,
@@ -70,6 +72,7 @@ impl InputComponent {
             last_frame: Instant::now(),
             stream_effect_active: false,
             model,
+            provider,
             session_id,
             session_pool,
             sandbox_settings,
@@ -344,6 +347,20 @@ impl InputComponent {
     pub fn finish_stream(&mut self) {
         self.stream_abort = None;
     }
+
+    /// Returns a provider config based on current model.
+    pub fn get_provider(&self) -> crate::config::ResolvedProvider {
+        self.provider.clone()
+    }
+
+    pub fn set_model(&mut self, model_name: &str) {
+        self.provider.model = model_name.to_string();
+        if let Ok(new_model) = crate::providers::build_from_resolved(&self.provider) {
+            self.model = new_model;
+        }
+    }
+
+    // ...
 
     /// Reset to a new session: update `session_id`, create fresh history, clear input.
     pub fn reset_session(&mut self, session_id: uuid::Uuid) {

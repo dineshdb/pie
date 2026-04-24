@@ -123,8 +123,11 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
         let max_steps = pie.agent.as_ref().and_then(|a| a.max_steps).unwrap_or(25);
 
         let log_level = if cli.debug { "debug" } else { pie.log_level() };
+        let mut resolved_provider = ResolvedProvider::try_from(provider.clone())?;
+        resolved_provider.name = profile_name.to_string();
+
         Ok(Self {
-            provider: ResolvedProvider::try_from(provider.clone())?,
+            provider: resolved_provider,
             max_steps,
             output_format,
             log_level: log_level.to_string(),
@@ -132,8 +135,9 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ResolvedProvider {
+    pub name: String,
     pub model: String,
     pub base_url: String,
     pub api_key: String,
@@ -146,6 +150,7 @@ impl TryFrom<ProviderConfig> for ResolvedProvider {
 
     fn try_from(provider: ProviderConfig) -> Result<Self, Self::Error> {
         Ok(ResolvedProvider {
+            name: "default".to_string(), // Will be overwritten by ResolvedConfig conversion
             model: provider.model.context(
                 "base URL is required (set --base-url, OPENAI_BASE_URL, or config profile)",
             )?,

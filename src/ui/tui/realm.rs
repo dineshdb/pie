@@ -19,6 +19,7 @@ pub enum StreamEvent {
         display: String,
         output: String,
     },
+    ModelList(Vec<String>),
 }
 
 /// Messages returned by `AppComponent::on()` — processed in the update function.
@@ -36,6 +37,11 @@ pub enum Msg {
     StreamError(String),
 
     KeyboardToInput(KeyEvent),
+
+    /// Update the current model.
+    SetModel(String),
+    /// Trigger a UI redraw.
+    Redraw,
 }
 
 /// Bridges tokio mpsc events into tuirealm's `SyncPort` system.

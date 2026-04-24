@@ -1,17 +1,15 @@
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::{Color, Modifier, Style};
 use tuirealm::ratatui::text::{Line, Span};
-use tuirealm::ratatui::widgets::{Clear, Paragraph, Widget};
+use tuirealm::ratatui::widgets::{Paragraph, Widget};
 
 pub struct HelpOverlay;
 
 impl Widget for HelpOverlay {
     fn render(self, area: Rect, buf: &mut tuirealm::ratatui::buffer::Buffer) {
-        Clear.render(area, buf);
-
         let lines: Vec<Line> = vec![
             Line::from(Span::styled(
-                "  pie help",
+                "Commands",
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
@@ -19,19 +17,27 @@ impl Widget for HelpOverlay {
             Line::raw(""),
             Line::from(vec![
                 Span::styled("  /help, /h", Style::default().fg(Color::Green)),
-                Span::raw("          Show this help          "),
-                Span::styled("/skills, /ls", Style::default().fg(Color::Green)),
-                Span::raw("  List agents"),
+                Span::raw("          Show this help"),
+            ]),
+            Line::from(vec![
+                Span::styled("  /model", Style::default().fg(Color::Green)),
+                Span::raw("             List/switch models"),
+            ]),
+            Line::from(vec![
+                Span::styled("  /skills, /ls", Style::default().fg(Color::Green)),
+                Span::raw("       List agents"),
             ]),
             Line::from(vec![
                 Span::styled("  /clear", Style::default().fg(Color::Green)),
-                Span::raw("             Clear conversation   "),
-                Span::styled("/exit, /quit, /q", Style::default().fg(Color::Green)),
-                Span::raw("  Exit"),
+                Span::raw("             Clear conversation"),
+            ]),
+            Line::from(vec![
+                Span::styled("  /exit, /quit", Style::default().fg(Color::Green)),
+                Span::raw("        Exit"),
             ]),
             Line::raw(""),
             Line::from(Span::styled(
-                "  Keys",
+                "Keys",
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
@@ -39,26 +45,22 @@ impl Widget for HelpOverlay {
             Line::raw(""),
             Line::from(vec![
                 Span::styled("  Enter", Style::default().fg(Color::Green)),
-                Span::raw("              Send message          "),
-                Span::styled("Ctrl+Enter", Style::default().fg(Color::Green)),
-                Span::raw("  New line"),
+                Span::raw("              Send message"),
             ]),
             Line::from(vec![
                 Span::styled("  Up/Down", Style::default().fg(Color::Green)),
-                Span::raw("           Navigate history        "),
-                Span::styled("Esc", Style::default().fg(Color::Green)),
-                Span::raw("  Cancel streaming"),
+                Span::raw("           Navigate history"),
             ]),
             Line::from(vec![
                 Span::styled("  Page Up/Down", Style::default().fg(Color::Green)),
-                Span::raw("     Scroll messages          "),
-                Span::styled("Ctrl+c", Style::default().fg(Color::Green)),
-                Span::raw("  Quit"),
+                Span::raw("     Scroll messages"),
+            ]),
+            Line::from(vec![
+                Span::styled("  Esc", Style::default().fg(Color::Green)),
+                Span::raw("               Close dialog / Cancel"),
             ]),
         ];
 
-        Paragraph::new(lines)
-            .style(Style::default().bg(Color::Black))
-            .render(area, buf);
+        Paragraph::new(lines).render(area, buf);
     }
 }

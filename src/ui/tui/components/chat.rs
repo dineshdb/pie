@@ -17,22 +17,36 @@ use tuirealm::state::State;
 
 const MAX_MESSAGES: usize = 1_000;
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ActiveDialog {
+    None,
+    Help,
+    ModelSelector {
+        provider_name: String,
+        models: Vec<String>,
+        selected_idx: Option<usize>,
+        is_loading: bool,
+    },
+}
+
 pub struct ChatComponent {
     pub messages: Vec<ChatMessage>,
     pub render_cache: MessageRenderCache,
     pub chat_state: ChatState,
     pub response_idx: Option<usize>,
-    pub show_help: bool,
+    pub active_dialog: ActiveDialog,
+    pub current_model: String,
 }
 
 impl ChatComponent {
-    pub fn new(messages: Vec<ChatMessage>) -> Self {
+    pub fn new(messages: Vec<ChatMessage>, current_model: String) -> Self {
         Self {
             messages,
             render_cache: MessageRenderCache::new(),
             chat_state: ChatState::new(),
             response_idx: None,
-            show_help: false,
+            active_dialog: ActiveDialog::None,
+            current_model,
         }
     }
 
@@ -107,12 +121,60 @@ impl ChatComponent {
 
 impl Component for ChatComponent {
     fn view(&mut self, frame: &mut Frame, area: Rect) {
-        if self.show_help {
-            frame.render_widget(super::super::widgets::help::HelpOverlay, area);
-        } else {
-            let lines =
-                chat::build_chat_lines(&self.messages, &mut self.render_cache, area.width as usize);
-            frame.render_stateful_widget(ChatView { lines: &lines }, area, &mut self.chat_state);
+        // Render chat in background
+        let lines =
+            chat::build_chat_lines(&self.messages, &mut self.render_cache, area.width as usize);
+        frame.render_stateful_widget(ChatView { lines: &lines }, area, &mut self.chat_state);
+
+        match &self.active_dialog {
+            ActiveDialog::None => {}
+            ActiveDialog::Help => {
+                frame.render_widget(
+                    super::super::widgets::dialog::Dialog::new(
+                        "Help",
+                        super::super::widgets::help::HelpOverlay,
+                    )
+                    .with_size(50, 60),
+                    area,
+                );
+            }
+            ActiveDialog::ModelSelector {
+                provider_name,
+                models,
+                selected_idx,
+                is_loading,
+            } => {
+                let title = if provider_name.is_empty() {
+                    "Select Model".to_string()
+                } else {
+                    format!("Select Model ({provider_name})")
+                };
+
+                let current_model_idx = if *is_loading {
+                    None
+                } else {
+                    let current = self.current_model.trim().to_lowercase();
+                    models.iter().position(|m| {
+                        let m_lower = m.trim().to_lowercase();
+                        m_lower == current
+                            || m_lower.ends_with(&format!("/{current}"))
+                            || current.ends_with(&format!("/{m_lower}"))
+                    })
+                };
+
+                frame.render_widget(
+                    super::super::widgets::dialog::Dialog::new(
+                        &title,
+                        super::super::widgets::model_selector::ModelSelectorOverlay {
+                            models,
+                            selected_idx: *selected_idx,
+                            current_model_idx,
+                            is_loading: *is_loading,
+                        },
+                    ),
+                    area,
+                );
+            }
         }
     }
 
@@ -134,24 +196,36 @@ impl Component for ChatComponent {
 impl AppComponent<Msg, StreamEvent> for ChatComponent {
     fn on(&mut self, ev: &Event<StreamEvent>) -> Option<Msg> {
         match ev {
-            // Stream events: handle directly
-            Event::User(StreamEvent::Delta(s)) => {
+            Event::User(user_ev) => self.handle_user_event(user_ev),
+            Event::Keyboard(key) => self.handle_keyboard_event(key),
+            _ => None,
+        }
+    }
+}
+
+impl ChatComponent {
+    fn handle_user_event(&mut self, ev: &StreamEvent) -> Option<Msg> {
+        match ev {
+            StreamEvent::Delta(s) => {
                 self.update_response(s.clone());
                 None
             }
-            Event::User(StreamEvent::Done(s)) => {
+            StreamEvent::Done(s) => {
                 self.finish_stream(s.clone());
                 Some(Msg::StreamDone(s.clone()))
             }
-            Event::User(StreamEvent::Error(s)) => {
+            StreamEvent::Error(s) => {
+                if let ActiveDialog::ModelSelector { .. } = self.active_dialog {
+                    self.active_dialog = ActiveDialog::None;
+                }
                 self.stream_error(s);
                 Some(Msg::StreamError(s.clone()))
             }
-            Event::User(StreamEvent::ToolCall {
+            StreamEvent::ToolCall {
                 name,
                 display,
                 output,
-            }) => {
+            } => {
                 let tool = ToolCallResult::new(name, output);
                 let result_line = tool.to_string();
                 let content = if result_line.is_empty() {
@@ -162,20 +236,95 @@ impl AppComponent<Msg, StreamEvent> for ChatComponent {
                 self.add_message(ChatMessage::tool(&content));
                 None
             }
-            // Keyboard: intercept scroll keys, delegate everything else to Input
-            Event::Keyboard(key) => match (key.modifiers, &key.code) {
-                (KeyModifiers::NONE, Key::PageUp) => {
-                    self.scroll_up(20);
-                    Some(Msg::ScrollUp(20))
+            StreamEvent::ModelList(models) => {
+                if let ActiveDialog::ModelSelector { provider_name, .. } = &self.active_dialog {
+                    let models = models.clone();
+                    let provider_name = provider_name.clone();
+                    // Match current_model flexibly
+                    let current = self.current_model.trim().to_lowercase();
+                    let selected_idx = models
+                        .iter()
+                        .position(|m| {
+                            let m_lower = m.trim().to_lowercase();
+                            m_lower == current
+                                || m_lower.ends_with(&format!("/{current}"))
+                                || current.ends_with(&format!("/{m_lower}"))
+                        })
+                        .or(if models.is_empty() { None } else { Some(0) });
+
+                    self.active_dialog = ActiveDialog::ModelSelector {
+                        provider_name,
+                        models,
+                        selected_idx,
+                        is_loading: false,
+                    };
                 }
-                (KeyModifiers::NONE, Key::PageDown) => {
-                    self.scroll_down(20);
-                    Some(Msg::ScrollDown(20))
+                Some(Msg::Redraw)
+            }
+        }
+    }
+
+    fn handle_keyboard_event(&mut self, key: &tuirealm::event::KeyEvent) -> Option<Msg> {
+        match &mut self.active_dialog {
+            ActiveDialog::None => {}
+            ActiveDialog::Help => {
+                if matches!(key.code, Key::Esc | Key::Char('?')) {
+                    self.active_dialog = ActiveDialog::None;
+                    return Some(Msg::Redraw);
                 }
-                _ => Some(Msg::KeyboardToInput(*key)),
+                return None;
+            }
+            ActiveDialog::ModelSelector {
+                provider_name: _,
+                models,
+                selected_idx,
+                is_loading: _,
+            } => match (key.modifiers, &key.code) {
+                (KeyModifiers::NONE, Key::Up) => {
+                    if let Some(idx) = selected_idx
+                        && *idx > 0
+                    {
+                        *selected_idx = Some(*idx - 1);
+                    }
+                    return Some(Msg::Redraw);
+                }
+                (KeyModifiers::NONE, Key::Down) => {
+                    if let Some(idx) = selected_idx
+                        && *idx + 1 < models.len()
+                    {
+                        *selected_idx = Some(*idx + 1);
+                    }
+                    return Some(Msg::Redraw);
+                }
+                (KeyModifiers::NONE, Key::Enter) => {
+                    if let Some(idx) = selected_idx
+                        && let Some(model) = models.get(*idx)
+                    {
+                        let model = model.clone();
+                        self.current_model.clone_from(&model);
+                        self.active_dialog = ActiveDialog::None;
+                        return Some(Msg::SetModel(model));
+                    }
+                    return Some(Msg::Redraw);
+                }
+                (KeyModifiers::NONE, Key::Esc) => {
+                    self.active_dialog = ActiveDialog::None;
+                    return Some(Msg::Redraw);
+                }
+                _ => return None,
             },
-            // Tick and everything else: ignore
-            _ => None,
+        }
+
+        match (key.modifiers, &key.code) {
+            (KeyModifiers::NONE, Key::PageUp) => {
+                self.scroll_up(20);
+                Some(Msg::ScrollUp(20))
+            }
+            (KeyModifiers::NONE, Key::PageDown) => {
+                self.scroll_down(20);
+                Some(Msg::ScrollDown(20))
+            }
+            _ => Some(Msg::KeyboardToInput(*key)),
         }
     }
 }
@@ -189,7 +338,7 @@ mod tests {
     #[test]
     fn new_chat_has_welcome_message_first() {
         let messages = vec![ChatMessage::system("Welcome to pie! Type ? for help.")];
-        let chat = ChatComponent::new(messages);
+        let chat = ChatComponent::new(messages, "test-model".to_string());
         assert_eq!(chat.messages.len(), 1);
         assert_eq!(chat.messages[0].role, Role::System);
         assert!(chat.messages[0].content.contains("Welcome"));
@@ -197,7 +346,10 @@ mod tests {
 
     #[test]
     fn add_message_auto_scrolls() {
-        let mut chat = ChatComponent::new(vec![ChatMessage::system("Welcome")]);
+        let mut chat = ChatComponent::new(
+            vec![ChatMessage::system("Welcome")],
+            "test-model".to_string(),
+        );
         chat.chat_state.auto_scroll = false;
         chat.add_message(ChatMessage::user("test"));
         assert!(
@@ -208,7 +360,7 @@ mod tests {
 
     #[test]
     fn start_and_finish_stream() {
-        let mut chat = ChatComponent::new(vec![]);
+        let mut chat = ChatComponent::new(vec![], "test-model".to_string());
         chat.start_response();
         assert!(chat.is_streaming());
         assert_eq!(chat.response_idx, Some(0));

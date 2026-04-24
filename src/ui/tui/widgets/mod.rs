@@ -1,9 +1,11 @@
 pub mod chat;
 pub mod completion;
+pub mod dialog;
 pub mod help;
 pub mod history;
 pub mod input;
 pub mod markdown;
+pub mod model_selector;
 pub mod render_cache;
 pub mod tool_display;
 pub mod wrap;

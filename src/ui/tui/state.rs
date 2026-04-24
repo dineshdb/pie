@@ -9,6 +9,7 @@ pub enum MessageKind {
     Response,
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct ChatMessage {
     pub role: Role,
     pub content: String,

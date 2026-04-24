@@ -131,46 +131,7 @@ impl FrameUpdate {
                 }
             }
 
-            Msg::Submit(text) => {
-                let text = text.trim().to_string();
-                if text.is_empty() {
-                    return;
-                }
-                let cmd = Command::parse(&text);
-                match cmd.dispatch() {
-                    CommandAction::AddMessage(msg) => {
-                        if let Some(chat) = chat_mut!(app) {
-                            chat.add_message(ChatMessage::user(&text));
-                            chat.add_message(msg);
-                        }
-                    }
-                    CommandAction::ClearMessages => {
-                        if let Some(chat) = chat_mut!(app) {
-                            chat.clear_messages();
-                        }
-                    }
-                    CommandAction::NewSession => {
-                        if let Ok(new_session) = Session::create(input.session_pool.clone()) {
-                            if let Some(chat) = chat_mut!(app) {
-                                chat.clear_messages();
-                                chat.add_message(ChatMessage::system(
-                                    "Welcome to pie! Type ? for help.",
-                                ));
-                            }
-                            input.reset_session(new_session.id);
-                        }
-                    }
-                    CommandAction::Stream(query) => {
-                        if let Some(chat) = chat_mut!(app) {
-                            chat.add_message(ChatMessage::user(&query));
-                            chat.start_response();
-                        }
-                        input.take_input();
-                        input.start_stream(&query, tx);
-                    }
-                    CommandAction::Quit => self.quit = true,
-                }
-            }
+            Msg::Submit(text) => self.handle_submit(&text, app, input, tx),
 
             Msg::StreamDone(output) => {
                 if let Some(chat) = chat_mut!(app) {
@@ -183,22 +144,120 @@ impl FrameUpdate {
                 input.finish_stream();
             }
 
+            Msg::SetModel(name) => {
+                input.set_model(&name);
+                if let Some(chat) = chat_mut!(app) {
+                    chat.add_message(ChatMessage::system(&format!("Switched to model: {name}")));
+                    chat.current_model = name;
+                }
+            }
+
+            Msg::Redraw => {}
+
             Msg::ToggleHelp => {
                 if let Some(chat) = chat_mut!(app) {
-                    chat.show_help = !chat.show_help;
+                    use crate::ui::tui::components::chat::ActiveDialog;
+                    if chat.active_dialog == ActiveDialog::Help {
+                        chat.active_dialog = ActiveDialog::None;
+                    } else {
+                        chat.active_dialog = ActiveDialog::Help;
+                    }
                 }
             }
             Msg::CloseHelp => {
                 if let Some(chat) = chat_mut!(app) {
-                    chat.show_help = false;
+                    chat.active_dialog = crate::ui::tui::components::chat::ActiveDialog::None;
                 }
             }
+        }
+    }
+
+    fn handle_submit(
+        &mut self,
+        text: &str,
+        app: &mut App,
+        input: &mut InputComponent,
+        tx: &mpsc::UnboundedSender<StreamEvent>,
+    ) {
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let cmd = Command::parse(&text);
+        match cmd.dispatch() {
+            CommandAction::AddMessage(msg) => {
+                if let Some(chat) = chat_mut!(app) {
+                    if text != "/help" && text != "/h" {
+                        chat.add_message(ChatMessage::user(&text));
+                    }
+                    chat.add_message(msg);
+                }
+            }
+            CommandAction::Model(name) => {
+                if let Some(new_model) = name {
+                    input.set_model(&new_model);
+                    if let Some(chat) = chat_mut!(app) {
+                        chat.add_message(ChatMessage::system(&format!(
+                            "Switched to model: {new_model}"
+                        )));
+                        chat.current_model = new_model;
+                    }
+                } else {
+                    input.take_input();
+                    let provider = input.get_provider();
+                    if let Some(chat) = chat_mut!(app) {
+                        chat.active_dialog =
+                            crate::ui::tui::components::chat::ActiveDialog::ModelSelector {
+                                provider_name: provider.name.clone(),
+                                models: Vec::new(),
+                                selected_idx: None,
+                                is_loading: true,
+                            };
+                    }
+                    let tx = tx.clone();
+                    tokio::spawn(async move {
+                        match crate::providers::fetch_models(&provider).await {
+                            Ok(models) => {
+                                let _ = tx.send(StreamEvent::ModelList(models));
+                            }
+                            Err(e) => {
+                                // Make sure this error reaches the component to clear the dialog
+                                let _ = tx.send(StreamEvent::Error(e.to_string()));
+                            }
+                        }
+                    });
+                }
+            }
+            CommandAction::ClearMessages => {
+                if let Some(chat) = chat_mut!(app) {
+                    chat.clear_messages();
+                }
+            }
+            CommandAction::NewSession => {
+                if let Ok(new_session) = Session::create(input.session_pool.clone()) {
+                    if let Some(chat) = chat_mut!(app) {
+                        chat.clear_messages();
+                        chat.add_message(ChatMessage::system("Welcome to pie! Type ? for help."));
+                    }
+                    input.reset_session(new_session.id);
+                }
+            }
+            CommandAction::Stream(query) => {
+                if let Some(chat) = chat_mut!(app) {
+                    chat.add_message(ChatMessage::user(&query));
+                    chat.start_response();
+                }
+                input.take_input();
+                input.start_stream(&query, tx);
+            }
+            CommandAction::Quit => self.quit = true,
         }
     }
 }
 
 pub async fn run_tui(
     model: Model,
+    provider: crate::config::ResolvedProvider,
     session: Session,
     sandbox_settings: Arc<SandboxConfig>,
     max_steps: u32,
@@ -226,9 +285,14 @@ pub async fn run_tui(
         .tick_interval(FRAME_INTERVAL);
 
     let mut app = App::init(listener_cfg);
-    let mut input = InputComponent::new(model, &session, sandbox_settings, max_steps);
+    let mut input = InputComponent::new(model, provider, &session, sandbox_settings, max_steps);
+    let current_model = input.provider.model.clone();
 
-    app.mount(Id::Chat, Box::new(ChatComponent::new(messages)), vec![])?;
+    app.mount(
+        Id::Chat,
+        Box::new(ChatComponent::new(messages, current_model)),
+        vec![],
+    )?;
     app.active(&Id::Chat)?;
 
     // Render initial frame immediately.

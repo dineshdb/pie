@@ -197,7 +197,14 @@ async fn main() -> anyhow::Result<()> {
 
     // Interactive mode: session-based REPL with file logging
     let session = resolve_session(pool, cli.r#continue)?;
-    ui::tui::run_tui(model, session, sandbox_settings, config.max_steps).await
+    ui::tui::run_tui(
+        model,
+        config.provider,
+        session,
+        sandbox_settings,
+        config.max_steps,
+    )
+    .await
 }
 
 fn default_env_filter(default_level: &str) -> EnvFilter {

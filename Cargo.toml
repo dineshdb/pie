@@ -42,6 +42,7 @@ r2d2 = "0.8"
 r2d2_sqlite = "0.31"
 refinery = { version = "0.9", features = ["rusqlite"] }
 
+reqwest = { version = "0.12", features = ["json"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 schemars = "1"
 serde.workspace = true
