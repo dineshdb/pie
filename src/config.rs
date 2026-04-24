@@ -49,7 +49,7 @@ pub struct ProviderConfig {
 pub struct PieConfig {
     pub default_provider: Option<String>,
     #[serde(default)]
-    pub providers: HashMap<String, ProviderConfig>,
+    pub provider: HashMap<String, ProviderConfig>,
     pub agent: Option<AgentConfig>,
     pub sandbox: Option<SandboxConfig>,
     pub output_format: Option<String>,
@@ -109,7 +109,7 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
             .unwrap_or_default();
 
         let provider_cfg = pie
-            .providers
+            .provider
             .get(provider_name)
             .cloned()
             .context("provider not found")?;
@@ -151,9 +151,9 @@ impl TryFrom<ProviderConfig> for ResolvedProvider {
     fn try_from(provider: ProviderConfig) -> Result<Self, Self::Error> {
         Ok(ResolvedProvider {
             name: "default".to_string(), // Will be overwritten by ResolvedConfig conversion
-            model: provider.model.context(
-                "model is required (set --model, OPENAI_MODEL, or config provider)",
-            )?,
+            model: provider
+                .model
+                .context("model is required (set --model, OPENAI_MODEL, or config provider)")?,
             base_url: provider.base_url.context(
                 "base URL is required (set --base-url, OPENAI_BASE_URL, or config provider)",
             )?,

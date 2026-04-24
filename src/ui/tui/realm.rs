@@ -38,8 +38,10 @@ pub enum Msg {
 
     KeyboardToInput(KeyEvent),
 
-    /// Update the current model.
-    SetModel(String),
+    /// Fetch models for a specific provider.
+    FetchModels(String),
+    /// Switch provider and model.
+    SwitchProviderAndModel(String, String),
     /// Trigger a UI redraw.
     Redraw,
 }

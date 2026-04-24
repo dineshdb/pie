@@ -144,11 +144,41 @@ impl FrameUpdate {
                 input.finish_stream();
             }
 
-            Msg::SetModel(name) => {
-                input.set_model(&name);
-                if let Some(chat) = chat_mut!(app) {
-                    chat.add_message(ChatMessage::system(&format!("Switched to model: {name}")));
-                    chat.current_model = name;
+            Msg::FetchModels(provider_name) => {
+                let providers = input.available_providers.clone();
+                if let Some(cfg) = providers.get(&provider_name)
+                    && let Ok(mut resolved) = crate::config::ResolvedProvider::try_from(cfg.clone())
+                {
+                    resolved.name = provider_name;
+                    let tx = tx.clone();
+                    tokio::spawn(async move {
+                        match crate::providers::fetch_models(&resolved).await {
+                            Ok(models) => {
+                                let _ = tx.send(StreamEvent::ModelList(models));
+                            }
+                            Err(e) => {
+                                let _ = tx.send(StreamEvent::Error(e.to_string()));
+                            }
+                        }
+                    });
+                }
+            }
+
+            Msg::SwitchProviderAndModel(provider_name, model_name) => {
+                let providers = input.available_providers.clone();
+                if let Some(cfg) = providers.get(&provider_name)
+                    && let Ok(mut resolved) = crate::config::ResolvedProvider::try_from(cfg.clone())
+                {
+                    resolved.name = provider_name;
+                    resolved.model = model_name;
+                    input.set_provider(resolved);
+                    if let Some(chat) = chat_mut!(app) {
+                        chat.add_message(ChatMessage::system(&format!(
+                            "Switched to provider: {} / model: {}",
+                            input.provider.name, input.provider.model
+                        )));
+                        chat.current_model.clone_from(&input.provider.model);
+                    }
                 }
             }
 
@@ -205,10 +235,22 @@ impl FrameUpdate {
                 } else {
                     input.take_input();
                     let provider = input.get_provider();
+                    let mut available_providers = input
+                        .available_providers
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    available_providers.sort();
+                    let provider_idx = available_providers
+                        .iter()
+                        .position(|p| p == &provider.name)
+                        .unwrap_or(0);
+
                     if let Some(chat) = chat_mut!(app) {
                         chat.active_dialog =
                             crate::ui::tui::components::chat::ActiveDialog::ModelSelector {
-                                provider_name: provider.name.clone(),
+                                providers: available_providers,
+                                provider_idx,
                                 models: Vec::new(),
                                 selected_idx: None,
                                 is_loading: true,
@@ -261,6 +303,7 @@ pub async fn run_tui(
     session: Session,
     sandbox_settings: Arc<SandboxConfig>,
     max_steps: u32,
+    pie_config: crate::config::PieConfig,
 ) -> Result<()> {
     let mut terminal = tuirealm::ratatui::init();
     terminal.clear()?;
@@ -285,7 +328,14 @@ pub async fn run_tui(
         .tick_interval(FRAME_INTERVAL);
 
     let mut app = App::init(listener_cfg);
-    let mut input = InputComponent::new(model, provider, &session, sandbox_settings, max_steps);
+    let mut input = InputComponent::new(
+        model,
+        provider,
+        &session,
+        sandbox_settings,
+        max_steps,
+        pie_config.provider.clone(),
+    );
     let current_model = input.provider.model.clone();
 
     app.mount(

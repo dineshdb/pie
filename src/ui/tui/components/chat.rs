@@ -242,9 +242,16 @@ impl ChatComponent {
                 None
             }
             StreamEvent::ModelList(models) => {
-                if let ActiveDialog::ModelSelector { provider_name, .. } = &self.active_dialog {
+                if let ActiveDialog::ModelSelector {
+                    providers,
+                    provider_idx,
+                    ..
+                } = &self.active_dialog
+                {
                     let models = models.clone();
-                    let provider_name = provider_name.clone();
+                    let providers = providers.clone();
+                    let provider_idx = *provider_idx;
+
                     // Match current_model flexibly
                     let current = self.current_model.trim().to_lowercase();
                     let selected_idx = models
@@ -258,7 +265,8 @@ impl ChatComponent {
                         .or(if models.is_empty() { None } else { Some(0) });
 
                     self.active_dialog = ActiveDialog::ModelSelector {
-                        provider_name,
+                        providers,
+                        provider_idx,
                         models,
                         selected_idx,
                         is_loading: false,
@@ -280,10 +288,11 @@ impl ChatComponent {
                 return None;
             }
             ActiveDialog::ModelSelector {
-                provider_name: _,
+                providers,
+                provider_idx,
                 models,
                 selected_idx,
-                is_loading: _,
+                is_loading,
             } => match (key.modifiers, &key.code) {
                 (KeyModifiers::NONE, Key::Up) => {
                     if let Some(idx) = selected_idx
@@ -301,14 +310,40 @@ impl ChatComponent {
                     }
                     return Some(Msg::Redraw);
                 }
+                (KeyModifiers::NONE, Key::Left) => {
+                    if *provider_idx > 0 {
+                        *provider_idx -= 1;
+                        *models = Vec::new();
+                        *selected_idx = None;
+                        *is_loading = true;
+                        let provider_name =
+                            providers.get(*provider_idx).cloned().unwrap_or_default();
+                        return Some(Msg::FetchModels(provider_name));
+                    }
+                    return Some(Msg::Redraw);
+                }
+                (KeyModifiers::NONE, Key::Right) => {
+                    if *provider_idx + 1 < providers.len() {
+                        *provider_idx += 1;
+                        *models = Vec::new();
+                        *selected_idx = None;
+                        *is_loading = true;
+                        let provider_name =
+                            providers.get(*provider_idx).cloned().unwrap_or_default();
+                        return Some(Msg::FetchModels(provider_name));
+                    }
+                    return Some(Msg::Redraw);
+                }
                 (KeyModifiers::NONE, Key::Enter) => {
                     if let Some(idx) = selected_idx
                         && let Some(model) = models.get(*idx)
                     {
                         let model = model.clone();
+                        let provider_name =
+                            providers.get(*provider_idx).cloned().unwrap_or_default();
                         self.current_model.clone_from(&model);
                         self.active_dialog = ActiveDialog::None;
-                        return Some(Msg::SetModel(model));
+                        return Some(Msg::SwitchProviderAndModel(provider_name, model));
                     }
                     return Some(Msg::Redraw);
                 }

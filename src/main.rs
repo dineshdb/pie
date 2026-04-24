@@ -203,6 +203,7 @@ async fn main() -> anyhow::Result<()> {
         session,
         sandbox_settings,
         config.max_steps,
+        pie_config,
     )
     .await
 }

@@ -34,6 +34,7 @@ pub struct InputComponent {
     stream_effect_active: bool,
     pub model: Model,
     pub provider: crate::config::ResolvedProvider,
+    pub available_providers: std::collections::HashMap<String, crate::config::ProviderConfig>,
     pub session_id: uuid::Uuid,
     pub session_pool: Arc<crate::db::DbPool>,
     pub sandbox_settings: Arc<SandboxConfig>,
@@ -48,6 +49,7 @@ impl InputComponent {
         session: &Session,
         sandbox_settings: Arc<SandboxConfig>,
         max_steps: u32,
+        available_providers: std::collections::HashMap<String, crate::config::ProviderConfig>,
     ) -> Self {
         let session_id = session.id;
         let session_pool = session.pool().clone();
@@ -73,6 +75,7 @@ impl InputComponent {
             stream_effect_active: false,
             model,
             provider,
+            available_providers,
             session_id,
             session_pool,
             sandbox_settings,
@@ -355,6 +358,13 @@ impl InputComponent {
 
     pub fn set_model(&mut self, model_name: &str) {
         self.provider.model = model_name.to_string();
+        if let Ok(new_model) = crate::providers::build_from_resolved(&self.provider) {
+            self.model = new_model;
+        }
+    }
+
+    pub fn set_provider(&mut self, provider: crate::config::ResolvedProvider) {
+        self.provider = provider;
         if let Ok(new_model) = crate::providers::build_from_resolved(&self.provider) {
             self.model = new_model;
         }
