@@ -8,6 +8,7 @@ use crate::providers::Model;
 use crate::session::Session;
 use crate::ui::tui::command;
 use crate::ui::tui::realm::{Msg, StreamEvent};
+use crate::ui::tui::stream::{StreamContext, spawn_stream};
 use crate::ui::tui::widgets::completion::{CompletionPopup, CompletionState, Direction};
 use crate::ui::tui::widgets::history::InputHistory;
 use crate::ui::tui::widgets::input::{InputView, cursor_position};
@@ -332,8 +333,8 @@ impl InputComponent {
         let (abort_tx, abort_rx) = mpsc::unbounded_channel::<()>();
         self.stream_abort = Some(abort_tx);
 
-        let ctx = super::super::stream::StreamContext::from(&*self);
-        super::super::stream::spawn_stream(ctx, query.to_string(), tx.clone(), abort_rx);
+        let ctx = StreamContext::from(&*self);
+        tokio::spawn(spawn_stream(ctx, query.to_string(), tx.clone(), abort_rx));
     }
 
     pub fn take_abort_handle(&mut self) -> Option<mpsc::UnboundedSender<()>> {

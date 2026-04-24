@@ -12,9 +12,9 @@ use std::collections::HashSet;
 #[derive(Debug, Clone)]
 pub struct Instructions {
     /// The raw input text.
-    raw: String,
+    pub raw: String,
     /// All `/name` mentions found in the input.
-    mentions: HashSet<String>,
+    pub mentions: HashSet<String>,
 }
 
 impl Instructions {
@@ -89,13 +89,7 @@ impl Instructions {
     /// Merge mentions from additional text into this instance.
     /// Does not change `raw` — only augments the mention set.
     pub fn merge_mentions(&mut self, extra: &str) {
-        let extra_mentions = Self::extract_mentions(extra);
-        self.mentions.extend(extra_mentions);
-    }
-
-    /// The raw input text.
-    pub fn raw(&self) -> &str {
-        &self.raw
+        self.mentions.extend(Self::extract_mentions(extra));
     }
 }
 
@@ -258,14 +252,14 @@ mod tests {
     #[test]
     fn from_str_ref() {
         let instr = Instructions::from("/review this");
-        assert_eq!(instr.raw(), "/review this");
+        assert_eq!(instr.raw, "/review this");
         assert!(instr.mentions_name("review"));
     }
 
     #[test]
     fn from_string() {
         let instr = Instructions::from(String::from("/explore that"));
-        assert_eq!(instr.raw(), "/explore that");
+        assert_eq!(instr.raw, "/explore that");
         assert!(instr.mentions_name("explore"));
     }
 

@@ -48,13 +48,6 @@ pub struct Agent {
     pub content: String,
 }
 
-impl Agent {
-    /// Parse this agent's content for `/mentions` of skills/agents.
-    pub fn instructions(&self) -> Instructions {
-        Instructions::new(&self.content)
-    }
-}
-
 /// Serde-deserializable frontmatter for agent files.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]

@@ -13,6 +13,30 @@ pub struct Skill {
     pub needs: Vec<String>,
 }
 
+impl Skill {
+    /// Recursively resolve a list of skill names and their dependencies.
+    pub fn resolve<'a>(all_skills: &'a [Skill], mentions: &[String]) -> Vec<&'a Skill> {
+        let mut resolved = Vec::new();
+        let mut visited = HashSet::new();
+        let mut stack: Vec<&str> = mentions.iter().map(String::as_str).collect();
+
+        while let Some(name) = stack.pop() {
+            if !visited.insert(name) {
+                continue;
+            }
+            if let Some(skill) = all_skills.iter().find(|s| s.name == name) {
+                resolved.push(skill);
+                for need in &skill.needs {
+                    stack.push(need);
+                }
+            }
+        }
+        // Reverse to maintain some semblance of requested order (though it's a stack)
+        resolved.reverse();
+        resolved
+    }
+}
+
 /// Serde-deserializable frontmatter for skill files.
 #[derive(Debug, Deserialize)]
 struct SkillFrontmatter {

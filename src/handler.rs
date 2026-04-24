@@ -1,4 +1,4 @@
-use crate::agent::get_all_agents;
+use crate::agent::{find_subsume_candidate, get_all_agents};
 use crate::instructions::Instructions;
 use crate::output::{JsonResponse, OutputFormat};
 use crate::prompt;
@@ -13,8 +13,9 @@ use crate::tools::{
 use aisdk::core::LanguageModel;
 use aisdk::core::utils::step_count_is;
 use aisdk::core::{AssistantMessage, LanguageModelRequest, Message, UserMessage};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::collections::HashSet;
+use std::iter::once;
 use std::sync::{Arc, Mutex};
 
 use p1e_srt::SandboxConfig;
@@ -27,36 +28,43 @@ pub fn build_request(
     max_steps: u32,
 ) -> LanguageModelRequest<Model> {
     let skills = get_all_skills();
-
-    // Merge history mentions into the instructions for skill resolution
-    let mut scan = query.clone();
-    for entry in history {
-        if entry.role == Role::User {
-            scan.merge_mentions(&entry.content);
-        }
-    }
-
-    let format = OutputFormat::default();
     let agents = get_all_agents();
 
-    // Resolve pre-loaded skills from query/history mentions + agent auto-loads
-    let preloaded = prompt::resolve_preloaded_skills(&skills, &agents, &scan);
-    let preloaded_names: HashSet<String> = preloaded.iter().map(|s| s.name.clone()).collect();
-    let loaded_skills = Arc::new(Mutex::new(preloaded_names));
-    let system = prompt::system_prompt_with_loaded(&skills, &agents, format.is_json(), &preloaded);
+    // all mentioned skills from current and past user queries
+    let mut query = query.clone();
+    history
+        .iter()
+        .filter(|e| e.role == Role::User)
+        .for_each(|e| query.merge_mentions(&e.content));
 
-    let mut messages: Vec<Message> = Vec::new();
-    for entry in history {
-        let msg = match entry.role {
-            Role::User => Message::User(UserMessage::new(&entry.content)),
-            Role::Assistant => Message::Assistant(AssistantMessage::from(entry.content.clone())),
-            Role::System | Role::Tool => continue,
-        };
-        messages.push(msg);
-    }
-    messages.push(Message::User(UserMessage::new(query.raw())));
+    let format = OutputFormat::Default;
+    let sp = prompt::SystemPrompt::new(&skills, &agents)
+        .resolve(&query)
+        .with_json(format.is_json());
 
-    tracing::debug!(system = %system, query = %query.raw(), "agent:");
+    let needed_skills = &sp.loaded_skills;
+    let loaded_skills = Arc::new(Mutex::new(
+        needed_skills
+            .iter()
+            .map(ToString::to_string)
+            .collect::<HashSet<String>>(),
+    ));
+
+    let system = sp.render();
+
+    let messages = history
+        .iter()
+        .filter_map(|entry| match entry.role {
+            Role::User => Some(Message::User(UserMessage::new(&entry.content))),
+            Role::Assistant => Some(Message::Assistant(AssistantMessage::from(
+                entry.content.clone(),
+            ))),
+            _ => None,
+        })
+        .chain(once(Message::User(UserMessage::new(&query.raw))))
+        .collect();
+
+    tracing::debug!(system = %system, query = %query.raw, "agent:");
     let loaded_refs = Arc::new(Mutex::new(HashSet::new()));
     LanguageModelRequest::builder()
         .model(model.clone())
@@ -137,16 +145,16 @@ pub async fn handle_query(
     max_steps: u32,
 ) -> Result<()> {
     let agents = get_all_agents();
-    if let Some(agent_name) = crate::agent::find_subsume_candidate(query, &agents) {
+    if let Some(agent_name) = find_subsume_candidate(query, &agents) {
         let skills = get_all_skills();
         let subagent = Subagent::new(model.clone(), skills, agents, sandbox_settings.clone());
 
         tracing::info!(agent = %agent_name, "subsuming subagent role");
-        let result = subagent.execute(&agent_name, query.raw(), 0, None).await;
+        let result = subagent.execute(&agent_name, &query.raw, 0, None).await;
         match result {
             Ok(output) => {
                 let output = strip_control_tokens(&output);
-                session.add_user(query.raw())?;
+                session.add_user(&query.raw)?;
                 if !output.is_empty() {
                     if format.is_json() {
                         let json_resp = JsonResponse::new(
@@ -168,20 +176,29 @@ pub async fn handle_query(
         }
     }
 
-    let mut req = build_request(
-        model,
-        query,
-        session.history_entries(),
-        sandbox_settings,
-        max_steps,
-    );
+    let model_clone = model.clone();
+    let query_clone = query.clone();
+    let history_clone = session.history_entries().to_vec();
+    let sandbox_clone = sandbox_settings.clone();
 
-    let response = req.generate_text().await.context("generate_text failed")?;
+    let response = crate::utils::execute_with_retry("generate_text", move || {
+        let model = model_clone.clone();
+        let query = query_clone.clone();
+        let history = history_clone.clone();
+        let sandbox = sandbox_clone.clone();
+        async move {
+            let mut req = build_request(&model, &query, &history, sandbox, max_steps);
+            req.generate_text().await.map_err(|e| anyhow::anyhow!(e))
+        }
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!(e).context("generate_text failed"))?;
+
     let assistant_text = response.text().unwrap_or_default();
     let output = extract_output_text(&assistant_text, response.tool_results().as_deref());
     let output = strip_control_tokens(&output);
 
-    session.add_user(query.raw())?;
+    session.add_user(&query.raw)?;
 
     if output.is_empty() {
         return Ok(());

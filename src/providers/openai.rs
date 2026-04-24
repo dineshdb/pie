@@ -1,5 +1,6 @@
 use super::tool_compat::post_process_response;
 use crate::config::ResolvedProvider;
+use crate::utils::execute_with_retry;
 use aisdk::core::DynamicModel;
 use aisdk::core::capabilities::{
     AudioInputSupport, AudioOutputSupport, ImageInputSupport, ImageOutputSupport, ReasoningSupport,
@@ -13,6 +14,7 @@ use aisdk::core::language_model::{
 use aisdk::providers::OpenAICompatible;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use itertools::Itertools;
 
 /// Resolved model provider (OpenAI-compatible).
 #[derive(Debug, Clone)]
@@ -95,13 +97,6 @@ pub fn build_from_resolved(provider: &ResolvedProvider) -> Result<Model> {
         .api_key(&provider.api_key)
         .build()
         .context("failed to build OpenAI-compatible provider")?;
-
-    tracing::debug!(
-        model = %provider.model,
-        base_url = %provider.base_url,
-        "provider"
-    );
-
     Ok(Model { inner })
 }
 
@@ -113,46 +108,62 @@ pub async fn fetch_models(provider: &ResolvedProvider) -> Result<Vec<String>> {
         .context("failed to build reqwest client")?;
 
     let base_url = provider.base_url.trim_end_matches('/');
-    let url = if base_url.ends_with("/v1") {
-        format!("{base_url}/models")
-    } else {
-        format!("{base_url}/v1/models")
-    };
+    let url = format!("{base_url}/models");
+    let api_key_owned = provider.api_key.clone();
 
     tracing::info!(url = %url, "fetching models from API");
-    let mut request = client.get(&url);
-    if !provider.api_key.is_empty() {
-        request = request.header("Authorization", format!("Bearer {}", provider.api_key));
-    }
+    let response = execute_with_retry("fetch_models", move || {
+        let client = client.clone();
+        let url = url.clone();
+        let api_key = api_key_owned.clone();
 
-    let response = request.send().await.context("failed to fetch models")?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let error_text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "no error body".to_string());
-        anyhow::bail!("API error {status}: {error_text}");
-    }
+        async move {
+            let mut request = client.get(&url);
+            if !api_key.is_empty() {
+                request = request.header("Authorization", format!("Bearer {api_key}"));
+            }
+
+            let res = request.send().await;
+            match res {
+                Ok(r) if r.status().is_success() => Ok(r),
+                Ok(r) if crate::utils::is_retriable_status(r.status().as_u16()) => {
+                    Err(anyhow::anyhow!("API error {}", r.status()))
+                }
+                Ok(r) => {
+                    let status = r.status();
+                    let error_text = r
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "no error body".to_string());
+                    Err(anyhow::anyhow!("API error {status}: {error_text}"))
+                }
+                Err(e) => Err(anyhow::anyhow!(e).context("failed to fetch models")),
+            }
+        }
+    })
+    .await?;
 
     let data: serde_json::Value = response
         .json()
         .await
         .context("failed to parse models JSON")?;
 
-    let mut models = Vec::new();
-    if let Some(data_array) = data.get("data").and_then(|d| d.as_array()) {
-        for m in data_array {
-            if let Some(id) = m.get("id").and_then(|id| id.as_str()) {
-                models.push(id.to_string());
-            }
-        }
-    }
+    let models = data
+        .get("data")
+        .and_then(|d| d.as_array())
+        .map(|data_array| {
+            data_array
+                .iter()
+                .filter_map(|m| m.get("id").and_then(|id| id.as_str()))
+                .map(String::from)
+                .sorted()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
 
     if models.is_empty() {
         anyhow::bail!("No models found in provider response");
     }
 
-    models.sort();
     Ok(models)
 }

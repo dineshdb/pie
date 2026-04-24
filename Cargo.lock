@@ -1836,6 +1836,7 @@ dependencies = [
  "figment",
  "futures",
  "include_dir",
+ "itertools",
  "minijinja",
  "p1e-srt",
  "pulldown-cmark",
@@ -1843,6 +1844,7 @@ dependencies = [
  "r2d2_sqlite",
  "refinery",
  "reqwest",
+ "retry",
  "rusqlite",
  "schemars",
  "serde",
@@ -1852,6 +1854,7 @@ dependencies = [
  "tachyonfx",
  "tempfile",
  "tokio",
+ "tokio-stream",
  "tracing",
  "tracing-subscriber",
  "tui-textarea-2",
@@ -2396,6 +2399,15 @@ dependencies = [
  "pin-project-lite",
  "reqwest",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "retry"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1cab9bd343c737660e523ee69f788018f3db686d537d2fd0f99c9f747c1bda4f"
+dependencies = [
+ "rand 0.9.4",
 ]
 
 [[package]]
@@ -3080,6 +3092,18 @@ checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
 dependencies = [
  "rustls",
  "tokio",
+]
+
+[[package]]
+name = "tokio-stream"
+version = "0.1.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32da49809aab5c3bc678af03902d4ccddea2a87d028d86392a4b1560c6906c70"
+dependencies = [
+ "futures-core",
+ "pin-project-lite",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

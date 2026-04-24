@@ -1,15 +1,15 @@
 use crate::agent::Agent;
 use crate::instructions::Instructions;
-use crate::prompt;
+use crate::prompt::SystemPrompt;
 use crate::providers::Model;
 use crate::skill::Skill;
 use crate::tools::{
     execute_skill_script_tool, load_references_tool, load_skills_tool, read_file_tool,
     replace_tool, shell, write_file_tool,
 };
-use aisdk::core::LanguageModelRequest;
 use aisdk::core::tools::{Tool, ToolExecute};
 use aisdk::core::utils::step_count_is;
+use aisdk::core::{LanguageModelRequest, Message, UserMessage};
 use p1e_srt::SandboxConfig;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -18,6 +18,7 @@ use uuid::Uuid;
 const MAX_DEPTH: u32 = 2;
 
 /// Execution context for a single subagent invocation.
+#[derive(Clone)]
 pub(crate) struct Subagent {
     model: Model,
     skills: Vec<Skill>,
@@ -47,51 +48,8 @@ impl Subagent {
     pub fn load_skills(&self, names: &[&str]) {
         let mut loaded = crate::tools::safe_lock(&self.loaded_skills);
         for name in names {
-            loaded.insert((*name).to_string());
+            loaded.insert(name.to_string());
         }
-    }
-
-    fn build_user_message(&self, name: &str, query: &Instructions) -> String {
-        // Resolve skills from query mentions + the subagent name itself
-        let mut scan = query.clone();
-        scan.merge_mentions(&format!("/{name}"));
-        let resolved = prompt::resolve_mentioned(&scan, &self.skills);
-        self.load_skills(&resolved.iter().map(|s| s.name.as_str()).collect::<Vec<_>>());
-
-        // Also scan agent content for skill mentions if this is an agent
-        if let Some(agent) = self.agents.iter().find(|a| a.name == name) {
-            let agent_skills = prompt::resolve_mentioned(&agent.instructions(), &self.skills);
-            self.load_skills(
-                &agent_skills
-                    .iter()
-                    .map(|s| s.name.as_str())
-                    .collect::<Vec<_>>(),
-            );
-        }
-
-        let (date, pwd) = prompt::context_vars();
-        format!("Date: {date} Working directory: {pwd}\n\nQuery: {query}")
-    }
-
-    fn build_system_prompt(&self, name: &str) -> String {
-        let loaded_names = crate::tools::safe_lock(&self.loaded_skills).clone();
-        let loaded: Vec<&Skill> = self
-            .skills
-            .iter()
-            .filter(|s| loaded_names.contains(&s.name))
-            .collect();
-        let agent_name = self
-            .agents
-            .iter()
-            .find(|a| a.name == name)
-            .map(|a| a.name.as_str());
-        prompt::subagent_prompt(
-            crate::utils::git_repo_root().as_deref(),
-            &self.skills,
-            &self.agents,
-            agent_name,
-            &loaded,
-        )
     }
 
     fn build_tools(&self, depth: u32, parent_id: Option<Uuid>) -> Vec<Tool> {
@@ -133,16 +91,27 @@ impl Subagent {
             return Err(format!("'{name}' not found as agent or skill."));
         }
 
-        let sys = self.build_system_prompt(name);
-        let instr = Instructions::new(query);
-        let user_content = self.build_user_message(name, &instr);
+        // Build the "needed tree" of skills and agents from current query + subagent name.
+        let mut query = Instructions::new(query);
+        if is_skill {
+            query.mentions.insert(name.to_string());
+        }
+        if let Some(agent) = self.agents.iter().find(|a| a.name == name) {
+            query.merge_mentions(&agent.content);
+        }
 
-        let messages = vec![aisdk::core::Message::User(aisdk::core::UserMessage::new(
-            user_content,
-        ))];
+        let agent_name = if is_agent { Some(name) } else { None };
 
-        tracing::debug!(name, query, %sys, "subagent request");
+        let sp = SystemPrompt::new(&self.skills, &self.agents)
+            .with_agent(agent_name)
+            .resolve(&query);
 
+        self.load_skills(&sp.loaded_skills);
+        let sys = sp.render();
+        let user_content = format!("Query: {query}");
+        let messages = vec![Message::User(UserMessage::new(user_content))];
+
+        tracing::debug!(name, query = %query.raw, %sys, "subagent request");
         let tools = self.build_tools(depth, parent_id);
         let mut builder = LanguageModelRequest::builder()
             .model(self.model.clone())
@@ -154,6 +123,7 @@ impl Subagent {
         Ok(builder.stop_when(step_count_is(20)).build())
     }
 
+    #[allow(clippy::unused_async)]
     pub async fn execute(
         self,
         name: &str,
@@ -161,27 +131,35 @@ impl Subagent {
         depth: u32,
         parent_id: Option<Uuid>,
     ) -> Result<String, String> {
-        let mut req = self.build_request(name, query, depth, parent_id)?;
-        match req.generate_text().await {
-            Ok(r) => {
-                let text = r.text().unwrap_or_default();
-                tracing::debug!(name, len = text.len(), %text, "subagent done");
-                Ok(text)
+        let name_str = name.to_string();
+        let query_str = query.to_string();
+
+        let response = crate::utils::execute_with_retry("subagent_execute", move || {
+            let subagent = self.clone();
+            let name = name_str.clone();
+            let query = query_str.clone();
+
+            async move {
+                let mut req = subagent
+                    .build_request(&name, &query, depth, parent_id)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                req.generate_text().await.map_err(|e| anyhow::anyhow!(e))
             }
-            Err(e) => Err(format!("Subagent failed: {e}")),
-        }
+        })
+        .await
+        .map_err(|e| format!("Subagent failed: {e}"))?;
+
+        let text = response.text().unwrap_or_default();
+        tracing::debug!(name, len = text.len(), %text, "subagent done");
+        Ok(text)
     }
 }
-
-// ── Input schemas ──────────────────────────────────────────────────
 
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 struct SubagentInput {
     name: String,
     query: String,
 }
-
-// ── Tool creation ──────────────────────────────────────────────────
 
 #[allow(clippy::unwrap_used)]
 fn make_subagent_tool(
@@ -337,24 +315,20 @@ mod tests {
         Ok(())
     }
 
-    // ── User message building ──────────────────────────────────────
-
     #[test]
-    fn build_user_message_includes_query() -> anyhow::Result<()> {
-        let sub = new_subagent(vec![], vec![])?;
-        let query = Instructions::new("analyze this");
-        let msg = sub.build_user_message("explore", &query);
-        assert!(msg.contains("analyze this"));
-        assert!(msg.contains("Date:"));
-        assert!(msg.contains("Working directory:"));
-        Ok(())
-    }
-
-    #[test]
-    fn build_user_message_preloads_mentioned_skills() -> anyhow::Result<()> {
+    fn build_request_preloads_mentioned_skills() -> anyhow::Result<()> {
         let sub = new_subagent(vec![skill("bash", "commands", "content")], vec![])?;
-        let query = Instructions::new("run something");
-        sub.build_user_message("bash", &query);
+        let _ = sub.build_request("test", "/bash run something", 0, None);
+        // "test" is not found, but it should still scan the query.
+        // Wait, build_request returns Err if name not found.
+        let sub = new_subagent(
+            vec![
+                skill("bash", "commands", "content"),
+                skill("test", "d", "c"),
+            ],
+            vec![],
+        )?;
+        let _ = sub.build_request("test", "/bash run something", 0, None);
         let loaded = crate::tools::safe_lock(&sub.loaded_skills);
         assert!(
             loaded.contains("bash"),
@@ -364,7 +338,19 @@ mod tests {
     }
 
     #[test]
-    fn build_user_message_preloads_skills_from_agent_content() -> anyhow::Result<()> {
+    fn build_request_preloads_self_if_skill() -> anyhow::Result<()> {
+        let sub = new_subagent(vec![skill("bash", "commands", "content")], vec![])?;
+        let _ = sub.build_request("bash", "run something", 0, None);
+        let loaded = crate::tools::safe_lock(&sub.loaded_skills);
+        assert!(
+            loaded.contains("bash"),
+            "subagent that is a skill must preload itself"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn build_request_preloads_skills_from_agent_content() -> anyhow::Result<()> {
         let skills = vec![
             skill("explore", "explorer", "explore content"),
             skill("filesystem", "files", "fs content"),
@@ -375,8 +361,7 @@ mod tests {
             "Use /explore and /filesystem to analyze code.",
         )];
         let sub = new_subagent(skills, agents)?;
-        let query = Instructions::new("check this code");
-        sub.build_user_message("review", &query);
+        let _ = sub.build_request("review", "check this code", 0, None);
         let loaded = crate::tools::safe_lock(&sub.loaded_skills);
         assert!(
             loaded.contains("explore"),
@@ -385,49 +370,6 @@ mod tests {
         assert!(
             loaded.contains("filesystem"),
             "skills from agent content must be preloaded"
-        );
-        Ok(())
-    }
-
-    // ── System prompt building ─────────────────────────────────────
-
-    #[test]
-    fn build_system_prompt_with_agent_name() -> anyhow::Result<()> {
-        let agents = vec![agent("explore", "explorer", "You explore code.")];
-        let sub = new_subagent(vec![], agents)?;
-        let prompt = sub.build_system_prompt("explore");
-        assert!(
-            prompt.contains("explore"),
-            "agent name must appear in prompt"
-        );
-        assert!(
-            prompt.contains("You explore code."),
-            "agent content must appear in prompt"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn build_system_prompt_without_agent_name() -> anyhow::Result<()> {
-        let sub = new_subagent(vec![], vec![])?;
-        let prompt = sub.build_system_prompt("bash");
-        assert!(
-            !prompt.contains("specialized agent running as"),
-            "no agent persona for skill-only"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn build_system_prompt_includes_preloaded_skills() -> anyhow::Result<()> {
-        let skills = vec![skill("bash", "commands", "run commands")];
-        let sub = new_subagent(skills, vec![])?;
-        sub.load_skills(&["bash"]);
-        let prompt = sub.build_system_prompt("something");
-        assert!(prompt.contains("bash"), "preloaded skill must appear");
-        assert!(
-            prompt.contains("run commands"),
-            "preloaded skill content must appear"
         );
         Ok(())
     }
