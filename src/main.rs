@@ -61,7 +61,7 @@ use tracing_subscriber::EnvFilter;
 #[allow(clippy::struct_excessive_bools)]
 struct Cli {
     #[command(flatten)]
-    provider: config::ProviderConfig,
+    provider_config: config::ProviderConfig,
 
     #[arg(short, long)]
     debug: bool,
@@ -74,9 +74,9 @@ struct Cli {
     #[arg(long)]
     md: bool,
 
-    /// Config profile name (from ~/.pie/config.toml or .pie/config.toml)
+    /// Config provider name (from ~/.pie/pie.toml or .pie/pie.toml)
     #[arg(short, long)]
-    profile: Option<String>,
+    provider: Option<String>,
 
     /// Query to process
     query: Vec<String>,

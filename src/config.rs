@@ -25,7 +25,7 @@ pub fn logs_dir() -> PathBuf {
     dir
 }
 
-/// Provider configuration shared between CLI args and TOML profiles.
+/// Provider configuration shared between CLI args and TOML providers.
 #[derive(Debug, Clone, Default, Deserialize, Parser)]
 #[serde(default)]
 pub struct ProviderConfig {
@@ -47,9 +47,9 @@ pub struct ProviderConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PieConfig {
-    pub default_profile: Option<String>,
+    pub default_provider: Option<String>,
     #[serde(default)]
-    pub profiles: HashMap<String, ProviderConfig>,
+    pub providers: HashMap<String, ProviderConfig>,
     pub agent: Option<AgentConfig>,
     pub sandbox: Option<SandboxConfig>,
     pub output_format: Option<String>,
@@ -102,29 +102,29 @@ impl ProviderConfig {
 impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
     type Error = anyhow::Error;
     fn try_from((cli, pie): (Cli, PieConfig)) -> Result<Self, Self::Error> {
-        let profile_name = cli
-            .profile
+        let provider_name = cli
+            .provider
             .as_deref()
-            .or(pie.default_profile.as_deref())
+            .or(pie.default_provider.as_deref())
             .unwrap_or_default();
 
-        let profile = pie
-            .profiles
-            .get(profile_name)
+        let provider_cfg = pie
+            .providers
+            .get(provider_name)
             .cloned()
-            .context("profile not found")?;
+            .context("provider not found")?;
 
         let output_format = match (cli.output_format(), pie.output_format()) {
             (OutputFormat::Default, _) => pie.output_format(),
             _ => cli.output_format(),
         };
 
-        let provider = cli.provider.merge(profile);
+        let provider = cli.provider_config.merge(provider_cfg);
         let max_steps = pie.agent.as_ref().and_then(|a| a.max_steps).unwrap_or(25);
 
         let log_level = if cli.debug { "debug" } else { pie.log_level() };
         let mut resolved_provider = ResolvedProvider::try_from(provider.clone())?;
-        resolved_provider.name = profile_name.to_string();
+        resolved_provider.name = provider_name.to_string();
 
         Ok(Self {
             provider: resolved_provider,
@@ -152,10 +152,10 @@ impl TryFrom<ProviderConfig> for ResolvedProvider {
         Ok(ResolvedProvider {
             name: "default".to_string(), // Will be overwritten by ResolvedConfig conversion
             model: provider.model.context(
-                "base URL is required (set --base-url, OPENAI_BASE_URL, or config profile)",
+                "model is required (set --model, OPENAI_MODEL, or config provider)",
             )?,
             base_url: provider.base_url.context(
-                "base URL is required (set --base-url, OPENAI_BASE_URL, or config profile)",
+                "base URL is required (set --base-url, OPENAI_BASE_URL, or config provider)",
             )?,
             api_key: provider.api_key.unwrap_or_default(),
             temperature: provider.temperature,

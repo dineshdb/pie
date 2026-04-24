@@ -22,7 +22,8 @@ pub enum ActiveDialog {
     None,
     Help,
     ModelSelector {
-        provider_name: String,
+        providers: Vec<String>,
+        provider_idx: usize,
         models: Vec<String>,
         selected_idx: Option<usize>,
         is_loading: bool,
@@ -139,15 +140,17 @@ impl Component for ChatComponent {
                 );
             }
             ActiveDialog::ModelSelector {
-                provider_name,
+                providers,
+                provider_idx,
                 models,
                 selected_idx,
                 is_loading,
             } => {
+                let provider_name = providers.get(*provider_idx).cloned().unwrap_or_default();
                 let title = if provider_name.is_empty() {
                     "Select Model".to_string()
                 } else {
-                    format!("Select Model ({provider_name})")
+                    format!("Select Provider / Model ({provider_name})")
                 };
 
                 let current_model_idx = if *is_loading {
@@ -166,6 +169,8 @@ impl Component for ChatComponent {
                     super::super::widgets::dialog::Dialog::new(
                         &title,
                         super::super::widgets::model_selector::ModelSelectorOverlay {
+                            providers,
+                            provider_idx: *provider_idx,
                             models,
                             selected_idx: *selected_idx,
                             current_model_idx,
