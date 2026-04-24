@@ -14,6 +14,12 @@ pub struct ModelSelectorOverlay<'a> {
 
 impl Widget for ModelSelectorOverlay<'_> {
     fn render(self, area: Rect, buf: &mut tuirealm::ratatui::buffer::Buffer) {
+        tracing::debug!(
+            models = self.models.len(),
+            loading = self.is_loading,
+            error = ?self.error,
+            "rendering ModelSelectorOverlay"
+        );
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(3), Constraint::Min(0)])

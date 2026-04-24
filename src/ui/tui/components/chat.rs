@@ -250,12 +250,14 @@ impl ChatComponent {
                 None
             }
             StreamEvent::ModelList(models) => {
+                tracing::info!(count = models.len(), "received ModelList in ChatComponent");
                 if let ActiveDialog::ModelSelector {
                     providers,
                     provider_idx,
                     ..
                 } = &self.active_dialog
                 {
+                    tracing::info!(provider = %providers.get(*provider_idx).cloned().unwrap_or_default(), "updating ModelSelector state");
                     let models = models.clone();
                     let providers = providers.clone();
                     let provider_idx = *provider_idx;
@@ -272,6 +274,8 @@ impl ChatComponent {
                         })
                         .or(if models.is_empty() { None } else { Some(0) });
 
+                    tracing::info!(selected = ?selected_idx, "selected index determined");
+
                     self.active_dialog = ActiveDialog::ModelSelector {
                         providers,
                         provider_idx,
@@ -280,6 +284,8 @@ impl ChatComponent {
                         is_loading: false,
                         error: None,
                     };
+                } else {
+                    tracing::warn!(dialog = ?self.active_dialog, "received ModelList but ModelSelector is not active");
                 }
                 Some(Msg::Redraw)
             }
