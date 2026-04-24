@@ -30,7 +30,6 @@ pub enum ActiveDialog {
         error: Option<String>,
     },
 }
-
 pub struct ChatComponent {
     pub messages: Vec<ChatMessage>,
     pub render_cache: MessageRenderCache,
@@ -38,6 +37,9 @@ pub struct ChatComponent {
     pub response_idx: Option<usize>,
     pub active_dialog: ActiveDialog,
     pub current_model: String,
+    pub last_area: Rect,
+    pub cached_lines: Vec<tuirealm::ratatui::text::Line<'static>>,
+    pub last_width: usize,
 }
 
 impl ChatComponent {
@@ -49,6 +51,9 @@ impl ChatComponent {
             response_idx: None,
             active_dialog: ActiveDialog::None,
             current_model,
+            last_area: Rect::default(),
+            cached_lines: Vec::new(),
+            last_width: 0,
         }
     }
 
@@ -63,14 +68,15 @@ impl ChatComponent {
         self.messages.push(msg);
         self.render_cache.push();
         self.chat_state.auto_scroll = true;
+        self.cached_lines.clear();
     }
-
     pub fn clear_messages(&mut self) {
         self.messages.clear();
         self.render_cache.clear();
         self.response_idx = None;
         self.chat_state.scroll_offset = 0;
         self.chat_state.auto_scroll = true;
+        self.cached_lines.clear();
     }
 
     // ── Streaming lifecycle ──────────────────────────────────────────
@@ -78,6 +84,7 @@ impl ChatComponent {
     pub fn start_response(&mut self) {
         self.add_message(ChatMessage::response());
         self.response_idx = Some(self.messages.len() - 1);
+        self.cached_lines.clear();
     }
 
     pub fn update_response(&mut self, content: String) {
@@ -86,9 +93,9 @@ impl ChatComponent {
         {
             msg.set_content(content);
             self.chat_state.scroll_to_bottom();
+            self.cached_lines.clear();
         }
     }
-
     pub fn finish_stream(&mut self, output: String) {
         if let Some(idx) = self.response_idx {
             if let Some(msg) = self.messages.get_mut(idx) {
@@ -100,6 +107,7 @@ impl ChatComponent {
             self.render_cache.shift_remove(idx);
         }
         self.response_idx = None;
+        self.cached_lines.clear();
     }
 
     pub fn stream_error(&mut self, err: &str) {
@@ -119,14 +127,32 @@ impl ChatComponent {
     pub fn scroll_down(&mut self, amount: u16) {
         self.chat_state.scroll_down(amount);
     }
+
+    pub fn get_selected_text(&self) -> Option<String> {
+        self.chat_state
+            .selection
+            .map(|sel| sel.get_selected_text(&self.cached_lines))
+    }
 }
 
 impl Component for ChatComponent {
     fn view(&mut self, frame: &mut Frame, area: Rect) {
-        // Render chat in background
-        let lines =
-            chat::build_chat_lines(&self.messages, &mut self.render_cache, area.width as usize);
-        frame.render_stateful_widget(ChatView { lines: &lines }, area, &mut self.chat_state);
+        // 1. Rebuild cache only if width changed or content changed (cache cleared elsewhere)
+        if self.cached_lines.is_empty() || self.last_width != area.width as usize {
+            self.cached_lines =
+                chat::build_chat_lines(&self.messages, &mut self.render_cache, area.width as usize);
+            self.last_width = area.width as usize;
+        }
+        self.last_area = area;
+
+        // 2. Render visible part
+        frame.render_stateful_widget(
+            ChatView {
+                lines: &self.cached_lines,
+            },
+            area,
+            &mut self.chat_state,
+        );
 
         match &self.active_dialog {
             ActiveDialog::None => {}
@@ -136,7 +162,7 @@ impl Component for ChatComponent {
                         "Help",
                         super::super::widgets::help::HelpOverlay,
                     )
-                    .with_size(50, 60),
+                    .with_size(70, 70),
                     area,
                 );
             }
@@ -206,23 +232,56 @@ impl AppComponent<Msg, StreamEvent> for ChatComponent {
     fn on(&mut self, ev: &Event<StreamEvent>) -> Option<Msg> {
         match ev {
             Event::User(user_ev) => self.handle_user_event(user_ev),
-            Event::Mouse(ev) => self.handle_mouse_event(ev),
             Event::Keyboard(key) => self.handle_keyboard_event(key),
+            Event::Mouse(ev) => self.handle_mouse_event(*ev),
             _ => None,
         }
     }
 }
 
 impl ChatComponent {
-    fn handle_mouse_event(&mut self, ev: &MouseEvent) -> Option<Msg> {
+    fn handle_mouse_event(&mut self, ev: MouseEvent) -> Option<Msg> {
+        if self.active_dialog != ActiveDialog::None {
+            return None;
+        }
+
         match ev.kind {
-            MouseEventKind::ScrollUp => {
-                self.scroll_up(3);
-                Some(Msg::Redraw)
+            MouseEventKind::ScrollUp => Some(Msg::ScrollChat(-1)),
+            MouseEventKind::ScrollDown => Some(Msg::ScrollChat(1)),
+            MouseEventKind::Down(_) => {
+                if self
+                    .last_area
+                    .contains(tuirealm::ratatui::layout::Position::new(ev.column, ev.row))
+                {
+                    let rel_row = ev.row.saturating_sub(self.last_area.y) as usize;
+                    let rel_col = ev.column.saturating_sub(self.last_area.x) as usize;
+                    let abs_row = self.chat_state.scroll_offset as usize + rel_row;
+                    self.chat_state.start_selection(abs_row, rel_col);
+                    Some(Msg::Redraw)
+                } else {
+                    self.chat_state.clear_selection();
+                    Some(Msg::Redraw)
+                }
             }
-            MouseEventKind::ScrollDown => {
-                self.scroll_down(3);
-                Some(Msg::Redraw)
+            MouseEventKind::Drag(_) => {
+                if self.chat_state.selection.is_some() {
+                    let rel_row = ev.row.saturating_sub(self.last_area.y) as usize;
+                    let rel_col = ev.column.saturating_sub(self.last_area.x) as usize;
+                    let abs_row = self.chat_state.scroll_offset as usize + rel_row;
+                    self.chat_state.update_selection(abs_row, rel_col);
+                    Some(Msg::Redraw)
+                } else {
+                    None
+                }
+            }
+            MouseEventKind::Up(_) => {
+                if let Some(sel) = self.chat_state.selection
+                    && !sel.is_empty()
+                {
+                    Some(Msg::CopySelection)
+                } else {
+                    None
+                }
             }
             _ => None,
         }
@@ -392,11 +451,11 @@ impl ChatComponent {
         match (key.modifiers, &key.code) {
             (KeyModifiers::NONE, Key::PageUp) => {
                 self.scroll_up(20);
-                Some(Msg::ScrollUp(20))
+                Some(Msg::Redraw)
             }
             (KeyModifiers::NONE, Key::PageDown) => {
                 self.scroll_down(20);
-                Some(Msg::ScrollDown(20))
+                Some(Msg::Redraw)
             }
             _ => Some(Msg::KeyboardToInput(*key)),
         }

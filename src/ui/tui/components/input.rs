@@ -132,6 +132,7 @@ impl InputComponent {
         let lines: Vec<String> = text.lines().map(String::from).collect();
         let mut ta = TextArea::new(lines);
         apply_textarea_style(&mut ta);
+        ta.move_cursor(tui_textarea::CursorMove::End);
         self.textarea = ta;
         self.completion.reset();
         self.current_hint.clear();
@@ -182,14 +183,23 @@ impl InputComponent {
     }
 
     pub fn history_prev(&mut self) {
-        if let Some(text) = self.history.prev() {
+        let text = self.history.prev().map(ToOwned::to_owned);
+        if let Some(text) = text {
             self.set_input_text(&text);
         }
     }
 
     pub fn history_next(&mut self) {
-        if let Some(text) = self.history.next() {
+        let text = self.history.next().map(ToOwned::to_owned);
+        if let Some(text) = text {
             self.set_input_text(&text);
+        } else {
+            // At the end of history — clear input
+            let mut empty = TextArea::default();
+            apply_textarea_style(&mut empty);
+            self.textarea = empty;
+            self.completion.reset();
+            self.current_hint.clear();
         }
     }
 
@@ -230,8 +240,6 @@ impl InputComponent {
         self.textarea.lines().get(row).cloned().unwrap_or_default()
     }
 
-    // ── Keyboard handling ────────────────────────────────────────────
-
     pub fn handle_key_event(&mut self, key: &tuirealm::event::KeyEvent) -> Option<Msg> {
         if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, Key::Char('c')) {
             if self.is_streaming() {
@@ -246,10 +254,6 @@ impl InputComponent {
             && !self.is_streaming()
         {
             return Some(Msg::Submit(self.input_text()));
-        }
-
-        if matches!(key.code, Key::Char('?')) && self.is_input_empty() {
-            return Some(Msg::ToggleHelp);
         }
 
         if self.completions_active() {
@@ -285,17 +289,17 @@ impl InputComponent {
             (Key::Tab, KeyModifiers::NONE) => {
                 self.tab_complete();
             }
-            (Key::Up, KeyModifiers::NONE) => {
+            (Key::Up, KeyModifiers::NONE) if self.input_line_count() <= 1 => {
                 self.history_prev();
             }
-            (Key::Down, KeyModifiers::NONE) => {
+            (Key::Down, KeyModifiers::NONE) if self.input_line_count() <= 1 => {
                 self.history_next();
             }
             (Key::PageUp, KeyModifiers::NONE) => {
-                return Some(Msg::ScrollUp(5));
+                return Some(Msg::KeyboardScroll(-20));
             }
             (Key::PageDown, KeyModifiers::NONE) => {
-                return Some(Msg::ScrollDown(5));
+                return Some(Msg::KeyboardScroll(20));
             }
             (Key::Right, _)
                 if key.modifiers == KeyModifiers::NONE
@@ -378,10 +382,11 @@ impl InputComponent {
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, is_streaming: bool) {
         let is_empty = self.is_input_empty();
-        let text_lines: Vec<String> = if is_empty {
-            vec![String::new()]
+        let empty_line = vec![String::new()];
+        let text_lines: &[String] = if is_empty {
+            &empty_line
         } else {
-            self.textarea.lines().iter().map(String::from).collect()
+            self.textarea.lines()
         };
         let cursor = self.textarea.cursor();
 

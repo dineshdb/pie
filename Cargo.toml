@@ -27,6 +27,7 @@ path = "src/main.rs"
 [dependencies]
 aisdk = { git = "https://github.com/qretaio/aisdk", features = ["openaicompatible", "openai"] }
 anyhow = "1"
+arboard = "3"
 async-trait = "0.1"
 chrono = { version = "0.4.44", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }

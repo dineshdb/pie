@@ -7,7 +7,7 @@ use tuirealm::ratatui::widgets::{Block, Borders, Paragraph, Widget};
 const PROMPT: &str = "> ";
 
 pub struct InputView<'a> {
-    pub text_lines: Vec<String>,
+    pub text_lines: &'a [String],
     pub cursor_row: usize,
     pub placeholder: &'a str,
     pub hint: &'a str,
@@ -116,7 +116,7 @@ mod tests {
     #[test]
     fn empty_input_shows_placeholder() {
         let view = InputView {
-            text_lines: vec![String::new()],
+            text_lines: &[String::new()],
             cursor_row: 0,
             placeholder: "Type something",
             hint: "",
@@ -135,7 +135,7 @@ mod tests {
     #[test]
     fn input_with_text_shows_prompt_and_content() {
         let view = InputView {
-            text_lines: vec!["hello world".to_string()],
+            text_lines: &["hello world".to_string()],
             cursor_row: 0,
             placeholder: "",
             hint: "",
@@ -151,7 +151,7 @@ mod tests {
     #[test]
     fn streaming_input_has_colored_border() {
         let view = InputView {
-            text_lines: vec![String::new()],
+            text_lines: &[String::new()],
             cursor_row: 0,
             placeholder: "",
             hint: "",

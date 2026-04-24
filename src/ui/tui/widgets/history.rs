@@ -1,4 +1,7 @@
-use std::path::PathBuf;
+use std::{
+    cmp::{max, min},
+    path::PathBuf,
+};
 
 const MAX_HISTORY: usize = 10_000;
 
@@ -15,26 +18,14 @@ impl InputHistory {
         Self { cache, index, path }
     }
 
-    pub fn prev(&mut self) -> Option<String> {
-        if self.index > 0 {
-            self.index -= 1;
-            self.cache.get(self.index).cloned()
-        } else {
-            None
-        }
+    pub fn prev(&mut self) -> Option<&str> {
+        self.index = max(self.index - 1, 0);
+        self.cache.get(self.index).map(String::as_str)
     }
 
-    pub fn next(&mut self) -> Option<String> {
-        if self.index < self.cache.len() {
-            self.index += 1;
-            if self.index < self.cache.len() {
-                self.cache.get(self.index).cloned()
-            } else {
-                Some(String::new())
-            }
-        } else {
-            None
-        }
+    pub fn next(&mut self) -> Option<&str> {
+        self.index = min(self.index + 1, self.cache.len() - 1);
+        self.cache.get(self.index).map(String::as_str)
     }
 
     pub fn append(&mut self, text: &str) {

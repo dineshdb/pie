@@ -27,16 +27,18 @@ pub enum StreamEvent {
 pub enum Msg {
     Submit(String),
     Quit,
-    ToggleHelp,
     CloseHelp,
-
-    ScrollUp(u16),
-    ScrollDown(u16),
 
     StreamDone(String),
 
     KeyboardToInput(KeyEvent),
 
+    /// Explicitly scroll the chat view (e.g. mouse).
+    ScrollChat(i16),
+    /// Keyboard scroll request (may fall back to history).
+    KeyboardScroll(i16),
+    /// Copy selected text to clipboard.
+    CopySelection,
     /// Fetch models for a specific provider.
     FetchModels(String),
     /// Switch provider and model.

@@ -20,6 +20,7 @@ You MUST follow this workflow for every bug fix or feature:
 ## Patterns
 
 If you are fixing a bug:
+
 - **Think**: Why is this happening?
 - **Repro**: `cat > repro.py <<EOF ... EOF && python3 repro.py`
 - **Fix**: Use `replace`

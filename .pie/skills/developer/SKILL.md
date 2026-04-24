@@ -59,27 +59,7 @@ Before coding, identify:
 
 ## Step 3: Edit
 
-Make minimal, targeted changes. Use the filesystem skill patterns for file
-manipulation.
-
-```bash
-# Use Python for reliable edits (recommended)
-python3 << 'PYEOF'
-path = "src/main.rs"
-with open(path) as f:
-    content = f.read()
-content = content.replace("old code", "new code")
-with open(path, "w") as f:
-    f.write(content)
-print("Edited", path)
-PYEOF
-
-# Or create new files when necessary
-mkdir -p src/new_module
-cat > src/new_module/mod.rs << 'EOF'
-// content
-EOF
-```
+Make minimal, targeted changes.
 
 **Rules:**
 
@@ -199,11 +179,11 @@ cat -n <file>
 
 ```bash
 # In Rust
-println!("DEBUG: value = {:?}", value);
+println!("DEBUG: value = {value:?}");
 eprintln!("DEBUG: entered function");
 
 # In Python
-print(f"DEBUG: value = {value}", file=sys.stderr)
+print(f"DEBUG: value = {value}", file=sys.stder)
 import pdb; pdb.set_trace()  # Interactive debugger
 ```
 
@@ -325,3 +305,28 @@ grep -rn 'export\|function\|const' src/ | head -40        # TypeScript
 - **Minimize changes** -- The best code is no code; every line is a liability
 - **Correctness first** -- Make it work, make it clean, make it fast (in that
   order)
+
+## Testing
+
+After each change, run following tests to verify if the change is valid.
+
+- repo test
+- test.py gives a summary of issues in the codebase based on runtime behavior.
+  You should review the response and try to fix the issues.
+- You are not allowed to change tests just to make tests pass
+- Tests should check the behavior of the program (specs) instead of
+  implementation details
+
+## Architecture
+
+- You should always rethink the available codebase in terms of new feature being
+  added. Identify how it diverges, identifying places to trim, changes in
+  architecture and organization to slim down and /simplify the codebase to keep
+  it lean and clean.
+
+## Simplification
+
+- use early return patterns and other patterns for simpler logic
+- try to use dry principle but not always.
+- adhere to language and ecosystem standards.
+- give extra effort to reduce extra allocations, especially in loops

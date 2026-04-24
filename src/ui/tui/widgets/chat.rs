@@ -10,9 +10,82 @@ use tuirealm::ratatui::widgets::{Paragraph, StatefulWidget, Widget};
 const PREFIX_WIDTH: usize = 2;
 const RIGHT_PAD: usize = 1;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Position {
+    pub row: usize,
+    pub col: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Selection {
+    pub start: Position,
+    pub end: Position,
+}
+
+impl Selection {
+    pub fn is_empty(&self) -> bool {
+        self.start == self.end
+    }
+
+    pub fn contains(&self, row: usize, col: usize) -> bool {
+        let (s, e) = if self.start.row < self.end.row
+            || (self.start.row == self.end.row && self.start.col <= self.end.col)
+        {
+            (self.start, self.end)
+        } else {
+            (self.end, self.start)
+        };
+
+        if row < s.row || row > e.row {
+            return false;
+        }
+        if row == s.row && row == e.row {
+            return col >= s.col && col < e.col;
+        }
+        if row == s.row {
+            return col >= s.col;
+        }
+        if row == e.row {
+            return col < e.col;
+        }
+        true
+    }
+
+    pub fn get_selected_text(&self, lines: &[Line<'_>]) -> String {
+        let (s, e) = if self.start.row < self.end.row
+            || (self.start.row == self.end.row && self.start.col <= self.end.col)
+        {
+            (self.start, self.end)
+        } else {
+            (self.end, self.start)
+        };
+
+        let mut result = Vec::new();
+        for row in s.row..=e.row {
+            if let Some(line) = lines.get(row) {
+                let line_text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                let chars: Vec<char> = line_text.chars().collect();
+                let start_col = if row == s.row { s.col } else { 0 };
+                let end_col = if row == e.row { e.col } else { chars.len() };
+
+                if start_col < chars.len() {
+                    let end_idx = end_col.min(chars.len());
+                    if start_col < end_idx
+                        && let Some(sub) = chars.get(start_col..end_idx)
+                    {
+                        result.push(sub.iter().collect::<String>());
+                    }
+                }
+            }
+        }
+        result.join("\n")
+    }
+}
+
 pub struct ChatState {
     pub scroll_offset: u16,
     pub auto_scroll: bool,
+    pub selection: Option<Selection>,
 }
 
 impl ChatState {
@@ -20,6 +93,7 @@ impl ChatState {
         Self {
             scroll_offset: 0,
             auto_scroll: true,
+            selection: None,
         }
     }
 
@@ -35,6 +109,23 @@ impl ChatState {
 
     pub fn scroll_to_bottom(&mut self) {
         self.auto_scroll = true;
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selection = None;
+    }
+
+    pub fn start_selection(&mut self, row: usize, col: usize) {
+        self.selection = Some(Selection {
+            start: Position { row, col },
+            end: Position { row, col },
+        });
+    }
+
+    pub fn update_selection(&mut self, row: usize, col: usize) {
+        if let Some(ref mut sel) = self.selection {
+            sel.end = Position { row, col };
+        }
     }
 }
 
@@ -58,15 +149,53 @@ impl StatefulWidget for ChatView<'_> {
         }
 
         let visible_start = state.scroll_offset as usize;
+        let visible_count = inner_height as usize;
+        let visible_end = (visible_start + visible_count).min(self.lines.len());
+
+        // 1. Fast background render: only clone VISIBLE lines for Paragraph.
+        // This is O(visible_height) instead of O(total_history).
         let visible_lines: Vec<Line> = self
             .lines
-            .iter()
-            .skip(visible_start)
-            .take(inner_height as usize)
-            .cloned()
-            .collect();
+            .get(visible_start..visible_end)
+            .unwrap_or(&[])
+            .to_vec();
 
         Paragraph::new(visible_lines).render(area, buf);
+
+        // 2. Focused second pass: only apply REVERSED to selection cells
+        if let Some(ref sel) = state.selection {
+            let s_row = sel.start.row.min(sel.end.row);
+            let e_row = sel.start.row.max(sel.end.row);
+
+            let overlap_start = s_row.max(visible_start);
+            let overlap_end = e_row.min(visible_end.saturating_sub(1));
+
+            if overlap_start <= overlap_end {
+                for abs_row in overlap_start..=overlap_end {
+                    let y = abs_row - visible_start;
+                    if let Some(line) = self.lines.get(abs_row) {
+                        let mut x = 0;
+                        for span in &line.spans {
+                            let mut span_x = 0;
+                            for ch in span.content.chars() {
+                                let col = x + span_x;
+                                if sel.contains(abs_row, col)
+                                    && let Some(cell) = buf.cell_mut((
+                                        area.x + u16::try_from(col).unwrap_or(u16::MAX),
+                                        area.y + u16::try_from(y).unwrap_or(u16::MAX),
+                                    ))
+                                {
+                                    let style = cell.style().add_modifier(Modifier::REVERSED);
+                                    cell.set_style(style);
+                                }
+                                span_x += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
+                            }
+                            x += span_x;
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -112,20 +241,8 @@ pub fn build_chat_lines(
                 lines.push(Line::raw(""));
             }
             let is_latest = render_pos == last_rendered;
-            let prefix = message_prefix(msg.role, is_latest);
-            let rendered =
-                cache.get_or_render(msg.role, &msg.content, msg.is_response(), msg_idx, width);
-
-            for (i, line) in rendered.iter().enumerate() {
-                let pfx = if i == 0 {
-                    prefix.clone()
-                } else {
-                    continuation_prefix()
-                };
-                let mut spans = vec![pfx];
-                spans.extend(line.spans.iter().cloned());
-                lines.push(Line::from(spans));
-            }
+            let rendered = cache.get_or_render(msg.role, &msg.content, is_latest, msg_idx, width);
+            lines.extend(rendered.iter().cloned());
         }
 
         // Blank separator: only before user messages
@@ -147,7 +264,9 @@ fn append_welcome_line(lines: &mut Vec<Line<'static>>, content: &str, _width: us
     let green = Style::default().fg(Color::Green);
 
     // "Welcome to pie! Type ? for help."
-    let mut spans = vec![Span::styled("  ", Style::default())];
+    let mut spans = vec![
+        Span::styled("  ", Style::default().fg(Color::DarkGray)), // Match prefix width
+    ];
     let mut rest = content;
     while let Some(pos) = rest.find("pie") {
         if pos > 0 {
@@ -178,8 +297,10 @@ fn append_tool_lines(lines: &mut Vec<Line<'static>>, content: &str, width: usize
     let (call, output) = content.split_once(" → ").unwrap_or((content, ""));
 
     let call_text = truncate_str(call, width);
+    let prefix = Span::styled("  ", Style::default().fg(Color::DarkGray));
+
     lines.push(Line::from(vec![
-        Span::styled("  ", Style::default()),
+        prefix.clone(),
         Span::styled(call_text, Style::default().fg(Color::Magenta)),
     ]));
 
@@ -189,27 +310,11 @@ fn append_tool_lines(lines: &mut Vec<Line<'static>>, content: &str, width: usize
             .fg(Color::DarkGray)
             .add_modifier(Modifier::DIM);
         lines.push(Line::from(vec![
-            Span::styled("  └ ", dim),
+            prefix,
+            Span::styled("└ ", dim),
             Span::styled(output_text, dim),
         ]));
     }
-}
-
-fn message_prefix(role: Role, is_latest: bool) -> Span<'static> {
-    match role {
-        Role::User if is_latest => Span::styled(
-            "> ",
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Role::User => Span::styled("> ", Style::default().fg(Color::DarkGray)),
-        _ => Span::styled("  ", Style::default().fg(Color::DarkGray)),
-    }
-}
-
-fn continuation_prefix() -> Span<'static> {
-    Span::styled("  ", Style::default().fg(Color::DarkGray))
 }
 
 pub(crate) fn truncate_str(s: &str, max_len: usize) -> String {

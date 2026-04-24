@@ -12,7 +12,8 @@ suggestions.
 
 # Gather Context
 
-Load /repo and run `repo context` to understand the project. For branch reviews, also run:
+Load /repo and run `repo context` to understand the project. For branch reviews,
+also run:
 
 ```bash
 git diff main...HEAD --stat

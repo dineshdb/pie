@@ -5,6 +5,7 @@ use tuirealm::ratatui::text::Line;
 struct RenderedCache {
     width: usize,
     content: String,
+    is_latest: bool,
     lines: Vec<Line<'static>>,
 }
 
@@ -31,7 +32,7 @@ impl MessageRenderCache {
         &mut self,
         role: Role,
         content: &str,
-        _is_streaming: bool,
+        is_latest: bool,
         index: usize,
         width: usize,
     ) -> &[Line<'static>] {
@@ -39,11 +40,14 @@ impl MessageRenderCache {
             .entries
             .get(index)
             .and_then(|e| e.as_ref())
-            .is_none_or(|c| c.width != width || c.content != content);
+            .is_none_or(|c| c.width != width || c.content != content || c.is_latest != is_latest);
 
         if needs_rerender {
             let color = role_color(role);
-            let lines = if matches!(role, Role::Assistant) && !content.is_empty() {
+            let prefix = message_prefix(role, is_latest);
+            let cont_prefix = continuation_prefix();
+
+            let raw_lines = if matches!(role, Role::Assistant) && !content.is_empty() {
                 super::markdown::render_markdown(content, width, color)
             } else {
                 content
@@ -61,6 +65,21 @@ impl MessageRenderCache {
                     .collect()
             };
 
+            let lines = raw_lines
+                .into_iter()
+                .enumerate()
+                .map(|(i, line)| {
+                    let pfx = if i == 0 {
+                        prefix.clone()
+                    } else {
+                        cont_prefix.clone()
+                    };
+                    let mut spans = vec![pfx];
+                    spans.extend(line.spans);
+                    Line::from(spans)
+                })
+                .collect();
+
             // Grow entries if needed
             while self.entries.len() <= index {
                 self.entries.push(None);
@@ -69,6 +88,7 @@ impl MessageRenderCache {
                 *entry = Some(RenderedCache {
                     width,
                     content: content.to_string(),
+                    is_latest,
                     lines,
                 });
             }
@@ -100,6 +120,25 @@ fn role_color(role: Role) -> Color {
         Role::User => Color::White,
         Role::Assistant => Color::Gray,
         Role::System => Color::Yellow,
-        Role::Tool => Color::DarkGray, // fallback — tool messages bypass the cache
+        Role::Tool => Color::DarkGray,
     }
+}
+
+fn message_prefix(role: Role, is_latest: bool) -> tuirealm::ratatui::text::Span<'static> {
+    use tuirealm::ratatui::style::Modifier;
+    use tuirealm::ratatui::text::Span;
+    match role {
+        Role::User if is_latest => Span::styled(
+            "> ",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Role::User => Span::styled("> ", Style::default().fg(Color::DarkGray)),
+        _ => Span::styled("  ", Style::default().fg(Color::DarkGray)),
+    }
+}
+
+fn continuation_prefix() -> tuirealm::ratatui::text::Span<'static> {
+    tuirealm::ratatui::text::Span::styled("  ", Style::default().fg(Color::DarkGray))
 }
