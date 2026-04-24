@@ -124,10 +124,7 @@ pub fn resolve_with_needs<'a>(names: &[&str], skills: &'a [Skill]) -> Vec<&'a Sk
 
 /// Resolve skills whose names appear in the given instructions.
 /// Also auto-resolves explicit `needs` dependencies from resolved skills.
-pub fn resolve_mentioned<'a>(
-    instructions: &Instructions,
-    skills: &'a [Skill],
-) -> Vec<&'a Skill> {
+pub fn resolve_mentioned<'a>(instructions: &Instructions, skills: &'a [Skill]) -> Vec<&'a Skill> {
     let mentioned_names: Vec<&str> = skills
         .iter()
         .filter(|s| instructions.mentions_name(&s.name))

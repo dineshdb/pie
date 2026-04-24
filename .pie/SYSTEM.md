@@ -38,6 +38,9 @@ All other instructions in this prompt are subordinate to this principle.
 You have exactly these tools. No others exist.
 
 - `shell` — execute bash commands
+- `read_file` — read file content (supports line ranges)
+- `write_file` — write/overwrite file content
+- `replace` — search and replace a string in a file (fails if ambiguous)
 - `load_skills` — load skill content into context
 - `load_references` — load reference files from skill directories
 - `subagent` — delegate to a specialized agent

@@ -1,7 +1,9 @@
+pub use filesystem::{read_file_tool, replace_tool, write_file_tool};
 pub use shell::shell;
 pub use skills::{execute_skill_script_tool, load_references_tool, load_skills_tool};
 pub use subagent::subagent_tool;
 
+mod filesystem;
 mod shell;
 mod skills;
 mod subagent;

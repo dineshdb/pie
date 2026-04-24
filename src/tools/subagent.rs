@@ -3,7 +3,10 @@ use crate::instructions::Instructions;
 use crate::prompt;
 use crate::providers::Model;
 use crate::skill::Skill;
-use crate::tools::{execute_skill_script_tool, load_references_tool, load_skills_tool, shell};
+use crate::tools::{
+    execute_skill_script_tool, load_references_tool, load_skills_tool, read_file_tool,
+    replace_tool, shell, write_file_tool,
+};
 use aisdk::core::LanguageModelRequest;
 use aisdk::core::tools::{Tool, ToolExecute};
 use aisdk::core::utils::step_count_is;
@@ -44,7 +47,7 @@ impl Subagent {
     pub fn load_skills(&self, names: &[&str]) {
         let mut loaded = crate::tools::safe_lock(&self.loaded_skills);
         for name in names {
-            loaded.insert(name.to_string());
+            loaded.insert((*name).to_string());
         }
     }
 
@@ -94,6 +97,9 @@ impl Subagent {
     fn build_tools(&self, depth: u32, parent_id: Option<Uuid>) -> Vec<Tool> {
         let mut tools = vec![
             shell(self.sandbox_settings.clone()),
+            read_file_tool(),
+            write_file_tool(),
+            replace_tool(),
             load_skills_tool(self.skills.clone(), Some(self.loaded_skills.clone())),
             load_references_tool(self.loaded_refs.clone()),
             execute_skill_script_tool(self.sandbox_settings.clone()),
@@ -128,14 +134,14 @@ impl Subagent {
         }
 
         let sys = self.build_system_prompt(name);
-        let query = Instructions::new(query);
-        let user_content = self.build_user_message(name, &query);
+        let instr = Instructions::new(query);
+        let user_content = self.build_user_message(name, &instr);
 
         let messages = vec![aisdk::core::Message::User(aisdk::core::UserMessage::new(
             user_content,
         ))];
 
-        tracing::debug!(name, query = %query.raw(), %sys, "subagent");
+        tracing::debug!(name, query, %sys, "subagent");
 
         let tools = self.build_tools(depth, parent_id);
         let mut req = LanguageModelRequest::builder()

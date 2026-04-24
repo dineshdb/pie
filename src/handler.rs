@@ -6,7 +6,8 @@ use crate::providers::Model;
 use crate::session::{Role, Session};
 use crate::skill::get_all_skills;
 use crate::tools::{
-    execute_skill_script_tool, load_references_tool, load_skills_tool, shell, subagent_tool,
+    execute_skill_script_tool, load_references_tool, load_skills_tool, read_file_tool,
+    replace_tool, shell, subagent_tool, write_file_tool,
 };
 use aisdk::core::LanguageModel;
 use aisdk::core::utils::step_count_is;
@@ -61,6 +62,9 @@ pub fn build_request(
         .system(&system)
         .messages(messages)
         .with_tool(shell(sandbox_settings.clone()))
+        .with_tool(read_file_tool())
+        .with_tool(write_file_tool())
+        .with_tool(replace_tool())
         .with_tool(load_skills_tool(
             skills.clone(),
             Some(loaded_skills.clone()),
