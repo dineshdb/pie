@@ -1,6 +1,7 @@
 use tuirealm::ratatui::layout::{Constraint, Direction, Layout, Rect};
 use tuirealm::ratatui::style::{Color, Modifier, Style};
-use tuirealm::ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Widget};
+use tuirealm::ratatui::text::Line;
+use tuirealm::ratatui::widgets::{Block, Borders, List, ListItem, ListState, Tabs, Widget};
 
 pub struct ModelSelectorOverlay<'a> {
     pub providers: &'a [String],
@@ -25,30 +26,30 @@ impl Widget for ModelSelectorOverlay<'_> {
             .constraints([Constraint::Length(3), Constraint::Min(0)])
             .split(area);
 
-        // Render providers
-        let providers_text: String = self
+        // Render providers using Tabs widget
+        let titles: Vec<Line> = self
             .providers
             .iter()
-            .enumerate()
-            .map(|(i, p)| {
-                if i == self.provider_idx {
-                    format!(" [{p}] ")
-                } else {
-                    format!("  {p}  ")
-                }
-            })
+            .map(|p| Line::from(p.as_str()))
             .collect();
 
-        let providers_para = Paragraph::new(providers_text)
+        let tabs = Tabs::new(titles)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .title(" Providers (Left/Right) "),
             )
-            .style(Style::default().fg(Color::Cyan));
+            .select(self.provider_idx)
+            .style(Style::default().fg(Color::Cyan))
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            );
 
         if let Some(p_area) = chunks.first() {
-            providers_para.render(*p_area, buf);
+            tabs.render(*p_area, buf);
         }
 
         if let Some(err) = self.error {
