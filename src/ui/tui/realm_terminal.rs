@@ -17,12 +17,15 @@ use crate::ui::tui::realm::{App, Id, Msg, StreamEvent, StreamPort};
 use crate::ui::tui::state::ChatMessage;
 use anyhow::Result;
 use p1e_srt::SandboxConfig;
+use std::io::stdout;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tuirealm::application::PollStrategy;
 use tuirealm::listener::EventListenerCfg;
 use tuirealm::ratatui::backend::CrosstermBackend;
+use tuirealm::ratatui::crossterm::event::EnableMouseCapture;
+use tuirealm::ratatui::crossterm::execute;
 
 type Terminal = tuirealm::ratatui::Terminal<CrosstermBackend<std::io::Stdout>>;
 
@@ -312,6 +315,9 @@ pub async fn run_tui(
 ) -> Result<()> {
     let mut terminal = tuirealm::ratatui::init();
     terminal.clear()?;
+
+    // needed so that `MouseEvents` don't get turned into keyboard events.
+    execute!(stdout(), EnableMouseCapture)?;
 
     // Build initial messages
     let mut messages = vec![ChatMessage::system("Welcome to pie! Type ? for help.")];

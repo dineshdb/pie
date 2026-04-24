@@ -30,7 +30,6 @@ anyhow = "1"
 async-trait = "0.1"
 chrono = { version = "0.4.44", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
-crossterm = "0.29"
 dirs.workspace = true
 figment = { version = "0.10", features = ["toml"] }
 futures = "0.3"
@@ -54,7 +53,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tui-textarea-2 = "0.10"
-tuirealm = { version = "4.0", features = ["crossterm"] }
+tuirealm = { version = "4.0", features = ["termion"] }
 unicode-width = "0.2"
 uuid = { version = "1", features = ["v7"] }
 

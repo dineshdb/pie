@@ -9,7 +9,7 @@ use crate::ui::tui::widgets::render_cache::MessageRenderCache;
 use crate::ui::tui::widgets::tool_display::ToolCallResult;
 use tuirealm::command::{Cmd, CmdResult};
 use tuirealm::component::{AppComponent, Component};
-use tuirealm::event::{Event, Key, KeyModifiers};
+use tuirealm::event::{Event, Key, KeyModifiers, MouseEvent, MouseEventKind};
 use tuirealm::props::{AttrValue, Attribute, QueryResult};
 use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::Rect;
@@ -206,6 +206,7 @@ impl AppComponent<Msg, StreamEvent> for ChatComponent {
     fn on(&mut self, ev: &Event<StreamEvent>) -> Option<Msg> {
         match ev {
             Event::User(user_ev) => self.handle_user_event(user_ev),
+            Event::Mouse(ev) => self.handle_mouse_event(ev),
             Event::Keyboard(key) => self.handle_keyboard_event(key),
             _ => None,
         }
@@ -213,6 +214,20 @@ impl AppComponent<Msg, StreamEvent> for ChatComponent {
 }
 
 impl ChatComponent {
+    fn handle_mouse_event(&mut self, ev: &MouseEvent) -> Option<Msg> {
+        match ev.kind {
+            MouseEventKind::ScrollUp => {
+                self.scroll_up(3);
+                Some(Msg::Redraw)
+            }
+            MouseEventKind::ScrollDown => {
+                self.scroll_down(3);
+                Some(Msg::Redraw)
+            }
+            _ => None,
+        }
+    }
+
     fn handle_user_event(&mut self, ev: &StreamEvent) -> Option<Msg> {
         match ev {
             StreamEvent::Delta(s) => {

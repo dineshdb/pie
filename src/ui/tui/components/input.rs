@@ -84,8 +84,6 @@ impl InputComponent {
         }
     }
 
-    // ── Textarea helpers ─────────────────────────────────────────────
-
     pub fn input_text(&self) -> String {
         self.textarea.lines().join("\n")
     }
@@ -96,13 +94,6 @@ impl InputComponent {
 
     pub fn input_line_count(&self) -> usize {
         self.textarea.lines().len().max(1)
-    }
-
-    fn cursor_is_at_first_line_start(&self) -> bool {
-        let lines = self.textarea.lines();
-        let cursor = self.textarea.cursor();
-        lines.len() == 1 && lines.first().is_some_and(String::is_empty)
-            || (cursor.0, cursor.1) == (0, 0)
     }
 
     fn cursor_is_at_end(&self) -> bool {
@@ -190,13 +181,13 @@ impl InputComponent {
         !self.current_hint.is_empty()
     }
 
-    fn history_prev(&mut self) {
+    pub fn history_prev(&mut self) {
         if let Some(text) = self.history.prev() {
             self.set_input_text(&text);
         }
     }
 
-    fn history_next(&mut self) {
+    pub fn history_next(&mut self) {
         if let Some(text) = self.history.next() {
             self.set_input_text(&text);
         }
@@ -294,18 +285,16 @@ impl InputComponent {
             (Key::Tab, KeyModifiers::NONE) => {
                 self.tab_complete();
             }
-            (Key::Up, _) if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            (Key::Up, KeyModifiers::NONE) => {
                 self.history_prev();
             }
-            (Key::Down, _) if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            (Key::Down, KeyModifiers::NONE) => {
                 self.history_next();
             }
-            (Key::Up, _)
-                if key.modifiers == KeyModifiers::NONE && self.cursor_is_at_first_line_start() =>
-            {
+            (Key::PageUp, KeyModifiers::NONE) => {
                 return Some(Msg::ScrollUp(5));
             }
-            (Key::Down, _) if key.modifiers == KeyModifiers::NONE && self.cursor_is_at_end() => {
+            (Key::PageDown, KeyModifiers::NONE) => {
                 return Some(Msg::ScrollDown(5));
             }
             (Key::Right, _)
