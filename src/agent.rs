@@ -1,11 +1,11 @@
+use crate::config::EMBEDDED_PIE_DIR;
+use crate::instructions::Instructions;
 use crate::skill::split_frontmatter;
-use include_dir::{Dir, include_dir};
+use include_dir::Dir;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use strum::{AsRefStr, EnumString};
-
-static EMBEDDED_PIE_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/.pie");
 
 /// Embedded agents directory (from .pie/agents/ in the crate root).
 pub fn embedded_agents_dir() -> Option<&'static Dir<'static>> {
@@ -46,6 +46,13 @@ pub struct Agent {
     pub model: Option<String>,
     pub temperature: Option<f32>,
     pub content: String,
+}
+
+impl Agent {
+    /// Parse this agent's content for `/mentions` of skills/agents.
+    pub fn instructions(&self) -> Instructions {
+        Instructions::new(&self.content)
+    }
 }
 
 /// Serde-deserializable frontmatter for agent files.
@@ -170,11 +177,14 @@ pub fn get_all_agents() -> Vec<Agent> {
     agents
 }
 
-/// Resolve agents mentioned as `/agent-name` in the given sources.
-pub fn resolve_mentioned_agents<'a>(sources: &[&str], agents: &'a [Agent]) -> Vec<&'a Agent> {
+/// Resolve agents whose names appear in the given instructions.
+pub fn resolve_mentioned_agents<'a>(
+    instructions: &Instructions,
+    agents: &'a [Agent],
+) -> Vec<&'a Agent> {
     agents
         .iter()
-        .filter(|a| sources.iter().any(|s| s.contains(&format!("/{}", a.name))))
+        .filter(|a| instructions.mentions_name(&a.name))
         .collect()
 }
 
@@ -250,7 +260,8 @@ mod tests {
                 content: "Think step by step.".into(),
             },
         ];
-        let mentioned = resolve_mentioned_agents(&["/reviewer check this"], &agents);
+        let instr = Instructions::new("/reviewer check this");
+        let mentioned = resolve_mentioned_agents(&instr, &agents);
         assert_eq!(mentioned.len(), 1);
         assert_eq!(
             mentioned
@@ -272,7 +283,8 @@ mod tests {
             temperature: None,
             content: String::new(),
         }];
-        let mentioned = resolve_mentioned_agents(&["nothing relevant"], &agents);
+        let instr = Instructions::new("nothing relevant");
+        let mentioned = resolve_mentioned_agents(&instr, &agents);
         assert!(mentioned.is_empty());
     }
 }

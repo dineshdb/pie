@@ -1,4 +1,5 @@
-use include_dir::{Dir, include_dir};
+use crate::config::EMBEDDED_PIE_DIR;
+use include_dir::Dir;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::fs;
@@ -24,8 +25,6 @@ struct SkillFrontmatter {
 fn skills_root() -> PathBuf {
     crate::config::pie_home().join("skills")
 }
-
-static EMBEDDED_PIE_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/.pie");
 
 /// Embedded skills directory (from .pie/skills/ in the crate root).
 fn embedded_skills_dir() -> Option<&'static Dir<'static>> {

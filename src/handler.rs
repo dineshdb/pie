@@ -1,4 +1,5 @@
 use crate::agent::get_all_agents;
+use crate::instructions::Instructions;
 use crate::output::{JsonResponse, OutputFormat};
 use crate::prompt;
 use crate::providers::Model;
@@ -18,17 +19,18 @@ use p1e_srt::SandboxConfig;
 
 pub fn build_request(
     model: &Model,
-    query: &str,
+    query: &Instructions,
     history: &[crate::session::HistoryEntry],
     sandbox_settings: Arc<SandboxConfig>,
     max_steps: u32,
 ) -> LanguageModelRequest<Model> {
     let skills = get_all_skills();
 
-    let mut scan_sources: Vec<&str> = vec![query];
+    // Merge history mentions into the instructions for skill resolution
+    let mut scan = query.clone();
     for entry in history {
         if entry.role == Role::User {
-            scan_sources.push(&entry.content);
+            scan.merge_mentions(&entry.content);
         }
     }
 
@@ -36,7 +38,7 @@ pub fn build_request(
     let agents = get_all_agents();
 
     // Resolve pre-loaded skills from query/history mentions + agent auto-loads
-    let preloaded = prompt::resolve_preloaded_skills(&skills, &agents, &scan_sources);
+    let preloaded = prompt::resolve_preloaded_skills(&skills, &agents, &scan);
     let preloaded_names: HashSet<String> = preloaded.iter().map(|s| s.name.clone()).collect();
     let loaded_skills = Arc::new(Mutex::new(preloaded_names));
     let system = prompt::system_prompt_with_loaded(&skills, &agents, format.is_json(), &preloaded);
@@ -50,9 +52,9 @@ pub fn build_request(
         };
         messages.push(msg);
     }
-    messages.push(Message::User(UserMessage::new(query)));
+    messages.push(Message::User(UserMessage::new(query.raw())));
 
-    tracing::debug!(system = %system, query, "agent:");
+    tracing::debug!(system = %system, query = %query.raw(), "agent:");
     let loaded_refs = Arc::new(Mutex::new(HashSet::new()));
     LanguageModelRequest::builder()
         .model(model.clone())
@@ -123,7 +125,7 @@ pub fn extract_output_text(
 
 pub async fn handle_query(
     model: &mut Model,
-    query: &str,
+    query: &Instructions,
     session: &mut Session,
     format: OutputFormat,
     sandbox_settings: Arc<SandboxConfig>,
@@ -142,7 +144,7 @@ pub async fn handle_query(
     let output = extract_output_text(&assistant_text, response.tool_results().as_deref());
     let output = strip_control_tokens(&output);
 
-    session.add_user(query)?;
+    session.add_user(query.raw())?;
 
     if output.is_empty() {
         return Ok(());

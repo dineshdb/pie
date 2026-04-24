@@ -1,4 +1,5 @@
 use crate::agent::Agent;
+use crate::instructions::Instructions;
 use crate::prompt;
 use crate::providers::Model;
 use crate::skill::Skill;
@@ -40,25 +41,29 @@ impl Subagent {
         }
     }
 
-    pub fn preload_skills(&self, names: &[String]) {
+    pub fn load_skills(&self, names: &[&str]) {
         let mut loaded = crate::tools::safe_lock(&self.loaded_skills);
         for name in names {
-            loaded.insert(name.clone());
+            loaded.insert(name.to_string());
         }
     }
 
-    fn build_user_message(&self, name: &str, query: &str) -> String {
-        let query_with_mention = format!("/{name} {query}");
-        let resolved = prompt::resolve_mentioned(&[&query_with_mention], &self.skills);
-        let resolved_names: Vec<String> = resolved.iter().map(|s| s.name.clone()).collect();
-        self.preload_skills(&resolved_names);
+    fn build_user_message(&self, name: &str, query: &Instructions) -> String {
+        // Resolve skills from query mentions + the subagent name itself
+        let mut scan = query.clone();
+        scan.merge_mentions(&format!("/{name}"));
+        let resolved = prompt::resolve_mentioned(&scan, &self.skills);
+        self.load_skills(&resolved.iter().map(|s| s.name.as_str()).collect::<Vec<_>>());
 
         // Also scan agent content for skill mentions if this is an agent
         if let Some(agent) = self.agents.iter().find(|a| a.name == name) {
-            let agent_skills = prompt::resolve_mentioned(&[agent.content.as_str()], &self.skills);
-            let agent_skill_names: Vec<String> =
-                agent_skills.iter().map(|s| s.name.clone()).collect();
-            self.preload_skills(&agent_skill_names);
+            let agent_skills = prompt::resolve_mentioned(&agent.instructions(), &self.skills);
+            self.load_skills(
+                &agent_skills
+                    .iter()
+                    .map(|s| s.name.as_str())
+                    .collect::<Vec<_>>(),
+            );
         }
 
         let (date, pwd) = prompt::context_vars();
@@ -123,13 +128,14 @@ impl Subagent {
         }
 
         let sys = self.build_system_prompt(name);
-        let user_content = self.build_user_message(name, query);
+        let query = Instructions::new(query);
+        let user_content = self.build_user_message(name, &query);
 
         let messages = vec![aisdk::core::Message::User(aisdk::core::UserMessage::new(
             user_content,
         ))];
 
-        tracing::debug!(name, query, %sys, "subagent");
+        tracing::debug!(name, query = %query.raw(), %sys, "subagent");
 
         let tools = self.build_tools(depth, parent_id);
         let mut req = LanguageModelRequest::builder()
@@ -318,7 +324,8 @@ mod tests {
     #[test]
     fn build_user_message_includes_query() -> anyhow::Result<()> {
         let sub = new_subagent(vec![], vec![])?;
-        let msg = sub.build_user_message("explore", "analyze this");
+        let query = Instructions::new("analyze this");
+        let msg = sub.build_user_message("explore", &query);
         assert!(msg.contains("analyze this"));
         assert!(msg.contains("Date:"));
         assert!(msg.contains("Working directory:"));
@@ -328,7 +335,8 @@ mod tests {
     #[test]
     fn build_user_message_preloads_mentioned_skills() -> anyhow::Result<()> {
         let sub = new_subagent(vec![skill("bash", "commands", "content")], vec![])?;
-        sub.build_user_message("bash", "run something");
+        let query = Instructions::new("run something");
+        sub.build_user_message("bash", &query);
         let loaded = crate::tools::safe_lock(&sub.loaded_skills);
         assert!(
             loaded.contains("bash"),
@@ -349,7 +357,8 @@ mod tests {
             "Use /explore and /filesystem to analyze code.",
         )];
         let sub = new_subagent(skills, agents)?;
-        sub.build_user_message("review", "check this code");
+        let query = Instructions::new("check this code");
+        sub.build_user_message("review", &query);
         let loaded = crate::tools::safe_lock(&sub.loaded_skills);
         assert!(
             loaded.contains("explore"),
@@ -395,7 +404,7 @@ mod tests {
     fn build_system_prompt_includes_preloaded_skills() -> anyhow::Result<()> {
         let skills = vec![skill("bash", "commands", "run commands")];
         let sub = new_subagent(skills, vec![])?;
-        sub.preload_skills(&["bash".to_string()]);
+        sub.load_skills(&["bash"]);
         let prompt = sub.build_system_prompt("something");
         assert!(prompt.contains("bash"), "preloaded skill must appear");
         assert!(

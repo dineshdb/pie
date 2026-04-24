@@ -1,4 +1,5 @@
 use crate::handler::{build_request, extract_output_text, strip_control_tokens};
+use crate::instructions::Instructions;
 use crate::providers::Model;
 use crate::session::Session;
 use crate::ui::tui::realm::StreamEvent;
@@ -60,10 +61,10 @@ async fn run_stream(
     // Persist user message before streaming so tool calls land after it in DB order.
     let _ = session.add_user(&query);
 
-    let query_for_req = query.strip_prefix('/').unwrap_or(&query);
+    let query_for_req = Instructions::new(query.strip_prefix('/').unwrap_or(&query));
     let mut req = build_request(
         &ctx.model,
-        query_for_req,
+        &query_for_req,
         &history,
         ctx.sandbox,
         ctx.max_steps,

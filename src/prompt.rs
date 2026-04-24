@@ -1,5 +1,6 @@
 use crate::agent::{Agent, resolve_mentioned_agents};
 use crate::config::pie_home;
+use crate::instructions::Instructions;
 use crate::skill::Skill;
 use crate::utils::{find_upward_in_repo, load_file};
 use minijinja::Environment;
@@ -100,7 +101,7 @@ pub fn subagent_prompt(
 
 /// Resolve skill names to skills, auto-loading their `needs` dependencies.
 /// Deduplicates and handles circular needs gracefully.
-pub fn resolve_with_needs<'a>(names: &[String], skills: &'a [Skill]) -> Vec<&'a Skill> {
+pub fn resolve_with_needs<'a>(names: &[&str], skills: &'a [Skill]) -> Vec<&'a Skill> {
     let mut resolved = Vec::new();
     let mut seen = HashSet::new();
 
@@ -121,30 +122,17 @@ pub fn resolve_with_needs<'a>(names: &[String], skills: &'a [Skill]) -> Vec<&'a 
     resolved
 }
 
-/// Resolve skills mentioned as `/skill-name` in the given sources (user messages, queries).
-/// Single pass — does NOT scan skill content for further mentions.
+/// Resolve skills whose names appear in the given instructions.
 /// Also auto-resolves explicit `needs` dependencies from resolved skills.
-/// Auto-detects common patterns (e.g. "summarize repo" → explore) for small models.
-pub fn resolve_mentioned<'a>(sources: &[&str], skills: &'a [Skill]) -> Vec<&'a Skill> {
-    let mut mentioned_names: Vec<String> = skills
+pub fn resolve_mentioned<'a>(
+    instructions: &Instructions,
+    skills: &'a [Skill],
+) -> Vec<&'a Skill> {
+    let mentioned_names: Vec<&str> = skills
         .iter()
-        .filter(|s| {
-            sources
-                .iter()
-                .any(|src| src.contains(&format!("/{}", s.name)))
-        })
-        .map(|s| s.name.clone())
+        .filter(|s| instructions.mentions_name(&s.name))
+        .map(|s| s.name.as_str())
         .collect();
-
-    // Auto-detect repo exploration patterns → load explore skill
-    let text: String = sources.join(" ").to_lowercase();
-    let repo_words = ["repo", "repository", "project", "codebase"];
-    let explore_words = ["summarize", "summary", "explore", "analyze", "overview"];
-    let has_repo = repo_words.iter().any(|w| text.contains(w));
-    let has_explore = explore_words.iter().any(|w| text.contains(w));
-    if has_repo && has_explore && !mentioned_names.iter().any(|n| n == "explore") {
-        mentioned_names.push("explore".to_string());
-    }
 
     resolve_with_needs(&mentioned_names, skills)
 }
@@ -154,25 +142,23 @@ pub fn resolve_mentioned<'a>(sources: &[&str], skills: &'a [Skill]) -> Vec<&'a S
 pub fn resolve_preloaded_skills<'a>(
     skills: &'a [Skill],
     agents: &[Agent],
-    scan_sources: &[&str],
+    instructions: &Instructions,
 ) -> Vec<&'a Skill> {
-    let mentioned_agents = resolve_mentioned_agents(scan_sources, agents);
+    let mentioned_agents = resolve_mentioned_agents(instructions, agents);
 
-    // Scan mentioned agents' content for skill references (/skill-name)
-    let agent_contents: Vec<&str> = mentioned_agents
-        .iter()
-        .map(|a| a.content.as_str())
-        .collect();
-    let agent_skills = resolve_mentioned(&agent_contents, skills);
+    let mut names: Vec<&str> = Vec::new();
 
-    let mentioned_skills = resolve_mentioned(scan_sources, skills);
-    let skill_names: Vec<String> = mentioned_skills
-        .iter()
-        .chain(agent_skills.iter())
-        .map(|s| s.name.clone())
-        .collect();
+    // Direct skill mentions from query/history
+    let mentioned_skills = resolve_mentioned(instructions, skills);
+    names.extend(mentioned_skills.iter().map(|s| s.name.as_str()));
 
-    resolve_with_needs(&skill_names, skills)
+    // Skills mentioned inside mentioned agents' content
+    for agent in &mentioned_agents {
+        let agent_skills = resolve_mentioned(&agent.instructions(), skills);
+        names.extend(agent_skills.iter().map(|s| s.name.as_str()));
+    }
+
+    resolve_with_needs(&names, skills)
 }
 
 // ── Helpers for deterministic test rendering ──────────────────────────
@@ -180,6 +166,7 @@ pub fn resolve_preloaded_skills<'a>(
 #[cfg(test)]
 mod test_helpers {
     use crate::agent::{Agent, Interactivity};
+    use crate::instructions::Instructions;
     use crate::skill::Skill;
 
     pub fn skill(name: &str, desc: &str, content: &str) -> Skill {
@@ -212,7 +199,9 @@ mod test_helpers {
     }
 
     pub fn mentioned_names(skills: &[Skill], sources: &[&str]) -> Vec<String> {
-        super::resolve_mentioned(sources, skills)
+        let joined = sources.join(" ");
+        let instr = Instructions::new(&joined);
+        super::resolve_mentioned(&instr, skills)
             .iter()
             .map(|s| s.name.clone())
             .collect()
@@ -295,6 +284,7 @@ mod test_helpers {
 mod tests {
     use super::Agent;
     use super::test_helpers::*;
+    use crate::instructions::Instructions;
 
     #[test]
     fn main_agent_instructs_tool_use() {
@@ -531,7 +521,7 @@ mod tests {
             skill("filesystem", "file ops", "fs content"),
             skill("developer", "dev workflow", "dev content"),
         ];
-        let resolved = super::resolve_with_needs(&["review".to_string()], &skills);
+        let resolved = super::resolve_with_needs(&["review"], &skills);
         let names: Vec<&str> = resolved.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"review"), "requested skill must resolve");
         assert!(names.contains(&"filesystem"), "needs dep must auto-load");
@@ -544,14 +534,14 @@ mod tests {
             skill_with_needs("a", "a", "a", vec!["b"]),
             skill_with_needs("b", "b", "b", vec!["a"]),
         ];
-        let resolved = super::resolve_with_needs(&["a".to_string(), "b".to_string()], &skills);
+        let resolved = super::resolve_with_needs(&["a", "b"], &skills);
         assert_eq!(resolved.len(), 2, "circular needs must not duplicate");
     }
 
     #[test]
     fn resolve_with_needs_empty_for_unknown() {
         let skills = vec![skill("a", "a", "a")];
-        let resolved = super::resolve_with_needs(&["nonexistent".to_string()], &skills);
+        let resolved = super::resolve_with_needs(&["nonexistent"], &skills);
         assert!(resolved.is_empty());
     }
 
@@ -568,7 +558,8 @@ mod tests {
             "code reviewer",
             "Use /explore and /review to check this code.",
         )];
-        let resolved = super::resolve_preloaded_skills(&skills, &agents, &["/reviewer check this"]);
+        let instr = Instructions::new("/reviewer check this");
+        let resolved = super::resolve_preloaded_skills(&skills, &agents, &instr);
         let names: Vec<&str> = resolved.iter().map(|s| s.name.as_str()).collect();
         assert!(
             names.contains(&"explore"),
@@ -584,7 +575,8 @@ mod tests {
     fn resolve_preloaded_skills_includes_direct_mentions() {
         let skills = vec![skill("review", "code review", "review content")];
         let agents: Vec<Agent> = vec![];
-        let resolved = super::resolve_preloaded_skills(&skills, &agents, &["/review this"]);
+        let instr = Instructions::new("/review this");
+        let resolved = super::resolve_preloaded_skills(&skills, &agents, &instr);
         let names: Vec<&str> = resolved.iter().map(|s| s.name.as_str()).collect();
         assert!(
             names.contains(&"review"),
@@ -596,7 +588,8 @@ mod tests {
     fn no_agents_no_mentions_returns_empty() {
         let skills = vec![skill("review", "code review", "content")];
         let agents = vec![agent("reviewer", "reviewer", "content")];
-        let resolved = super::resolve_preloaded_skills(&skills, &agents, &["nothing relevant"]);
+        let instr = Instructions::new("nothing relevant");
+        let resolved = super::resolve_preloaded_skills(&skills, &agents, &instr);
         assert!(resolved.is_empty(), "no mentions should resolve to empty");
     }
 }

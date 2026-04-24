@@ -5,11 +5,15 @@ use figment::{
     Figment,
     providers::{Format, Toml},
 };
+use include_dir::{Dir, include_dir};
 use p1e_srt::SandboxConfig;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+/// The embedded `.pie/` directory compiled into the binary.
+pub(crate) static EMBEDDED_PIE_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/.pie");
 
 pub fn pie_home() -> PathBuf {
     dirs::home_dir().unwrap_or_default().join(".pie")

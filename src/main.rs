@@ -33,6 +33,7 @@ mod cmd;
 mod config;
 mod db;
 mod handler;
+mod instructions;
 mod output;
 mod prompt;
 mod providers;
@@ -43,6 +44,7 @@ mod ui;
 mod utils;
 
 use crate::config::{ResolvedConfig, build_sandbox, load_config};
+use crate::instructions::Instructions;
 use crate::output::OutputFormat;
 use crate::{db::DbPool, session::Session};
 use anyhow::Context;
@@ -181,9 +183,10 @@ async fn main() -> anyhow::Result<()> {
         };
 
         let mut session = Session::create(pool)?;
+        let query = Instructions::new(full_query);
         return handler::handle_query(
             &mut model,
-            &full_query,
+            &query,
             &mut session,
             format,
             sandbox_settings,

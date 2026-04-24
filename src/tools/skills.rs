@@ -43,7 +43,8 @@ pub fn load_skills_tool(skills: Vec<Skill>, loaded: Option<Arc<Mutex<HashSet<Str
                 return Err("skills parameter must be a non-empty array of skill names".to_string());
             }
 
-            let resolved = prompt::resolve_with_needs(&names, &skills);
+            let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+            let resolved = prompt::resolve_with_needs(&name_refs, &skills);
 
             if resolved.is_empty() {
                 return Err("No skills found matching the requested names".to_string());

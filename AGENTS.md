@@ -21,6 +21,7 @@ After each change, run following tests to verify if the change is valid.
   added. Identify how it diverges, identifying places to trim, changes in
   architecture and organization to slim down and /simplify the codebase to keep
   it lean and clean.
+- Prefer newtypes over raw types
 
 ## Simplification
 
