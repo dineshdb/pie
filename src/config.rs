@@ -66,7 +66,7 @@ impl PieConfig {
     }
 
     pub fn log_level(&self) -> &str {
-        self.log_level.as_deref().unwrap_or("warn")
+        self.log_level.as_deref().unwrap_or("info")
     }
 }
 

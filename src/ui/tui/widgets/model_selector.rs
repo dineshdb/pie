@@ -9,6 +9,7 @@ pub struct ModelSelectorOverlay<'a> {
     pub selected_idx: Option<usize>,
     pub current_model_idx: Option<usize>,
     pub is_loading: bool,
+    pub error: Option<&'a str>,
 }
 
 impl Widget for ModelSelectorOverlay<'_> {
@@ -42,6 +43,17 @@ impl Widget for ModelSelectorOverlay<'_> {
 
         if let Some(p_area) = chunks.first() {
             providers_para.render(*p_area, buf);
+        }
+
+        if let Some(err) = self.error {
+            if let Some(m_area) = chunks.get(1) {
+                let error_text = format!("Error: {err}");
+                let text_len = u16::try_from(error_text.len()).unwrap_or(u16::MAX);
+                let x = m_area.x + (m_area.width.saturating_sub(text_len) / 2);
+                let y = m_area.y + (m_area.height / 2);
+                buf.set_string(x, y, error_text, Style::default().fg(Color::Red));
+            }
+            return;
         }
 
         if self.is_loading {

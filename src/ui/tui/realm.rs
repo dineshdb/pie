@@ -34,7 +34,6 @@ pub enum Msg {
     ScrollDown(u16),
 
     StreamDone(String),
-    StreamError(String),
 
     KeyboardToInput(KeyEvent),
 

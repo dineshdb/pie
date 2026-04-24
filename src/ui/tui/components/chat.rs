@@ -27,6 +27,7 @@ pub enum ActiveDialog {
         models: Vec<String>,
         selected_idx: Option<usize>,
         is_loading: bool,
+        error: Option<String>,
     },
 }
 
@@ -145,6 +146,7 @@ impl Component for ChatComponent {
                 models,
                 selected_idx,
                 is_loading,
+                error,
             } => {
                 let provider_name = providers.get(*provider_idx).cloned().unwrap_or_default();
                 let title = if provider_name.is_empty() {
@@ -175,6 +177,7 @@ impl Component for ChatComponent {
                             selected_idx: *selected_idx,
                             current_model_idx,
                             is_loading: *is_loading,
+                            error: error.as_deref(),
                         },
                     ),
                     area,
@@ -220,11 +223,16 @@ impl ChatComponent {
                 Some(Msg::StreamDone(s.clone()))
             }
             StreamEvent::Error(s) => {
-                if let ActiveDialog::ModelSelector { .. } = self.active_dialog {
-                    self.active_dialog = ActiveDialog::None;
+                if let ActiveDialog::ModelSelector {
+                    is_loading, error, ..
+                } = &mut self.active_dialog
+                {
+                    *is_loading = false;
+                    *error = Some(s.clone());
+                } else {
+                    self.stream_error(s);
                 }
-                self.stream_error(s);
-                Some(Msg::StreamError(s.clone()))
+                Some(Msg::Redraw)
             }
             StreamEvent::ToolCall {
                 name,
@@ -270,6 +278,7 @@ impl ChatComponent {
                         models,
                         selected_idx,
                         is_loading: false,
+                        error: None,
                     };
                 }
                 Some(Msg::Redraw)
@@ -293,6 +302,7 @@ impl ChatComponent {
                 models,
                 selected_idx,
                 is_loading,
+                error,
             } => match (key.modifiers, &key.code) {
                 (KeyModifiers::NONE, Key::Up) => {
                     if let Some(idx) = selected_idx
@@ -316,6 +326,7 @@ impl ChatComponent {
                         *models = Vec::new();
                         *selected_idx = None;
                         *is_loading = true;
+                        *error = None;
                         let provider_name =
                             providers.get(*provider_idx).cloned().unwrap_or_default();
                         return Some(Msg::FetchModels(provider_name));
@@ -328,6 +339,7 @@ impl ChatComponent {
                         *models = Vec::new();
                         *selected_idx = None;
                         *is_loading = true;
+                        *error = None;
                         let provider_name =
                             providers.get(*provider_idx).cloned().unwrap_or_default();
                         return Some(Msg::FetchModels(provider_name));

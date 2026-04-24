@@ -140,12 +140,9 @@ impl FrameUpdate {
                 input.finish_stream();
             }
 
-            Msg::StreamError(_) => {
-                input.finish_stream();
-            }
-
             Msg::FetchModels(provider_name) => {
                 let providers = input.available_providers.clone();
+                tracing::info!(provider = %provider_name, "fetching models for provider");
                 if let Some(cfg) = providers.get(&provider_name)
                     && let Ok(mut resolved) = crate::config::ResolvedProvider::try_from(cfg.clone())
                 {
@@ -154,13 +151,17 @@ impl FrameUpdate {
                     tokio::spawn(async move {
                         match crate::providers::fetch_models(&resolved).await {
                             Ok(models) => {
+                                tracing::info!(count = models.len(), "fetched models");
                                 let _ = tx.send(StreamEvent::ModelList(models));
                             }
                             Err(e) => {
+                                tracing::error!(error = %e, "failed to fetch models");
                                 let _ = tx.send(StreamEvent::Error(e.to_string()));
                             }
                         }
                     });
+                } else {
+                    tracing::error!(provider = %provider_name, "provider config not found or invalid");
                 }
             }
 
@@ -254,15 +255,19 @@ impl FrameUpdate {
                                 models: Vec::new(),
                                 selected_idx: None,
                                 is_loading: true,
+                                error: None,
                             };
                     }
                     let tx = tx.clone();
                     tokio::spawn(async move {
+                        tracing::info!(provider = %provider.name, "fetching initial model list");
                         match crate::providers::fetch_models(&provider).await {
                             Ok(models) => {
+                                tracing::info!(count = models.len(), "fetched initial models");
                                 let _ = tx.send(StreamEvent::ModelList(models));
                             }
                             Err(e) => {
+                                tracing::error!(error = %e, "failed to fetch initial models");
                                 // Make sure this error reaches the component to clear the dialog
                                 let _ = tx.send(StreamEvent::Error(e.to_string()));
                             }

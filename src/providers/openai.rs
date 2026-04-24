@@ -119,6 +119,7 @@ pub async fn fetch_models(provider: &ResolvedProvider) -> Result<Vec<String>> {
         format!("{base_url}/v1/models")
     };
 
+    tracing::info!(url = %url, "fetching models from API");
     let mut request = client.get(&url);
     if !provider.api_key.is_empty() {
         request = request.header("Authorization", format!("Bearer {}", provider.api_key));
