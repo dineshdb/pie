@@ -5,6 +5,7 @@ use crate::prompt;
 use crate::providers::Model;
 use crate::session::{Role, Session};
 use crate::skill::get_all_skills;
+use crate::tools::subagent::Subagent;
 use crate::tools::{
     execute_skill_script_tool, load_references_tool, load_skills_tool, read_file_tool,
     replace_tool, shell, subagent_tool, write_file_tool,
@@ -135,6 +136,38 @@ pub async fn handle_query(
     sandbox_settings: Arc<SandboxConfig>,
     max_steps: u32,
 ) -> Result<()> {
+    let agents = get_all_agents();
+    if let Some(agent_name) = crate::agent::find_subsume_candidate(query, &agents) {
+        let skills = get_all_skills();
+        let subagent = Subagent::new(model.clone(), skills, agents, sandbox_settings.clone());
+
+        tracing::info!(agent = %agent_name, "subsuming subagent role");
+        let result = subagent.execute(&agent_name, query.raw(), 0, None).await;
+        match result {
+            Ok(output) => {
+                let output = strip_control_tokens(&output);
+                session.add_user(query.raw())?;
+                if !output.is_empty() {
+                    if format.is_json() {
+                        let json_resp = JsonResponse::new(
+                            output.clone(),
+                            Some(session.id.to_string()),
+                            Some(model.name()),
+                        );
+                        println!("{}", serde_json::to_string(&json_resp)?);
+                    } else {
+                        println!("{output}");
+                    }
+                    session.add_assistant(&output)?;
+                }
+                return Ok(());
+            }
+            Err(e) => {
+                anyhow::bail!("Subagent subsumption failed: {e}");
+            }
+        }
+    }
+
     let mut req = build_request(
         model,
         query,

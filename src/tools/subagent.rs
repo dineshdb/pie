@@ -117,20 +117,20 @@ impl Subagent {
         tools
     }
 
-    pub async fn execute(
-        self,
+    pub fn build_request(
+        &self,
         name: &str,
         query: &str,
         depth: u32,
         parent_id: Option<Uuid>,
-    ) -> Result<String, String> {
+    ) -> Result<LanguageModelRequest<Model>, String> {
         if name.is_empty() || query.is_empty() {
             return Err("name and query are required".to_string());
         }
         let is_agent = self.agents.iter().any(|a| a.name == name);
         let is_skill = self.skills.iter().any(|s| s.name == name);
         if !is_agent && !is_skill {
-            return Ok(format!("'{name}' not found as agent or skill."));
+            return Err(format!("'{name}' not found as agent or skill."));
         }
 
         let sys = self.build_system_prompt(name);
@@ -141,18 +141,27 @@ impl Subagent {
             user_content,
         ))];
 
-        tracing::debug!(name, query, %sys, "subagent");
+        tracing::debug!(name, query, %sys, "subagent request");
 
         let tools = self.build_tools(depth, parent_id);
-        let mut req = LanguageModelRequest::builder()
+        let mut builder = LanguageModelRequest::builder()
             .model(self.model.clone())
             .system(sys)
             .messages(messages);
         for tool in tools {
-            req = req.with_tool(tool);
+            builder = builder.with_tool(tool);
         }
-        let mut req = req.stop_when(step_count_is(20)).build();
+        Ok(builder.stop_when(step_count_is(20)).build())
+    }
 
+    pub async fn execute(
+        self,
+        name: &str,
+        query: &str,
+        depth: u32,
+        parent_id: Option<Uuid>,
+    ) -> Result<String, String> {
+        let mut req = self.build_request(name, query, depth, parent_id)?;
         match req.generate_text().await {
             Ok(r) => {
                 let text = r.text().unwrap_or_default();
@@ -282,8 +291,11 @@ mod tests {
         )?;
         let rt = tokio::runtime::Runtime::new()?;
         let result = rt.block_on(sub.execute("nonexistent", "query", 0, None));
-        let val = result.map_err(|e| anyhow::anyhow!("{e}"))?;
-        assert!(val.contains("not found"));
+        assert!(result.is_err());
+        let Err(e) = result else {
+            anyhow::bail!("expected error")
+        };
+        assert!(e.contains("not found"));
         Ok(())
     }
 

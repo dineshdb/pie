@@ -1,12 +1,17 @@
+use crate::agent::{find_subsume_candidate, get_all_agents};
 use crate::handler::{build_request, extract_output_text, strip_control_tokens};
 use crate::instructions::Instructions;
 use crate::providers::Model;
 use crate::session::Session;
+use crate::skill::get_all_skills;
+use crate::tools::subagent::Subagent;
 use crate::ui::tui::realm::StreamEvent;
 use crate::ui::tui::widgets::tool_display::ToolCallResult;
+use aisdk::core::LanguageModelStreamChunkType;
+use futures::StreamExt;
 use p1e_srt::SandboxConfig;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 /// Environment shared across stream invocations — held by [`InputComponent`].
 pub struct StreamContext {
@@ -32,21 +37,19 @@ impl From<&crate::ui::tui::components::input::InputComponent> for StreamContext 
 pub fn spawn_stream(
     ctx: StreamContext,
     query: String,
-    event_tx: mpsc::UnboundedSender<StreamEvent>,
-    abort_rx: mpsc::UnboundedReceiver<()>,
+    event_tx: UnboundedSender<StreamEvent>,
+    abort_rx: UnboundedReceiver<()>,
 ) {
+    let query = Instructions::new(query);
     tokio::spawn(run_stream(ctx, query, event_tx, abort_rx));
 }
 
 async fn run_stream(
     ctx: StreamContext,
-    query: String,
-    event_tx: mpsc::UnboundedSender<StreamEvent>,
-    mut abort_rx: mpsc::UnboundedReceiver<()>,
+    query: Instructions,
+    event_tx: UnboundedSender<StreamEvent>,
+    mut abort_rx: UnboundedReceiver<()>,
 ) {
-    use aisdk::core::LanguageModelStreamChunkType;
-    use futures::StreamExt;
-
     let mut session = match Session::load(ctx.pool, ctx.session_id) {
         Ok(s) => s,
         Err(e) => {
@@ -55,23 +58,29 @@ async fn run_stream(
             return;
         }
     };
-
     let history = session.history_entries().to_vec();
-
     // Persist user message before streaming so tool calls land after it in DB order.
-    let _ = session.add_user(&query);
+    let _ = session.add_user(query.raw());
 
-    let query_for_req = Instructions::new(query.strip_prefix('/').unwrap_or(&query));
-    let mut req = build_request(
-        &ctx.model,
-        &query_for_req,
-        &history,
-        ctx.sandbox,
-        ctx.max_steps,
-    );
+    let agents = get_all_agents();
+    let mut req = if let Some(agent) = find_subsume_candidate(&query, &agents) {
+        let skills = get_all_skills();
+        let subagent = Subagent::new(ctx.model.clone(), skills, agents, ctx.sandbox.clone());
+        tracing::info!(%agent, "subsuming subagent role in TUI");
+        match subagent.build_request(&agent, query.raw(), 0, None) {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = event_tx.send(StreamEvent::Error(format!(
+                    "Subagent subsumption failed: {e}"
+                )));
+                return;
+            }
+        }
+    } else {
+        build_request(&ctx.model, &query, &history, ctx.sandbox, ctx.max_steps)
+    };
 
     let stream_result = req.stream_text().await;
-
     let mut response = match stream_result {
         Ok(r) => r,
         Err(e) => {
@@ -121,7 +130,7 @@ async fn run_stream(
                     }
                     None => break,
                     Some(other) => {
-                        tracing::debug!(?other, "stream chunk skipped");
+                        tracing::trace!(?other, "stream chunk skipped");
                     }
                 }
             }
@@ -132,11 +141,7 @@ async fn run_stream(
     }
 
     let tool_results = response.tool_results().await;
-    tracing::debug!(
-        accumulated_len = accumulated.len(),
-        ?tool_results,
-        "stream finished"
-    );
+    tracing::debug!(len = accumulated.len(), ?tool_results, "stream finished");
     let output = extract_output_text(&accumulated, tool_results.as_deref());
     let output = strip_control_tokens(&output);
 

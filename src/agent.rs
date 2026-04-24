@@ -188,6 +188,17 @@ pub fn resolve_mentioned_agents<'a>(
         .collect()
 }
 
+/// Check if we should subsume the role of a single mentioned agent.
+/// Returns the name of the agent if exactly one is mentioned.
+pub fn find_subsume_candidate(instructions: &Instructions, agents: &[Agent]) -> Option<String> {
+    let mentioned = resolve_mentioned_agents(instructions, agents);
+    if mentioned.len() == 1 {
+        mentioned.first().map(|a| a.name.clone())
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
