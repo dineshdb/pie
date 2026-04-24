@@ -143,8 +143,8 @@ impl Component for ChatComponent {
             ActiveDialog::ModelSelector {
                 providers,
                 provider_idx,
-                models,
-                selected_idx,
+                models: _,
+                selected_idx: _,
                 is_loading,
                 error,
             } => {
@@ -155,32 +155,17 @@ impl Component for ChatComponent {
                     format!("Select Provider / Model ({provider_name})")
                 };
 
-                let current_model_idx = if *is_loading {
-                    None
-                } else {
-                    let current = self.current_model.trim().to_lowercase();
-                    models.iter().position(|m| {
-                        let m_lower = m.trim().to_lowercase();
-                        m_lower == current
-                            || m_lower.ends_with(&format!("/{current}"))
-                            || current.ends_with(&format!("/{m_lower}"))
-                    })
-                };
-
                 frame.render_widget(
                     super::super::widgets::dialog::Dialog::new(
                         &title,
                         super::super::widgets::model_selector::ModelSelectorOverlay {
                             providers,
                             provider_idx: *provider_idx,
-                            models,
-                            selected_idx: *selected_idx,
-                            current_model_idx,
                             is_loading: *is_loading,
                             error: error.as_deref(),
                         },
                     )
-                    .with_size(80, 80),
+                    .with_size(80, 3),
                     area,
                 );
             }
