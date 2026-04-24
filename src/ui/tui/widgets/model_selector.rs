@@ -42,8 +42,8 @@ impl Widget for ModelSelectorOverlay<'_> {
         let providers_para = Paragraph::new(providers_text)
             .block(
                 Block::default()
-                    .borders(Borders::BOTTOM)
-                    .title(" Providers "),
+                    .borders(Borders::ALL)
+                    .title(" Providers (Left/Right) "),
             )
             .style(Style::default().fg(Color::Cyan));
 
@@ -98,7 +98,11 @@ impl Widget for ModelSelectorOverlay<'_> {
             })
             .collect();
 
-        let list = List::new(items).block(Block::default().title(" Models "));
+        let list = List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Models (Up/Down) "),
+        );
 
         let mut state = ListState::default();
         state.select(self.selected_idx);

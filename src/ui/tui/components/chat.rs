@@ -179,7 +179,8 @@ impl Component for ChatComponent {
                             is_loading: *is_loading,
                             error: error.as_deref(),
                         },
-                    ),
+                    )
+                    .with_size(80, 80),
                     area,
                 );
             }
