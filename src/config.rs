@@ -105,14 +105,16 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
         let provider_name = cli
             .provider
             .as_deref()
-            .or(pie.default_provider.as_deref())
-            .unwrap_or_default();
+            .or(pie.default_provider.as_deref());
 
-        let provider_cfg = pie
-            .provider
-            .get(provider_name)
-            .cloned()
-            .context("provider not found")?;
+        let provider_cfg = match provider_name {
+            Some(name) => pie
+                .provider
+                .get(name)
+                .cloned()
+                .context(format!("provider '{name}' not found in config"))?,
+            None => ProviderConfig::default(),
+        };
 
         let output_format = match (cli.output_format(), pie.output_format()) {
             (OutputFormat::Default, _) => pie.output_format(),
