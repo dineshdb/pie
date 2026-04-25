@@ -42,7 +42,7 @@ impl Instructions {
             };
 
             // Boundary: preceded by start, whitespace, or punctuation (not '/' or ':')
-            if let Some(&prev) = bytes.get(i - 1) {
+            if let Some(&prev) = i.checked_sub(1).and_then(|j| bytes.get(j)) {
                 if prev == b'/' || prev == b':' {
                     i += 1;
                     continue;
