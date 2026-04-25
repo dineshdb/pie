@@ -1,10 +1,9 @@
-use crate::agent::get_all_agents;
-use crate::skill::get_all_skills;
+use std::sync::Arc;
 use tracing::warn;
 
-pub fn handle_list_skills() {
-    let skills = get_all_skills();
-    let agents = get_all_agents();
+pub fn handle_list_skills(registry: &Arc<crate::registry::Registry>) {
+    let skills = &registry.skills;
+    let agents = &registry.agents;
 
     print_named_section("Available skills", skills.iter(), |s| {
         (&s.name, &s.description)

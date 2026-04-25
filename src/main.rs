@@ -37,6 +37,7 @@ mod instructions;
 mod output;
 mod prompt;
 mod providers;
+mod registry;
 mod session;
 mod skill;
 mod tools;
@@ -132,6 +133,8 @@ async fn main() -> anyhow::Result<()> {
     let pie_config = load_config()?;
     let config: ResolvedConfig = (cli.clone(), pie_config.clone()).try_into()?;
     let session = resolve_session(pool.clone(), cli.r#continue)?;
+    let registry = registry::Registry::load();
+
     if format.is_some() {
         init_stderr_subscriber(cli.debug, &config.log_level);
     } else {
@@ -140,7 +143,7 @@ async fn main() -> anyhow::Result<()> {
     debug!(config = ?config, "config");
 
     if cli.list_skills {
-        cmd::handle_list_skills();
+        cmd::handle_list_skills(&registry);
         return Ok(());
     }
 
@@ -191,6 +194,7 @@ async fn main() -> anyhow::Result<()> {
             format,
             sandbox_settings,
             config.max_steps,
+            registry,
         )
         .await;
     }
@@ -204,6 +208,7 @@ async fn main() -> anyhow::Result<()> {
         sandbox_settings,
         config.max_steps,
         pie_config,
+        registry,
     )
     .await
 }

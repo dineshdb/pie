@@ -1,3 +1,5 @@
+use crate::registry::Registry;
+use std::sync::Arc;
 use tuirealm::ratatui::buffer::Buffer;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::{Color, Modifier, Style};
@@ -66,15 +68,15 @@ pub enum Direction {
 pub struct CompletionState {
     candidates: Vec<String>,
     index: usize,
-    all_commands: Vec<String>,
+    registry: Arc<Registry>,
 }
 
 impl CompletionState {
-    pub fn new(all_commands: Vec<String>) -> Self {
+    pub fn new(registry: Arc<Registry>) -> Self {
         Self {
             candidates: Vec::new(),
             index: 0,
-            all_commands,
+            registry,
         }
     }
 
@@ -111,7 +113,7 @@ impl CompletionState {
             return;
         }
 
-        let matches = find_completions(line, &self.all_commands);
+        let matches = find_completions(line, &self.registry.completions);
         if matches.is_empty() || (matches.len() == 1 && matches.first() == Some(&line.to_string()))
         {
             self.reset();
@@ -139,7 +141,8 @@ impl CompletionState {
         if !line.starts_with('/') || line.len() < 2 {
             return None;
         }
-        self.all_commands
+        self.registry
+            .completions
             .iter()
             .find(|cmd| cmd.starts_with(line) && cmd.as_str() != line)
             .map(|cmd| cmd[line.len()..].to_string())

@@ -29,8 +29,10 @@ fn extract_string_array(params: &serde_json::Value, key: &str) -> Vec<String> {
 /// When `loaded` is `Some`, already-loaded skills are skipped with a message
 /// and newly loaded ones are recorded.
 #[allow(clippy::unwrap_used)]
-pub fn load_skills_tool(skills: Vec<Skill>, loaded: Option<Arc<Mutex<HashSet<String>>>>) -> Tool {
-    let skills = Arc::new(skills);
+pub fn load_skills_tool(
+    registry: Arc<crate::registry::Registry>,
+    loaded: Option<Arc<Mutex<HashSet<String>>>>,
+) -> Tool {
     Tool::builder()
         .name("load_skills")
         .description("Load skill knowledge")
@@ -42,7 +44,7 @@ pub fn load_skills_tool(skills: Vec<Skill>, loaded: Option<Arc<Mutex<HashSet<Str
                 return Err("skills parameter must be a non-empty array of skill names".to_string());
             }
 
-            let resolved = Skill::resolve(&skills, &names);
+            let resolved = Skill::resolve(&registry.skills, &names);
             if resolved.is_empty() {
                 return Err("No skills found matching the requested names".to_string());
             }

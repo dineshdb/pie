@@ -66,7 +66,7 @@ fn process_msg(
                 && input.is_input_empty()
             {
                 if let Some(chat) = chat_mut!(app) {
-                    chat.active_dialog = ActiveDialog::Help;
+                    chat.set_help_dialog();
                 }
                 return None;
             }
@@ -153,13 +153,14 @@ fn handle_submit(
     if text.is_empty() {
         return None;
     }
-    let cmd = Command::parse(text);
-    match cmd.dispatch() {
+
+    input.take_input();
+
+    let cmd = Command::parse(text, &input.registry);
+    match cmd.dispatch(&input.registry) {
         CommandAction::AddMessage(msg) => {
             if let Some(chat) = chat_mut!(app) {
-                if text != "/help" && text != "/h" {
-                    chat.add_message(ChatMessage::user(text));
-                }
+                chat.add_message(ChatMessage::user(text));
                 chat.add_message(msg);
             }
         }
@@ -173,7 +174,6 @@ fn handle_submit(
                     chat.current_model = new_model;
                 }
             } else {
-                input.take_input();
                 let provider = input.get_provider();
                 let mut available_providers = input
                     .available_providers
@@ -217,6 +217,11 @@ fn handle_submit(
                 chat.clear_messages();
             }
         }
+        CommandAction::Help => {
+            if let Some(chat) = chat_mut!(app) {
+                chat.set_help_dialog();
+            }
+        }
         CommandAction::NewSession => {
             if let Ok(new_session) = Session::create(input.session_pool.clone()) {
                 if let Some(chat) = chat_mut!(app) {
@@ -231,7 +236,6 @@ fn handle_submit(
                 chat.add_message(ChatMessage::user(&query));
                 chat.start_response();
             }
-            input.take_input();
             input.start_stream(&query, tx);
         }
         CommandAction::Quit => return Some(Msg::Quit),
@@ -246,6 +250,7 @@ pub async fn run_tui(
     sandbox_settings: Arc<SandboxConfig>,
     max_steps: u32,
     pie_config: PieConfig,
+    registry: Arc<crate::registry::Registry>,
 ) -> Result<()> {
     let mut terminal = tuirealm::ratatui::init();
     terminal.clear()?;
@@ -279,12 +284,13 @@ pub async fn run_tui(
         sandbox_settings,
         max_steps,
         pie_config.provider.clone(),
+        registry.clone(),
     );
     let current_model = input.provider.model.clone();
 
     app.mount(
         Id::Chat,
-        Box::new(ChatComponent::new(messages, current_model)),
+        Box::new(ChatComponent::new(messages, current_model, registry)),
         vec![],
     )?;
     app.active(&Id::Chat)?;

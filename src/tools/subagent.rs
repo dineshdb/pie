@@ -1,8 +1,7 @@
-use crate::agent::Agent;
 use crate::instructions::Instructions;
 use crate::prompt::SystemPrompt;
 use crate::providers::Model;
-use crate::skill::Skill;
+use crate::registry::Registry;
 use crate::tools::{
     execute_skill_script_tool, load_references_tool, load_skills_tool, read_file_tool,
     replace_tool, shell, write_file_tool,
@@ -21,8 +20,7 @@ const MAX_DEPTH: u32 = 2;
 #[derive(Clone)]
 pub(crate) struct Subagent {
     model: Model,
-    skills: Vec<Skill>,
-    agents: Vec<Agent>,
+    registry: Arc<Registry>,
     sandbox_settings: Arc<SandboxConfig>,
     loaded_skills: Arc<Mutex<HashSet<String>>>,
     loaded_refs: Arc<Mutex<HashSet<String>>>,
@@ -31,14 +29,12 @@ pub(crate) struct Subagent {
 impl Subagent {
     pub fn new(
         model: Model,
-        skills: Vec<Skill>,
-        agents: Vec<Agent>,
+        registry: Arc<Registry>,
         sandbox_settings: Arc<SandboxConfig>,
     ) -> Self {
         Self {
             model,
-            skills,
-            agents,
+            registry,
             sandbox_settings,
             loaded_skills: Arc::new(Mutex::new(HashSet::new())),
             loaded_refs: Arc::new(Mutex::new(HashSet::new())),
@@ -58,15 +54,14 @@ impl Subagent {
             read_file_tool(),
             write_file_tool(),
             replace_tool(),
-            load_skills_tool(self.skills.clone(), Some(self.loaded_skills.clone())),
+            load_skills_tool(self.registry.clone(), Some(self.loaded_skills.clone())),
             load_references_tool(self.loaded_refs.clone()),
             execute_skill_script_tool(self.sandbox_settings.clone()),
         ];
         if depth < MAX_DEPTH {
             tools.push(make_subagent_tool(
                 self.model.clone(),
-                self.skills.clone(),
-                self.agents.clone(),
+                self.registry.clone(),
                 self.sandbox_settings.clone(),
                 parent_id,
                 depth + 1,
@@ -85,8 +80,8 @@ impl Subagent {
         if name.is_empty() || query.is_empty() {
             return Err("name and query are required".to_string());
         }
-        let is_agent = self.agents.iter().any(|a| a.name == name);
-        let is_skill = self.skills.iter().any(|s| s.name == name);
+        let is_agent = self.registry.agents.iter().any(|a| a.name == name);
+        let is_skill = self.registry.skills.iter().any(|s| s.name == name);
         if !is_agent && !is_skill {
             return Err(format!("'{name}' not found as agent or skill."));
         }
@@ -96,13 +91,13 @@ impl Subagent {
         if is_skill {
             query.mentions.insert(name.to_string());
         }
-        if let Some(agent) = self.agents.iter().find(|a| a.name == name) {
+        if let Some(agent) = self.registry.agents.iter().find(|a| a.name == name) {
             query.merge_mentions(&agent.content);
         }
 
         let agent_name = if is_agent { Some(name) } else { None };
 
-        let sp = SystemPrompt::new(&self.skills, &self.agents)
+        let sp = SystemPrompt::new(&self.registry.skills, &self.registry.agents)
             .with_agent(agent_name)
             .resolve(&query);
 
@@ -164,8 +159,7 @@ struct SubagentInput {
 #[allow(clippy::unwrap_used)]
 fn make_subagent_tool(
     model: Model,
-    skills: Vec<Skill>,
-    agents: Vec<Agent>,
+    registry: Arc<Registry>,
     sandbox_settings: Arc<SandboxConfig>,
     parent_id: Option<Uuid>,
     depth: u32,
@@ -185,12 +179,7 @@ fn make_subagent_tool(
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
-            let subagent = Subagent::new(
-                model.clone(),
-                skills.clone(),
-                agents.clone(),
-                sandbox_settings.clone(),
-            );
+            let subagent = Subagent::new(model.clone(), registry.clone(), sandbox_settings.clone());
             async move { subagent.execute(&name, &query, depth, parent_id).await }
         }))
         .build()
@@ -200,11 +189,10 @@ fn make_subagent_tool(
 /// Public entry point: create the `subagent` tool for the main agent.
 pub fn subagent_tool(
     model: Model,
-    skills: Vec<Skill>,
-    agents: Vec<Agent>,
+    registry: Arc<Registry>,
     sandbox_settings: Arc<SandboxConfig>,
 ) -> Tool {
-    make_subagent_tool(model, skills, agents, sandbox_settings, None, 0)
+    make_subagent_tool(model, registry, sandbox_settings, None, 0)
 }
 
 #[cfg(test)]
@@ -240,8 +228,11 @@ mod tests {
     fn new_subagent(skills: Vec<Skill>, agents: Vec<Agent>) -> anyhow::Result<Subagent> {
         Ok(Subagent::new(
             dummy_model()?,
-            skills,
-            agents,
+            Arc::new(Registry {
+                agents,
+                skills,
+                completions: Vec::new(),
+            }),
             Arc::new(SandboxConfig::default()),
         ))
     }
@@ -424,8 +415,11 @@ mod tests {
     fn make_subagent_tool_description_is_set() -> anyhow::Result<()> {
         let tool = make_subagent_tool(
             dummy_model()?,
-            vec![],
-            vec![],
+            Arc::new(Registry {
+                agents: Vec::new(),
+                skills: Vec::new(),
+                completions: Vec::new(),
+            }),
             Arc::new(SandboxConfig::default()),
             None,
             0,

@@ -1,13 +1,19 @@
+use crate::agent::Agent;
+use crate::skill::Skill;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::{Color, Modifier, Style};
 use tuirealm::ratatui::text::{Line, Span};
 use tuirealm::ratatui::widgets::{Paragraph, Widget};
 
-pub struct HelpOverlay;
+pub struct HelpOverlay<'a> {
+    pub agents: &'a [Agent],
+    pub skills: &'a [Skill],
+    pub scroll_offset: u16,
+}
 
-impl Widget for HelpOverlay {
+impl Widget for HelpOverlay<'_> {
     fn render(self, area: Rect, buf: &mut tuirealm::ratatui::buffer::Buffer) {
-        let lines: Vec<Line> = vec![
+        let mut lines: Vec<Line> = vec![
             Line::from(Span::styled(
                 "Commands",
                 Style::default()
@@ -61,6 +67,48 @@ impl Widget for HelpOverlay {
             ]),
         ];
 
-        Paragraph::new(lines).render(area, buf);
+        if !self.agents.is_empty() {
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled(
+                "Agents",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::raw(""));
+            for agent in self.agents {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  /{}", agent.name),
+                        Style::default().fg(Color::Green),
+                    ),
+                    Span::raw(format!("  {}", agent.description)),
+                ]));
+            }
+        }
+
+        if !self.skills.is_empty() {
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled(
+                "Skills",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::raw(""));
+            for skill in self.skills {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  /{}", skill.name),
+                        Style::default().fg(Color::Green),
+                    ),
+                    Span::raw(format!("  {}", skill.description)),
+                ]));
+            }
+        }
+
+        Paragraph::new(lines)
+            .scroll((self.scroll_offset, 0))
+            .render(area, buf);
     }
 }

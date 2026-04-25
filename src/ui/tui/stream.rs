@@ -1,9 +1,8 @@
-use crate::agent::{find_subsume_candidate, get_all_agents};
+use crate::agent::find_subsume_candidate;
 use crate::handler::{build_request, extract_output_text, strip_control_tokens};
 use crate::instructions::Instructions;
 use crate::providers::Model;
 use crate::session::Session;
-use crate::skill::get_all_skills;
 use crate::tools::subagent::Subagent;
 use crate::ui::tui::realm::StreamEvent;
 use crate::ui::tui::widgets::tool_display::ToolCallResult;
@@ -21,6 +20,7 @@ pub struct StreamContext {
     pub session_id: uuid::Uuid,
     pub pool: Arc<crate::db::DbPool>,
     pub max_steps: u32,
+    pub registry: Arc<crate::registry::Registry>,
 }
 
 impl From<&crate::ui::tui::components::input::InputComponent> for StreamContext {
@@ -31,6 +31,7 @@ impl From<&crate::ui::tui::components::input::InputComponent> for StreamContext 
             session_id: input.session_id,
             pool: input.session_pool.clone(),
             max_steps: input.max_steps,
+            registry: input.registry.clone(),
         }
     }
 }
@@ -64,21 +65,17 @@ pub async fn spawn_stream(
         let query = query_clone.clone();
         let sandbox = sandbox_clone.clone();
         let model = model_clone.clone();
+        let registry = ctx.registry.clone();
 
         async move {
             let model = model.clone();
-            let mut req = if let Some(agent) = find_subsume_candidate(&query, &get_all_agents()) {
-                let subagent = Subagent::new(
-                    model.clone(),
-                    get_all_skills(),
-                    get_all_agents(),
-                    sandbox.clone(),
-                );
+            let mut req = if let Some(agent) = find_subsume_candidate(&query, &registry.agents) {
+                let subagent = Subagent::new(model.clone(), registry.clone(), sandbox.clone());
                 subagent
                     .build_request(&agent, &query.raw, 0, None)
                     .map_err(|e| anyhow::anyhow!(e))?
             } else {
-                build_request(&model, &query, &history, sandbox, ctx.max_steps)
+                build_request(&model, &query, &history, sandbox, ctx.max_steps, &registry)
             };
             req.stream_text().await.map_err(|e| anyhow::anyhow!(e))
         }

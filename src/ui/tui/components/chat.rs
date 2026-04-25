@@ -7,6 +7,7 @@ use crate::ui::tui::state::ChatMessage;
 use crate::ui::tui::widgets::chat::{self, ChatState, ChatView};
 use crate::ui::tui::widgets::render_cache::MessageRenderCache;
 use crate::ui::tui::widgets::tool_display::ToolCallResult;
+use std::sync::Arc;
 use tuirealm::command::{Cmd, CmdResult};
 use tuirealm::component::{AppComponent, Component};
 use tuirealm::event::{Event, Key, KeyModifiers, MouseEvent, MouseEventKind};
@@ -20,7 +21,9 @@ const MAX_MESSAGES: usize = 1_000;
 #[derive(Debug, Clone, PartialEq)]
 pub enum ActiveDialog {
     None,
-    Help,
+    Help {
+        scroll_offset: u16,
+    },
     ModelSelector {
         providers: Vec<String>,
         provider_idx: usize,
@@ -40,10 +43,15 @@ pub struct ChatComponent {
     pub last_area: Rect,
     pub cached_lines: Vec<tuirealm::ratatui::text::Line<'static>>,
     pub last_width: usize,
+    pub registry: Arc<crate::registry::Registry>,
 }
 
 impl ChatComponent {
-    pub fn new(messages: Vec<ChatMessage>, current_model: String) -> Self {
+    pub fn new(
+        messages: Vec<ChatMessage>,
+        current_model: String,
+        registry: Arc<crate::registry::Registry>,
+    ) -> Self {
         Self {
             messages,
             render_cache: MessageRenderCache::new(),
@@ -54,7 +62,12 @@ impl ChatComponent {
             last_area: Rect::default(),
             cached_lines: Vec::new(),
             last_width: 0,
+            registry,
         }
+    }
+
+    pub fn set_help_dialog(&mut self) {
+        self.active_dialog = ActiveDialog::Help { scroll_offset: 0 };
     }
 
     // ── Message management ───────────────────────────────────────────
@@ -118,6 +131,23 @@ impl ChatComponent {
         self.response_idx.is_some()
     }
 
+    fn get_help_total_lines(registry: &crate::registry::Registry) -> u16 {
+        let mut total = 13; // Commands (7) + Keys (6)
+        if !registry.agents.is_empty() {
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                total += 3 + registry.agents.len() as u16;
+            }
+        }
+        if !registry.skills.is_empty() {
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                total += 3 + registry.skills.len() as u16;
+            }
+        }
+        total
+    }
+
     // ── Scrolling ────────────────────────────────────────────────────
 
     pub fn scroll_up(&mut self, amount: u16) {
@@ -156,11 +186,15 @@ impl Component for ChatComponent {
 
         match &self.active_dialog {
             ActiveDialog::None => {}
-            ActiveDialog::Help => {
+            ActiveDialog::Help { scroll_offset } => {
                 frame.render_widget(
                     super::super::widgets::dialog::Dialog::new(
                         "Help",
-                        super::super::widgets::help::HelpOverlay,
+                        super::super::widgets::help::HelpOverlay {
+                            agents: &self.registry.agents,
+                            skills: &self.registry.skills,
+                            scroll_offset: *scroll_offset,
+                        },
                     )
                     .with_size(70, 70),
                     area,
@@ -232,7 +266,7 @@ impl AppComponent<Msg, StreamEvent> for ChatComponent {
     fn on(&mut self, ev: &Event<StreamEvent>) -> Option<Msg> {
         match ev {
             Event::User(user_ev) => self.handle_user_event(user_ev),
-            Event::Keyboard(key) => self.handle_keyboard_event(key),
+            Event::Keyboard(key) => Some(self.handle_keyboard_event(key)),
             Event::Mouse(ev) => self.handle_mouse_event(*ev),
             _ => None,
         }
@@ -367,15 +401,14 @@ impl ChatComponent {
         }
     }
 
-    fn handle_keyboard_event(&mut self, key: &tuirealm::event::KeyEvent) -> Option<Msg> {
-        match &mut self.active_dialog {
-            ActiveDialog::None => {}
-            ActiveDialog::Help => {
-                if matches!(key.code, Key::Esc | Key::Char('?')) {
-                    self.active_dialog = ActiveDialog::None;
-                    return Some(Msg::Redraw);
-                }
-                return None;
+    fn handle_keyboard_event(&mut self, key: &tuirealm::event::KeyEvent) -> Msg {
+        let msg = match &mut self.active_dialog {
+            ActiveDialog::None => None,
+            ActiveDialog::Help { scroll_offset } => {
+                let total_lines = Self::get_help_total_lines(&self.registry);
+                let dialog_height = (self.last_area.height * 70 / 100).saturating_sub(2);
+                let max_scroll = total_lines.saturating_sub(dialog_height);
+                Self::handle_help_keyboard_event(key, scroll_offset, max_scroll)
             }
             ActiveDialog::ModelSelector {
                 providers,
@@ -384,80 +417,146 @@ impl ChatComponent {
                 selected_idx,
                 is_loading,
                 error,
-            } => match (key.modifiers, &key.code) {
-                (KeyModifiers::NONE, Key::Up) => {
-                    if let Some(idx) = selected_idx
-                        && *idx > 0
-                    {
-                        *selected_idx = Some(*idx - 1);
-                    }
-                    return Some(Msg::Redraw);
-                }
-                (KeyModifiers::NONE, Key::Down) => {
-                    if let Some(idx) = selected_idx
-                        && *idx + 1 < models.len()
-                    {
-                        *selected_idx = Some(*idx + 1);
-                    }
-                    return Some(Msg::Redraw);
-                }
-                (KeyModifiers::NONE, Key::Left) => {
-                    if *provider_idx > 0 {
-                        *provider_idx -= 1;
-                        *models = Vec::new();
-                        *selected_idx = None;
-                        *is_loading = true;
-                        *error = None;
-                        let provider_name =
-                            providers.get(*provider_idx).cloned().unwrap_or_default();
-                        return Some(Msg::FetchModels(provider_name));
-                    }
-                    return Some(Msg::Redraw);
-                }
-                (KeyModifiers::NONE, Key::Right) => {
-                    if *provider_idx + 1 < providers.len() {
-                        *provider_idx += 1;
-                        *models = Vec::new();
-                        *selected_idx = None;
-                        *is_loading = true;
-                        *error = None;
-                        let provider_name =
-                            providers.get(*provider_idx).cloned().unwrap_or_default();
-                        return Some(Msg::FetchModels(provider_name));
-                    }
-                    return Some(Msg::Redraw);
-                }
-                (KeyModifiers::NONE, Key::Enter) => {
-                    if let Some(idx) = selected_idx
-                        && let Some(model) = models.get(*idx)
-                    {
-                        let model = model.clone();
-                        let provider_name =
-                            providers.get(*provider_idx).cloned().unwrap_or_default();
-                        self.current_model.clone_from(&model);
-                        self.active_dialog = ActiveDialog::None;
-                        return Some(Msg::SwitchProviderAndModel(provider_name, model));
-                    }
-                    return Some(Msg::Redraw);
-                }
-                (KeyModifiers::NONE, Key::Esc) => {
+            } => Self::handle_model_selector_keyboard_event(
+                key,
+                providers,
+                provider_idx,
+                models,
+                selected_idx,
+                *is_loading,
+                error,
+            ),
+        };
+
+        if let Some(m) = msg {
+            if matches!(m, Msg::Redraw)
+                && (matches!(self.active_dialog, ActiveDialog::Help { .. })
+                    || matches!(self.active_dialog, ActiveDialog::ModelSelector { .. }))
+            {
+                // If it was a close command, handle it here
+                if let Key::Esc | Key::Char('?') = key.code {
                     self.active_dialog = ActiveDialog::None;
-                    return Some(Msg::Redraw);
                 }
-                _ => return None,
-            },
+            }
+            return m;
         }
 
         match (key.modifiers, &key.code) {
             (KeyModifiers::NONE, Key::PageUp) => {
                 self.scroll_up(20);
-                Some(Msg::Redraw)
+                Msg::Redraw
             }
             (KeyModifiers::NONE, Key::PageDown) => {
                 self.scroll_down(20);
+                Msg::Redraw
+            }
+            _ => Msg::KeyboardToInput(*key),
+        }
+    }
+
+    fn handle_help_keyboard_event(
+        key: &tuirealm::event::KeyEvent,
+        scroll_offset: &mut u16,
+        max_scroll: u16,
+    ) -> Option<Msg> {
+        match (&key.code, key.modifiers) {
+            (Key::Esc | Key::Char('?'), _) => Some(Msg::Redraw),
+            (Key::Up, KeyModifiers::NONE) => {
+                if *scroll_offset > 0 {
+                    *scroll_offset = scroll_offset.saturating_sub(1);
+                    return Some(Msg::Redraw);
+                }
+                None
+            }
+            (Key::Down, KeyModifiers::NONE) => {
+                if *scroll_offset < max_scroll {
+                    *scroll_offset = (*scroll_offset + 1).min(max_scroll);
+                    return Some(Msg::Redraw);
+                }
+                None
+            }
+            (Key::PageUp, KeyModifiers::NONE) => {
+                if *scroll_offset > 0 {
+                    *scroll_offset = scroll_offset.saturating_sub(10);
+                    return Some(Msg::Redraw);
+                }
+                None
+            }
+            (Key::PageDown, KeyModifiers::NONE) => {
+                if *scroll_offset < max_scroll {
+                    *scroll_offset = (*scroll_offset + 10).min(max_scroll);
+                    return Some(Msg::Redraw);
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn handle_model_selector_keyboard_event(
+        key: &tuirealm::event::KeyEvent,
+        providers: &[String],
+        provider_idx: &mut usize,
+        models: &[String],
+        selected_idx: &mut Option<usize>,
+        is_loading: bool,
+        error: &mut Option<String>,
+    ) -> Option<Msg> {
+        match (key.modifiers, &key.code) {
+            (KeyModifiers::NONE, Key::Up) => {
+                if let Some(idx) = selected_idx
+                    && *idx > 0
+                {
+                    *selected_idx = Some(*idx - 1);
+                }
                 Some(Msg::Redraw)
             }
-            _ => Some(Msg::KeyboardToInput(*key)),
+            (KeyModifiers::NONE, Key::Down) => {
+                if let Some(idx) = selected_idx
+                    && *idx + 1 < models.len()
+                {
+                    *selected_idx = Some(*idx + 1);
+                }
+                Some(Msg::Redraw)
+            }
+            (KeyModifiers::NONE, Key::Left) => {
+                if *provider_idx > 0 {
+                    *provider_idx -= 1;
+                    *selected_idx = None;
+                    *error = None;
+                    let provider_name = providers.get(*provider_idx).cloned().unwrap_or_default();
+                    return Some(Msg::FetchModels(provider_name));
+                }
+                Some(Msg::Redraw)
+            }
+            (KeyModifiers::NONE, Key::Right) => {
+                if *provider_idx + 1 < providers.len() {
+                    *provider_idx += 1;
+                    *selected_idx = None;
+                    *error = None;
+                    let provider_name = providers.get(*provider_idx).cloned().unwrap_or_default();
+                    return Some(Msg::FetchModels(provider_name));
+                }
+                Some(Msg::Redraw)
+            }
+            (KeyModifiers::NONE, Key::Enter) => {
+                if let Some(idx) = selected_idx
+                    && let Some(model) = models.get(*idx)
+                {
+                    let model = model.clone();
+                    let provider_name = providers.get(*provider_idx).cloned().unwrap_or_default();
+                    return Some(Msg::SwitchProviderAndModel(provider_name, model));
+                }
+                None
+            }
+            (KeyModifiers::NONE, Key::Esc) => {
+                if !is_loading {
+                    return Some(Msg::Redraw);
+                }
+                None
+            }
+            _ => None,
         }
     }
 }
@@ -468,10 +567,18 @@ mod tests {
     use super::*;
     use crate::session::Role;
 
+    fn test_registry() -> Arc<crate::registry::Registry> {
+        Arc::new(crate::registry::Registry {
+            agents: Vec::new(),
+            skills: Vec::new(),
+            completions: Vec::new(),
+        })
+    }
+
     #[test]
     fn new_chat_has_welcome_message_first() {
         let messages = vec![ChatMessage::system("Welcome to pie! Type ? for help.")];
-        let chat = ChatComponent::new(messages, "test-model".to_string());
+        let chat = ChatComponent::new(messages, "test-model".to_string(), test_registry());
         assert_eq!(chat.messages.len(), 1);
         assert_eq!(chat.messages[0].role, Role::System);
         assert!(chat.messages[0].content.contains("Welcome"));
@@ -482,6 +589,7 @@ mod tests {
         let mut chat = ChatComponent::new(
             vec![ChatMessage::system("Welcome")],
             "test-model".to_string(),
+            test_registry(),
         );
         chat.chat_state.auto_scroll = false;
         chat.add_message(ChatMessage::user("test"));
@@ -493,7 +601,7 @@ mod tests {
 
     #[test]
     fn start_and_finish_stream() {
-        let mut chat = ChatComponent::new(vec![], "test-model".to_string());
+        let mut chat = ChatComponent::new(vec![], "test-model".to_string(), test_registry());
         chat.start_response();
         assert!(chat.is_streaming());
         assert_eq!(chat.response_idx, Some(0));

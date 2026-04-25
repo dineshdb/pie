@@ -1,4 +1,33 @@
 use crate::ui::tui::state::ChatMessage;
+use std::str::FromStr;
+use strum::{AsRefStr, EnumIter, EnumString};
+
+macro_rules! define_builtin_commands {
+    ($($variant:ident => [$($name:expr),+]),* $(,)?) => {
+        #[derive(Debug, Clone, Copy, EnumIter, EnumString, AsRefStr, PartialEq, Eq)]
+        pub enum BuiltinCommand {
+            $(
+                $(#[strum(serialize = $name)])+
+                $variant,
+            )*
+        }
+
+        impl BuiltinCommand {
+            pub fn all_commands() -> Vec<&'static str> {
+                vec![$($($name),+),*]
+            }
+        }
+    };
+}
+
+define_builtin_commands! {
+    Help => ["/help", "/h"],
+    Quit => ["/quit", "/exit", "/q"],
+    Model => ["/model"],
+    Skills => ["/skills", "/ls"],
+    Clear => ["/clear"],
+    New => ["/new"],
+}
 
 /// Parsed command intent from user input.
 pub enum Command {
@@ -10,77 +39,59 @@ pub enum Command {
         query: String,
         is_agent: bool,
     },
-    /// Quit the application.
-    Quit,
-    /// Show help text.
-    Help,
-    /// List available models or switch to a specific one.
-    Model(Option<String>),
-    /// List available skills and agents.
-    ListSkills,
-    /// Clear the message history.
-    Clear,
-    /// Start a new session.
-    New,
+    /// Built-in slash commands.
+    Builtin(BuiltinCommand, Option<String>),
 }
 
 impl Command {
     /// Parse raw input text into a [`Command`].
-    pub fn parse(input: &str) -> Self {
+    pub fn parse(input: &str, registry: &crate::registry::Registry) -> Self {
         let trimmed = input.trim();
         if trimmed.starts_with('/') {
-            match trimmed {
-                "/exit" | "/quit" | "/q" => Self::Quit,
-                "/help" | "/h" => Self::Help,
-                "/model" => Self::Model(None),
-                "/skills" | "/ls" => Self::ListSkills,
-                "/clear" => Self::Clear,
-                "/new" => Self::New,
-                rest => {
-                    if let Some(model_name) = rest.strip_prefix("/model ") {
-                        return Self::Model(Some(model_name.trim().to_string()));
-                    }
-                    let without_slash = &rest[1..];
-                    let (name, query) = match without_slash.split_once(' ') {
-                        Some((n, q)) => (n, q.trim()),
-                        _ => (without_slash, ""),
-                    };
-                    let agents = crate::agent::get_all_agents();
-                    if agents.iter().any(|a| a.name == name) {
-                        return Self::Invoke {
-                            name: name.to_string(),
-                            query: query.to_string(),
-                            is_agent: true,
-                        };
-                    }
-                    let skills = crate::skill::get_all_skills();
-                    if skills.iter().any(|s| s.name == name) {
-                        return Self::Invoke {
-                            name: name.to_string(),
-                            query: query.to_string(),
-                            is_agent: false,
-                        };
-                    }
-                    Self::Send(input.to_string())
-                }
+            let (cmd_part, rest) = match trimmed.split_once(' ') {
+                Some((c, r)) => (c, Some(r.trim().to_string())),
+                None => (trimmed, None),
+            };
+
+            if let Ok(builtin) = BuiltinCommand::from_str(cmd_part) {
+                return Self::Builtin(builtin, rest);
             }
-        } else {
-            Self::Send(input.to_string())
+
+            let without_slash = &cmd_part[1..];
+            let query = rest.unwrap_or_default();
+
+            if registry.agents.iter().any(|a| a.name == without_slash) {
+                return Self::Invoke {
+                    name: without_slash.to_string(),
+                    query,
+                    is_agent: true,
+                };
+            }
+            if registry.skills.iter().any(|s| s.name == without_slash) {
+                return Self::Invoke {
+                    name: without_slash.to_string(),
+                    query,
+                    is_agent: false,
+                };
+            }
         }
+        Self::Send(input.to_string())
     }
 
     /// Map a parsed command into the action the app should take.
-    pub fn dispatch(self) -> CommandAction {
+    pub fn dispatch(self, registry: &crate::registry::Registry) -> CommandAction {
         match self {
-            Self::Quit => CommandAction::Quit,
-            Self::Help => CommandAction::AddMessage(ChatMessage::system(HELP_TEXT)),
-            Self::Model(name) => CommandAction::Model(name),
-            Self::ListSkills => {
-                let text = build_skills_list();
-                CommandAction::AddMessage(ChatMessage::system(&text))
-            }
-            Self::Clear => CommandAction::ClearMessages,
-            Self::New => CommandAction::NewSession,
+            Self::Builtin(builtin, args) => match builtin {
+                BuiltinCommand::Help => CommandAction::Help,
+                BuiltinCommand::Quit => CommandAction::Quit,
+                BuiltinCommand::Model => CommandAction::Model(args),
+                BuiltinCommand::Skills => {
+                    let text = build_skills_list(registry);
+                    CommandAction::AddMessage(ChatMessage::system(&text))
+                }
+                BuiltinCommand::Clear => CommandAction::ClearMessages,
+                BuiltinCommand::New => CommandAction::NewSession,
+            },
             Self::Send(query) => CommandAction::Stream(query),
             Self::Invoke {
                 name,
@@ -107,45 +118,15 @@ pub enum CommandAction {
     NewSession,
     Stream(String),
     Model(Option<String>),
+    Help,
     Quit,
 }
 
-/// All slash commands and their aliases, used for tab-completion.
-pub const SLASH_COMMANDS: &[&str] = &[
-    "/help", "/h", "/exit", "/quit", "/q", "/model", "/skills", "/ls", "/clear", "/new",
-];
-
-/// The static help text shown by /help.
-pub const HELP_TEXT: &str = r"
-Commands:
-  /help, /h          Show this help          /skills, /ls  List agents
-  /model             List/switch models      /clear        Clear conversation
-  /new               New session             /exit, /quit  Exit
-
-Keys:
-  Enter              Send message            Ctrl+Enter  New line
-  Up/Down            Navigate history        Esc  Cancel streaming
-  Page Up/Down       Scroll messages         Ctrl+c  Quit
-";
-
-/// Build the full list of slash-command completions (agents + skills + builtins).
-pub fn build_all_completions() -> Vec<String> {
-    let mut cmds = Vec::new();
-    for agent in crate::agent::get_all_agents() {
-        cmds.push(format!("/{}", agent.name));
-    }
-    cmds.extend(SLASH_COMMANDS.iter().map(ToString::to_string));
-    for skill in crate::skill::get_all_skills() {
-        cmds.push(format!("/{}", skill.name));
-    }
-    cmds
-}
-
-fn build_skills_list() -> String {
-    let agents = crate::agent::get_all_agents();
-    if agents.is_empty() {
+/// Build the full list of agents.
+fn build_skills_list(registry: &crate::registry::Registry) -> String {
+    if registry.agents.is_empty() {
         return "No agents found.".to_string();
     }
-    let names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
+    let names: Vec<&str> = registry.agents.iter().map(|a| a.name.as_str()).collect();
     format!("Agents: {}", names.join(", "))
 }

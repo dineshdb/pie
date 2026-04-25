@@ -1,10 +1,9 @@
-use crate::agent::{find_subsume_candidate, get_all_agents};
+use crate::agent::find_subsume_candidate;
 use crate::instructions::Instructions;
 use crate::output::{JsonResponse, OutputFormat};
 use crate::prompt;
 use crate::providers::Model;
 use crate::session::{Role, Session};
-use crate::skill::get_all_skills;
 use crate::tools::subagent::Subagent;
 use crate::tools::{
     execute_skill_script_tool, load_references_tool, load_skills_tool, read_file_tool,
@@ -26,9 +25,10 @@ pub fn build_request(
     history: &[crate::session::HistoryEntry],
     sandbox_settings: Arc<SandboxConfig>,
     max_steps: u32,
+    registry: &Arc<crate::registry::Registry>,
 ) -> LanguageModelRequest<Model> {
-    let skills = get_all_skills();
-    let agents = get_all_agents();
+    let skills = &registry.skills;
+    let agents = &registry.agents;
 
     // all mentioned skills from current and past user queries
     let mut query = query.clone();
@@ -38,7 +38,7 @@ pub fn build_request(
         .for_each(|e| query.merge_mentions(&e.content));
 
     let format = OutputFormat::Default;
-    let sp = prompt::SystemPrompt::new(&skills, &agents)
+    let sp = prompt::SystemPrompt::new(skills, agents)
         .resolve(&query)
         .with_json(format.is_json());
 
@@ -75,15 +75,14 @@ pub fn build_request(
         .with_tool(write_file_tool())
         .with_tool(replace_tool())
         .with_tool(load_skills_tool(
-            skills.clone(),
+            registry.clone(),
             Some(loaded_skills.clone()),
         ))
         .with_tool(load_references_tool(loaded_refs))
         .with_tool(execute_skill_script_tool(sandbox_settings.clone()))
         .with_tool(subagent_tool(
             model.clone(),
-            skills,
-            agents,
+            registry.clone(),
             sandbox_settings,
         ))
         .stop_when(step_count_is(max_steps as usize))
@@ -143,11 +142,10 @@ pub async fn handle_query(
     format: OutputFormat,
     sandbox_settings: Arc<SandboxConfig>,
     max_steps: u32,
+    registry: Arc<crate::registry::Registry>,
 ) -> Result<()> {
-    let agents = get_all_agents();
-    if let Some(agent_name) = find_subsume_candidate(query, &agents) {
-        let skills = get_all_skills();
-        let subagent = Subagent::new(model.clone(), skills, agents, sandbox_settings.clone());
+    if let Some(agent_name) = find_subsume_candidate(query, &registry.agents) {
+        let subagent = Subagent::new(model.clone(), registry.clone(), sandbox_settings.clone());
 
         tracing::info!(agent = %agent_name, "subsuming subagent role");
         let result = subagent.execute(&agent_name, &query.raw, 0, None).await;
@@ -180,14 +178,16 @@ pub async fn handle_query(
     let query_clone = query.clone();
     let history_clone = session.history_entries().to_vec();
     let sandbox_clone = sandbox_settings.clone();
+    let registry_clone = registry.clone();
 
     let response = crate::utils::execute_with_retry("generate_text", move || {
         let model = model_clone.clone();
         let query = query_clone.clone();
         let history = history_clone.clone();
         let sandbox = sandbox_clone.clone();
+        let registry = registry_clone.clone();
         async move {
-            let mut req = build_request(&model, &query, &history, sandbox, max_steps);
+            let mut req = build_request(&model, &query, &history, sandbox, max_steps, &registry);
             req.generate_text().await.map_err(|e| anyhow::anyhow!(e))
         }
     })

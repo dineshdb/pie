@@ -6,7 +6,6 @@
 use crate::config::pie_home;
 use crate::providers::Model;
 use crate::session::Session;
-use crate::ui::tui::command;
 use crate::ui::tui::realm::{Msg, StreamEvent};
 use crate::ui::tui::stream::{StreamContext, spawn_stream};
 use crate::ui::tui::widgets::completion::{CompletionPopup, CompletionState, Direction};
@@ -41,6 +40,7 @@ pub struct InputComponent {
     pub sandbox_settings: Arc<SandboxConfig>,
     pub max_steps: u32,
     pub stream_abort: Option<mpsc::UnboundedSender<()>>,
+    pub registry: Arc<crate::registry::Registry>,
 }
 
 impl InputComponent {
@@ -51,6 +51,7 @@ impl InputComponent {
         sandbox_settings: Arc<SandboxConfig>,
         max_steps: u32,
         available_providers: std::collections::HashMap<String, crate::config::ProviderConfig>,
+        registry: Arc<crate::registry::Registry>,
     ) -> Self {
         let session_id = session.id;
         let session_pool = session.pool().clone();
@@ -69,7 +70,7 @@ impl InputComponent {
         Self {
             textarea,
             history,
-            completion: CompletionState::new(command::build_all_completions()),
+            completion: CompletionState::new(registry.clone()),
             current_hint: String::new(),
             effects: EffectManager::default(),
             last_frame: Instant::now(),
@@ -82,6 +83,7 @@ impl InputComponent {
             sandbox_settings,
             max_steps,
             stream_abort: None,
+            registry,
         }
     }
 
