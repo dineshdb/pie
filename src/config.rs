@@ -102,10 +102,7 @@ impl ProviderConfig {
 impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
     type Error = anyhow::Error;
     fn try_from((cli, pie): (Cli, PieConfig)) -> Result<Self, Self::Error> {
-        let provider_name = cli
-            .provider
-            .as_deref()
-            .or(pie.default_provider.as_deref());
+        let provider_name = cli.provider.as_deref().or(pie.default_provider.as_deref());
 
         let provider_cfg = match provider_name {
             Some(name) => pie
@@ -121,12 +118,12 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
             _ => cli.output_format(),
         };
 
-        let provider = cli.provider_config.merge(provider_cfg);
+        let provider = provider_cfg.merge(cli.provider_config);
         let max_steps = pie.agent.as_ref().and_then(|a| a.max_steps).unwrap_or(25);
 
         let log_level = if cli.debug { "debug" } else { pie.log_level() };
         let mut resolved_provider = ResolvedProvider::try_from(provider.clone())?;
-        resolved_provider.name = provider_name.to_string();
+        resolved_provider.name = provider_name.unwrap_or("env").to_string();
 
         Ok(Self {
             provider: resolved_provider,
