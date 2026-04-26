@@ -445,6 +445,7 @@ impl InputComponent {
             let popup = CompletionPopup {
                 candidates,
                 selected: self.completion.index(),
+                max_height: area.y,
             };
             let popup_area = popup.popup_area(area);
             frame.render_widget(tuirealm::ratatui::widgets::Clear, popup_area);
