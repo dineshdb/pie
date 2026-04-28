@@ -5,6 +5,7 @@ use crate::prompt;
 use crate::providers::Model;
 use crate::session::{Role, Session};
 use crate::tools::subagent::Subagent;
+use crate::tools::tasks::{SharedTaskList, TaskList, task_tools};
 use crate::tools::{
     execute_skill_script_tool, load_references_tool, load_skills_tool, read_file_tool,
     replace_tool, shell, subagent_tool, write_file_tool,
@@ -12,12 +13,11 @@ use crate::tools::{
 use aisdk::core::LanguageModel;
 use aisdk::core::utils::step_count_is;
 use aisdk::core::{AssistantMessage, LanguageModelRequest, Message, UserMessage};
-use anyhow::Result;
+use anyhow::{Context, Result};
+use p1e_srt::SandboxConfig;
 use std::collections::HashSet;
 use std::iter::once;
 use std::sync::{Arc, Mutex};
-
-use p1e_srt::SandboxConfig;
 
 pub fn build_request(
     model: &Model,
@@ -26,7 +26,8 @@ pub fn build_request(
     sandbox_settings: Arc<SandboxConfig>,
     max_steps: u32,
     registry: &Arc<crate::registry::Registry>,
-) -> LanguageModelRequest<Model> {
+    task_state: &SharedTaskList,
+) -> Result<LanguageModelRequest<Model>> {
     let skills = &registry.skills;
     let agents = &registry.agents;
 
@@ -66,7 +67,7 @@ pub fn build_request(
 
     tracing::debug!(system = %system, query = %query.raw, "agent:");
     let loaded_refs = Arc::new(Mutex::new(HashSet::new()));
-    LanguageModelRequest::builder()
+    let mut builder = LanguageModelRequest::builder()
         .model(model.clone())
         .system(&system)
         .messages(messages)
@@ -84,9 +85,15 @@ pub fn build_request(
             model.clone(),
             registry.clone(),
             sandbox_settings,
+            task_state.clone(),
         ))
-        .stop_when(step_count_is(max_steps as usize))
-        .build()
+        .stop_when(step_count_is(max_steps as usize));
+
+    for tool in task_tools(task_state).context("failed to build task tools")? {
+        builder = builder.with_tool(tool);
+    }
+
+    Ok(builder.build())
 }
 
 const CONTROL_TOKENS: &[&str] = &["<eos>", "<|end|>", "</think_end>", "<|end_of_turn|>"];
@@ -135,6 +142,29 @@ pub fn extract_output_text(
         .to_string()
 }
 
+/// CLI-mode only: format tool call result for stderr display.
+fn format_tool_call_for_cli(result: &aisdk::core::ToolResultInfo) -> String {
+    let name = &result.tool.name;
+    let output = result
+        .output
+        .as_ref()
+        .ok()
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if output.is_empty() {
+        format!("Tool: {name}")
+    } else {
+        let first_line = output.lines().next().unwrap_or("");
+        let truncated = if first_line.len() > 100 {
+            format!("{}...", &first_line[..100])
+        } else {
+            first_line.to_string()
+        };
+        format!("Tool: {name} -> {truncated}")
+    }
+}
+
 pub async fn handle_query(
     model: &mut Model,
     query: &Instructions,
@@ -145,7 +175,13 @@ pub async fn handle_query(
     registry: Arc<crate::registry::Registry>,
 ) -> Result<()> {
     if let Some(agent_name) = find_subsume_candidate(query, &registry.agents) {
-        let subagent = Subagent::new(model.clone(), registry.clone(), sandbox_settings.clone());
+        let task_list = SharedTaskList::default();
+        let subagent = Subagent::new(
+            model.clone(),
+            registry.clone(),
+            sandbox_settings.clone(),
+            task_list,
+        );
 
         tracing::info!(agent = %agent_name, "subsuming subagent role");
         let result = subagent.execute(&agent_name, &query.raw, 0, None).await;
@@ -180,19 +216,39 @@ pub async fn handle_query(
     let sandbox_clone = sandbox_settings.clone();
     let registry_clone = registry.clone();
 
+    let task_list: SharedTaskList = Arc::new(Mutex::new(TaskList::default()));
+    let task_list_clone = task_list.clone();
+
     let response = crate::utils::execute_with_retry("generate_text", move || {
         let model = model_clone.clone();
         let query = query_clone.clone();
         let history = history_clone.clone();
         let sandbox = sandbox_clone.clone();
         let registry = registry_clone.clone();
+        let task_list = task_list_clone.clone();
         async move {
-            let mut req = build_request(&model, &query, &history, sandbox, max_steps, &registry);
+            let mut req = build_request(
+                &model, &query, &history, sandbox, max_steps, &registry, &task_list,
+            )?;
             req.generate_text().await.map_err(|e| anyhow::anyhow!(e))
         }
     })
     .await
     .map_err(|e| anyhow::anyhow!(e).context("generate_text failed"))?;
+
+    for result in response.tool_results().iter().flatten() {
+        if result.tool.name == "task_add" || result.tool.name == "task_update" {
+            let guard = crate::tools::safe_lock(&task_list);
+            eprintln!("Progress: {}", guard.progress_summary());
+        } else {
+            let tool = aisdk::core::ToolResultInfo {
+                tool: result.tool.clone(),
+                output: result.output.clone(),
+            };
+            let display = format_tool_call_for_cli(&tool);
+            eprintln!("{display}");
+        }
+    }
 
     let assistant_text = response.text().unwrap_or_default();
     let output = extract_output_text(&assistant_text, response.tool_results().as_deref());

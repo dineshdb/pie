@@ -257,7 +257,6 @@ pub fn build_chat_lines(
     lines
 }
 
-/// Render the welcome message with colored "pie" and "?".
 fn append_welcome_line(lines: &mut Vec<Line<'static>>, content: &str, _width: usize) {
     let yellow = Style::default().fg(Color::Yellow);
     let cyan = Style::default().fg(Color::Cyan);
@@ -317,13 +316,9 @@ fn append_tool_lines(lines: &mut Vec<Line<'static>>, content: &str, width: usize
     }
 }
 
-pub(crate) fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        return s.to_string();
-    }
-    let end = s.ceil_char_boundary(max_len);
-    format!("{}…", &s[..end])
-}
+// ── Helpers ─────────────────────────────────────────────────────
+
+pub(crate) use super::truncate_str;
 
 #[cfg(test)]
 #[allow(clippy::indexing_slicing)]

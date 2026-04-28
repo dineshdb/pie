@@ -19,6 +19,7 @@ pub enum StreamEvent {
         display: String,
         output: String,
     },
+    TaskUpdate,
     ModelList(Vec<String>),
 }
 

@@ -3,15 +3,18 @@
 //! Not mounted in the tuirealm App — accessed directly from the main loop.
 //! Only `ChatComponent` is the active tuirealm component.
 
-use crate::config::pie_home;
+use crate::config::{ProviderConfig, ResolvedProvider, pie_home};
 use crate::providers::Model;
+use crate::registry::Registry;
 use crate::session::Session;
+use crate::tools::tasks::SharedTaskList;
 use crate::ui::tui::realm::{Msg, StreamEvent};
 use crate::ui::tui::stream::{StreamContext, spawn_stream};
 use crate::ui::tui::widgets::completion::{CompletionPopup, CompletionState, Direction};
 use crate::ui::tui::widgets::history::InputHistory;
 use crate::ui::tui::widgets::input::{InputView, cursor_position};
 use p1e_srt::SandboxConfig;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tachyonfx::{CellFilter, EffectManager, fx};
@@ -31,27 +34,30 @@ pub struct InputComponent {
     pub current_hint: String,
     pub effects: EffectManager<&'static str>,
     pub last_frame: Instant,
+    pub last_tick: Instant,
+    pub spinner_frame: usize,
     stream_effect_active: bool,
     pub model: Model,
-    pub provider: crate::config::ResolvedProvider,
-    pub available_providers: std::collections::HashMap<String, crate::config::ProviderConfig>,
+    pub provider: ResolvedProvider,
+    pub available_providers: HashMap<String, ProviderConfig>,
     pub session_id: uuid::Uuid,
     pub session_pool: Arc<crate::db::DbPool>,
     pub sandbox_settings: Arc<SandboxConfig>,
     pub max_steps: u32,
     pub stream_abort: Option<mpsc::UnboundedSender<()>>,
-    pub registry: Arc<crate::registry::Registry>,
+    pub registry: Arc<Registry>,
+    pub task_list: SharedTaskList,
 }
 
 impl InputComponent {
     pub fn new(
         model: Model,
-        provider: crate::config::ResolvedProvider,
+        provider: ResolvedProvider,
         session: &Session,
         sandbox_settings: Arc<SandboxConfig>,
         max_steps: u32,
-        available_providers: std::collections::HashMap<String, crate::config::ProviderConfig>,
-        registry: Arc<crate::registry::Registry>,
+        available_providers: HashMap<String, ProviderConfig>,
+        registry: Arc<Registry>,
     ) -> Self {
         let session_id = session.id;
         let session_pool = session.pool().clone();
@@ -74,6 +80,8 @@ impl InputComponent {
             current_hint: String::new(),
             effects: EffectManager::default(),
             last_frame: Instant::now(),
+            last_tick: Instant::now(),
+            spinner_frame: 0,
             stream_effect_active: false,
             model,
             provider,
@@ -84,6 +92,7 @@ impl InputComponent {
             max_steps,
             stream_abort: None,
             registry,
+            task_list: SharedTaskList::default(),
         }
     }
 
@@ -348,7 +357,7 @@ impl InputComponent {
     }
 
     /// Returns a provider config based on current model.
-    pub fn get_provider(&self) -> crate::config::ResolvedProvider {
+    pub fn get_provider(&self) -> ResolvedProvider {
         self.provider.clone()
     }
 
@@ -359,11 +368,46 @@ impl InputComponent {
         }
     }
 
-    pub fn set_provider(&mut self, provider: crate::config::ResolvedProvider) {
+    pub fn set_provider(&mut self, provider: ResolvedProvider) {
         self.provider = provider;
         if let Ok(new_model) = crate::providers::build_from_resolved(&self.provider) {
             self.model = new_model;
         }
+    }
+
+    pub fn active_tasks(&self, is_streaming: bool) -> Vec<String> {
+        let guard = crate::tools::safe_lock(&self.task_list);
+
+        if !is_streaming {
+            return vec![];
+        }
+
+        // 1. If we have active tasks, return them all
+        let active = guard.active_tasks();
+        if !active.is_empty() {
+            return active;
+        }
+
+        if guard.tasks.is_empty() {
+            // 2. If no tasks yet but we're streaming, it's Planning phase
+            return vec!["Planning".to_string()];
+        }
+
+        // 3. If we're here, we're streaming but no tasks are InProgress.
+        // Show the last finished task as breadcrumb.
+        guard
+            .tasks
+            .iter()
+            .rfind(|t| {
+                matches!(
+                    t.status,
+                    crate::tools::tasks::TaskStatus::Completed
+                        | crate::tools::tasks::TaskStatus::Failed
+                        | crate::tools::tasks::TaskStatus::Skipped
+                )
+            })
+            .map(|t| vec![t.title.clone()])
+            .unwrap_or_default()
     }
 
     // ...
@@ -379,6 +423,9 @@ impl InputComponent {
         let mut empty = TextArea::default();
         apply_textarea_style(&mut empty);
         self.textarea = empty;
+
+        let mut guard = crate::tools::safe_lock(&self.task_list);
+        guard.tasks.clear();
     }
 
     // ── Rendering ────────────────────────────────────────────────────
@@ -393,6 +440,17 @@ impl InputComponent {
         };
         let cursor = self.textarea.cursor();
 
+        // Update spinner frame
+        if is_streaming {
+            let elapsed = self.last_tick.elapsed();
+            if elapsed >= std::time::Duration::from_millis(80) {
+                self.spinner_frame = self.spinner_frame.wrapping_add(1);
+                self.last_tick = Instant::now();
+            }
+        } else {
+            self.spinner_frame = 0;
+        }
+
         let input_view = InputView {
             text_lines,
             cursor_row: cursor.0,
@@ -404,25 +462,27 @@ impl InputComponent {
         frame.render_widget(input_view, area);
 
         #[allow(clippy::cast_possible_truncation)]
-        let visible_rows = area.height.saturating_sub(2) as usize;
+        let visible_rows = area.height as usize;
         if cursor.0 < visible_rows {
             let (cx, cy) = cursor_position(area, cursor.0, cursor.1);
             frame.set_cursor_position((cx, cy));
         }
 
-        // Streaming border effect
+        // Streaming status bar effects (task title only, border removed)
         match (is_streaming, self.stream_effect_active) {
             (true, false) => {
-                let effect = fx::repeating(fx::hsl_shift_fg(
-                    [30.0, 20.0, 10.0],
-                    (1500, tachyonfx::Interpolation::SineInOut),
+                // Task title animation - smooth full spectrum cycling
+                let title_fx = fx::repeating(fx::hsl_shift_fg(
+                    [360.0, 0.0, 0.0],
+                    (3000, tachyonfx::Interpolation::Linear),
                 ));
-                let effect = effect.with_filter(CellFilter::FgColor(Color::Rgb(255, 140, 0)));
-                self.effects.add_unique_effect("stream", effect);
+                let title_fx = title_fx.with_filter(CellFilter::FgColor(Color::Cyan));
+                self.effects.add_unique_effect("stream_title", title_fx);
+
                 self.stream_effect_active = true;
             }
             (false, true) => {
-                self.effects.cancel_unique_effect("stream");
+                self.effects.cancel_unique_effect("stream_title");
                 self.stream_effect_active = false;
             }
             _ => {}

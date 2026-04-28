@@ -21,6 +21,7 @@ pub struct StreamContext {
     pub pool: Arc<crate::db::DbPool>,
     pub max_steps: u32,
     pub registry: Arc<crate::registry::Registry>,
+    pub task_list: crate::tools::tasks::SharedTaskList,
 }
 
 impl From<&crate::ui::tui::components::input::InputComponent> for StreamContext {
@@ -32,6 +33,7 @@ impl From<&crate::ui::tui::components::input::InputComponent> for StreamContext 
             pool: input.session_pool.clone(),
             max_steps: input.max_steps,
             registry: input.registry.clone(),
+            task_list: input.task_list.clone(),
         }
     }
 }
@@ -66,16 +68,27 @@ pub async fn spawn_stream(
         let sandbox = sandbox_clone.clone();
         let model = model_clone.clone();
         let registry = ctx.registry.clone();
+        let task_list = ctx.task_list.clone();
 
         async move {
             let model = model.clone();
+            let task_list = task_list.clone();
             let mut req = if let Some(agent) = find_subsume_candidate(&query, &registry.agents) {
-                let subagent = Subagent::new(model.clone(), registry.clone(), sandbox.clone());
+                let subagent =
+                    Subagent::new(model.clone(), registry.clone(), sandbox.clone(), task_list);
                 subagent
                     .build_request(&agent, &query.raw, 0, None)
                     .map_err(|e| anyhow::anyhow!(e))?
             } else {
-                build_request(&model, &query, &history, sandbox, ctx.max_steps, &registry)
+                build_request(
+                    &model,
+                    &query,
+                    &history,
+                    sandbox,
+                    ctx.max_steps,
+                    &registry,
+                    &task_list,
+                )?
             };
             req.stream_text().await.map_err(|e| anyhow::anyhow!(e))
         }
@@ -156,9 +169,12 @@ impl<'a> StreamProcessor<'a> {
             }
             LanguageModelStreamChunkType::ToolCallEnd(result) => {
                 let output = tool_output_text(&result);
+                let name = std::mem::take(&mut self.pending_tool.name);
+                let params = std::mem::take(&mut self.pending_tool.params);
+
                 let event = CompletedToolCall {
-                    name: std::mem::take(&mut self.pending_tool.name),
-                    params: std::mem::take(&mut self.pending_tool.params),
+                    name: name.clone(),
+                    params,
                     output,
                 };
                 let display = if event.params.is_empty() {
@@ -166,6 +182,12 @@ impl<'a> StreamProcessor<'a> {
                 } else {
                     format!("{}: {}", event.name, event.params)
                 };
+
+                // For task tools, also trigger a TaskUpdate event to refresh task UI
+                if name == "task_add" || name == "task_update" {
+                    let _ = self.event_tx.send(StreamEvent::TaskUpdate);
+                }
+
                 persist_tool_call(self.session, &event.name, &display, &event.output);
                 let _ = self.event_tx.send(event.into());
             }

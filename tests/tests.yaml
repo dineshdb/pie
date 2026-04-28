@@ -7,6 +7,7 @@
 #   exit          - expected exit code (omit = don't check)
 #   contains      - pattern(s) that MUST appear in output (string or list)
 #   not_contains  - pattern(s) that must NOT appear (string or list)
+#   expectations  - high-level expectations about behavior (string or list)
 #   filter        - grep pattern to pre-filter output before checking contains/not_contains
 #   timeout       - max seconds to wait (default 30)
 #   debug         - run with --debug flag (true/false)

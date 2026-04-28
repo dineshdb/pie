@@ -2,6 +2,8 @@
 //!
 //! Owns the message list, render cache, scroll state, and streaming response tracking.
 
+use crate::registry::Registry;
+use crate::tools::tasks::SharedTaskList;
 use crate::ui::tui::realm::{Msg, StreamEvent};
 use crate::ui::tui::state::ChatMessage;
 use crate::ui::tui::widgets::chat::{self, ChatState, ChatView};
@@ -43,14 +45,17 @@ pub struct ChatComponent {
     pub last_area: Rect,
     pub cached_lines: Vec<tuirealm::ratatui::text::Line<'static>>,
     pub last_width: usize,
-    pub registry: Arc<crate::registry::Registry>,
+    pub registry: Arc<Registry>,
+    pub task_list: SharedTaskList,
+    pub show_tasks: bool,
 }
 
 impl ChatComponent {
     pub fn new(
         messages: Vec<ChatMessage>,
         current_model: String,
-        registry: Arc<crate::registry::Registry>,
+        registry: Arc<Registry>,
+        task_list: SharedTaskList,
     ) -> Self {
         Self {
             messages,
@@ -63,7 +68,14 @@ impl ChatComponent {
             cached_lines: Vec::new(),
             last_width: 0,
             registry,
+            task_list,
+            show_tasks: true,
         }
+    }
+
+    pub fn toggle_tasks(&mut self) {
+        self.show_tasks = !self.show_tasks;
+        self.cached_lines.clear();
     }
 
     pub fn set_help_dialog(&mut self) {
@@ -131,7 +143,7 @@ impl ChatComponent {
         self.response_idx.is_some()
     }
 
-    fn get_help_total_lines(registry: &crate::registry::Registry) -> u16 {
+    fn get_help_total_lines(registry: &Registry) -> u16 {
         let mut total = 13; // Commands (7) + Keys (6)
         if !registry.agents.is_empty() {
             #[allow(clippy::cast_possible_truncation)]
@@ -356,7 +368,11 @@ impl ChatComponent {
                     format!("{display} → {result_line}")
                 };
                 self.add_message(ChatMessage::tool(&content));
-                None
+                Some(Msg::Redraw)
+            }
+            StreamEvent::TaskUpdate => {
+                self.cached_lines.clear();
+                Some(Msg::Redraw)
             }
             StreamEvent::ModelList(models) => {
                 tracing::info!(count = models.len(), "received ModelList in ChatComponent");
@@ -448,6 +464,10 @@ impl ChatComponent {
             }
             (KeyModifiers::NONE, Key::PageDown) => {
                 self.scroll_down(20);
+                Msg::Redraw
+            }
+            (KeyModifiers::CONTROL, Key::Char('t')) => {
+                self.toggle_tasks();
                 Msg::Redraw
             }
             _ => Msg::KeyboardToInput(*key),
@@ -566,9 +586,11 @@ impl ChatComponent {
 mod tests {
     use super::*;
     use crate::session::Role;
+    use crate::tools::tasks::TaskList;
+    use std::sync::Mutex;
 
-    fn test_registry() -> Arc<crate::registry::Registry> {
-        Arc::new(crate::registry::Registry {
+    fn test_registry() -> Arc<Registry> {
+        Arc::new(Registry {
             agents: Vec::new(),
             skills: Vec::new(),
             completions: Vec::new(),
@@ -578,18 +600,27 @@ mod tests {
     #[test]
     fn new_chat_has_welcome_message_first() {
         let messages = vec![ChatMessage::system("Welcome to pie! Type ? for help.")];
-        let chat = ChatComponent::new(messages, "test-model".to_string(), test_registry());
+        let task_list: SharedTaskList = Arc::new(Mutex::new(TaskList::default()));
+        let chat = ChatComponent::new(
+            messages,
+            "test-model".to_string(),
+            test_registry(),
+            task_list,
+        );
         assert_eq!(chat.messages.len(), 1);
         assert_eq!(chat.messages[0].role, Role::System);
         assert!(chat.messages[0].content.contains("Welcome"));
+        assert!(chat.show_tasks);
     }
 
     #[test]
     fn add_message_auto_scrolls() {
+        let task_list: SharedTaskList = Arc::new(Mutex::new(TaskList::default()));
         let mut chat = ChatComponent::new(
             vec![ChatMessage::system("Welcome")],
             "test-model".to_string(),
             test_registry(),
+            task_list,
         );
         chat.chat_state.auto_scroll = false;
         chat.add_message(ChatMessage::user("test"));
@@ -600,8 +631,22 @@ mod tests {
     }
 
     #[test]
+    fn toggle_tasks_state() {
+        let task_list: SharedTaskList = Arc::new(Mutex::new(TaskList::default()));
+        let mut chat =
+            ChatComponent::new(vec![], "test-model".to_string(), test_registry(), task_list);
+        assert!(chat.show_tasks);
+        chat.toggle_tasks();
+        assert!(!chat.show_tasks);
+        chat.toggle_tasks();
+        assert!(chat.show_tasks);
+    }
+
+    #[test]
     fn start_and_finish_stream() {
-        let mut chat = ChatComponent::new(vec![], "test-model".to_string(), test_registry());
+        let task_list: SharedTaskList = Arc::new(Mutex::new(TaskList::default()));
+        let mut chat =
+            ChatComponent::new(vec![], "test-model".to_string(), test_registry(), task_list);
         chat.start_response();
         assert!(chat.is_streaming());
         assert_eq!(chat.response_idx, Some(0));

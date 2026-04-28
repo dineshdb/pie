@@ -1,6 +1,6 @@
 //! TUI display formatting for tool call results.
 
-use crate::ui::tui::widgets::chat::truncate_str;
+use crate::ui::tui::widgets::truncate_str;
 use std::fmt;
 
 /// Parsed tool call result for display in the TUI.

@@ -16,6 +16,8 @@ use crate::ui::tui::components::chat::{ActiveDialog, ChatComponent};
 use crate::ui::tui::components::input::InputComponent;
 use crate::ui::tui::realm::{App, Id, Msg, StreamEvent, StreamPort};
 use crate::ui::tui::state::ChatMessage;
+use crate::ui::tui::widgets::status_bar::StatusBar;
+use crate::ui::tui::widgets::task_list::TaskView;
 use anyhow::{Context, Result};
 use arboard::Clipboard;
 use p1e_srt::SandboxConfig;
@@ -26,10 +28,12 @@ use tokio::sync::mpsc;
 use tuirealm::application::PollStrategy;
 use tuirealm::event::{Key, KeyModifiers};
 use tuirealm::listener::EventListenerCfg;
+use tuirealm::props::{Color, Style};
 use tuirealm::ratatui::backend::CrosstermBackend;
 use tuirealm::ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use tuirealm::ratatui::crossterm::execute;
 use tuirealm::ratatui::layout::{Constraint, Direction, Layout};
+use tuirealm::ratatui::widgets::{Block, BorderType, Borders};
 
 type Terminal = tuirealm::ratatui::Terminal<CrosstermBackend<std::io::Stdout>>;
 
@@ -290,7 +294,12 @@ pub async fn run_tui(
 
     app.mount(
         Id::Chat,
-        Box::new(ChatComponent::new(messages, current_model, registry)),
+        Box::new(ChatComponent::new(
+            messages,
+            current_model,
+            registry,
+            input.task_list.clone(),
+        )),
         vec![],
     )?;
     app.active(&Id::Chat)?;
@@ -308,10 +317,11 @@ pub async fn run_tui(
             .tick(PollStrategy::UpTo(100, Duration::from_millis(8)))
             .context("can't poll events")?;
 
-        tracing::debug!(drain = last_frame.elapsed().as_micros(), "render",);
+        let elapsed = last_frame.elapsed().as_micros();
+        tracing::debug!(elapsed, "render");
 
         let mut exit = false;
-        if batch.is_empty() {
+        if batch.is_empty() && elapsed < 100_000 {
             continue;
         }
         for msg in batch {
@@ -372,19 +382,70 @@ fn render(app: &mut App, input: &mut InputComponent, terminal: &mut Terminal) ->
         let area = f.area();
         #[allow(clippy::cast_possible_truncation)]
         let input_lines = input.input_line_count().clamp(1, 8) as u16;
-        let input_height = input_lines + 2;
+        let input_height = input_lines;
+
+        let (show_tasks, task_count) = if let Some(chat) = chat_ref!(app) {
+            let guard = crate::tools::safe_lock(&chat.task_list);
+            (
+                chat.show_tasks && !guard.tasks.is_empty(),
+                guard.tasks.len(),
+            )
+        } else {
+            (false, 0)
+        };
+
+        let mut constraints = vec![
+            Constraint::Min(5),    // Messages
+            Constraint::Length(1), // Status Bar
+        ];
+
+        if show_tasks {
+            #[allow(clippy::cast_possible_truncation)]
+            let tasks_height = (task_count as u16 + 1).min(10); // +1 for top border
+            constraints.push(Constraint::Length(tasks_height));
+        }
+
+        constraints.push(Constraint::Length(input_height)); // Input
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(5), Constraint::Length(input_height)])
+            .constraints(constraints)
             .split(area);
 
         let messages_area = chunks.first().copied().unwrap_or(area);
-        let input_area = chunks.get(1).copied().unwrap_or(area);
+        let status_bar_area = chunks.get(1).copied().unwrap_or(area);
+
+        let (tasks_area, input_area) = if show_tasks {
+            (
+                chunks.get(2).copied(),
+                chunks.get(3).copied().unwrap_or(area),
+            )
+        } else {
+            (None, chunks.get(2).copied().unwrap_or(area))
+        };
 
         app.view(&Id::Chat, f, messages_area);
 
+        // Status Bar rendering
         let is_streaming = chat_ref!(app).is_some_and(ChatComponent::is_streaming);
+        let active_tasks = input.active_tasks(is_streaming);
+        let status_bar = StatusBar::new(active_tasks, is_streaming, input.spinner_frame);
+        f.render_widget(status_bar, status_bar_area);
+
+        if let Some(t_area) = tasks_area
+            && let Some(chat) = chat_ref!(app)
+        {
+            let guard = crate::tools::safe_lock(&chat.task_list);
+            let task_view = TaskView::new(&guard).block(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .border_type(BorderType::Plain)
+                    .title(" Tasks "),
+            );
+            f.render_widget(task_view, t_area);
+        }
+
         input.render(f, input_area, is_streaming);
     })?;
     Ok(())
