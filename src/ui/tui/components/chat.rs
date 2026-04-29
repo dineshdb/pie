@@ -277,7 +277,7 @@ impl Component for ChatComponent {
 impl AppComponent<Msg, StreamEvent> for ChatComponent {
     fn on(&mut self, ev: &Event<StreamEvent>) -> Option<Msg> {
         match ev {
-            Event::User(user_ev) => self.handle_user_event(user_ev),
+            Event::User(user_ev) => Some(self.handle_user_event(user_ev)),
             Event::Keyboard(key) => Some(self.handle_keyboard_event(key)),
             Event::Mouse(ev) => self.handle_mouse_event(*ev),
             _ => None,
@@ -333,15 +333,15 @@ impl ChatComponent {
         }
     }
 
-    fn handle_user_event(&mut self, ev: &StreamEvent) -> Option<Msg> {
+    fn handle_user_event(&mut self, ev: &StreamEvent) -> Msg {
         match ev {
             StreamEvent::Delta(s) => {
                 self.update_response(s.clone());
-                None
+                Msg::Redraw
             }
             StreamEvent::Done(s) => {
                 self.finish_stream(s.clone());
-                Some(Msg::StreamDone(s.clone()))
+                Msg::StreamDone(s.clone())
             }
             StreamEvent::Error(s) => {
                 if let ActiveDialog::ModelSelector {
@@ -353,7 +353,7 @@ impl ChatComponent {
                 } else {
                     self.stream_error(s);
                 }
-                Some(Msg::Redraw)
+                Msg::Redraw
             }
             StreamEvent::ToolCall {
                 name,
@@ -368,11 +368,11 @@ impl ChatComponent {
                     format!("{display} → {result_line}")
                 };
                 self.add_message(ChatMessage::tool(&content));
-                Some(Msg::Redraw)
+                Msg::Redraw
             }
             StreamEvent::TaskUpdate => {
                 self.cached_lines.clear();
-                Some(Msg::Redraw)
+                Msg::Redraw
             }
             StreamEvent::ModelList(models) => {
                 tracing::info!(count = models.len(), "received ModelList in ChatComponent");
@@ -412,7 +412,7 @@ impl ChatComponent {
                 } else {
                     tracing::warn!(dialog = ?self.active_dialog, "received ModelList but ModelSelector is not active");
                 }
-                Some(Msg::Redraw)
+                Msg::Redraw
             }
         }
     }

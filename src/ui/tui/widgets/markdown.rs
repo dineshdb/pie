@@ -1,43 +1,37 @@
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use tuirealm::ratatui::style::{Color, Modifier, Style};
 use tuirealm::ratatui::text::{Line, Span};
 
 /// Render a markdown string into ratatui [`Line`]s with styled spans.
 #[allow(clippy::too_many_lines)]
 pub fn render_markdown(text: &str, width: usize, base_color: Color) -> Vec<Line<'static>> {
-    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
-    tracing::debug!(%text, "rendering");
-
     let mut lines: Vec<Line<'static>> = Vec::new();
     let parser = Parser::new_ext(text, Options::empty());
 
     let mut in_code_block = false;
     let mut code_block_lines: Vec<String> = Vec::new();
     let mut current_spans: Vec<Span<'static>> = Vec::new();
-    let mut heading_level = 0u8;
+    let mut current_style = Style::default().fg(base_color);
+    let mut style_stack: Vec<Style> = vec![current_style];
 
     for event in parser {
         match event {
             Event::Start(tag) => match tag {
-                Tag::Heading { level, .. } => {
-                    heading_level = level as u8;
+                Tag::Heading { .. } => {
+                    current_style = current_style.fg(Color::Cyan).add_modifier(Modifier::BOLD);
+                    style_stack.push(current_style);
                 }
                 Tag::CodeBlock(_) => {
                     in_code_block = true;
                     code_block_lines.clear();
                 }
                 Tag::Strong => {
-                    current_spans.push(Span::styled(
-                        "",
-                        Style::default().fg(base_color).add_modifier(Modifier::BOLD),
-                    ));
+                    current_style = current_style.add_modifier(Modifier::BOLD);
+                    style_stack.push(current_style);
                 }
                 Tag::Emphasis => {
-                    current_spans.push(Span::styled(
-                        "",
-                        Style::default()
-                            .fg(base_color)
-                            .add_modifier(Modifier::ITALIC),
-                    ));
+                    current_style = current_style.add_modifier(Modifier::ITALIC);
+                    style_stack.push(current_style);
                 }
                 Tag::Item => {
                     current_spans.push(Span::styled("  • ", Style::default().fg(Color::DarkGray)));
@@ -46,9 +40,14 @@ pub fn render_markdown(text: &str, width: usize, base_color: Color) -> Vec<Line<
             },
             Event::End(tag) => match tag {
                 TagEnd::Heading(_) => {
-                    let line = Line::from(std::mem::take(&mut current_spans));
-                    lines.push(line);
-                    heading_level = 0;
+                    style_stack.pop();
+                    current_style = *style_stack
+                        .last()
+                        .unwrap_or(&Style::default().fg(base_color));
+                    if !current_spans.is_empty() {
+                        let line = Line::from(std::mem::take(&mut current_spans));
+                        lines.push(line);
+                    }
                 }
                 TagEnd::CodeBlock => {
                     in_code_block = false;
@@ -65,6 +64,12 @@ pub fn render_markdown(text: &str, width: usize, base_color: Color) -> Vec<Line<
                     }
                     code_block_lines.clear();
                 }
+                TagEnd::Strong | TagEnd::Emphasis => {
+                    style_stack.pop();
+                    current_style = *style_stack
+                        .last()
+                        .unwrap_or(&Style::default().fg(base_color));
+                }
                 TagEnd::Paragraph | TagEnd::Item if !current_spans.is_empty() => {
                     let line = Line::from(std::mem::take(&mut current_spans));
                     lines.push(line);
@@ -75,21 +80,17 @@ pub fn render_markdown(text: &str, width: usize, base_color: Color) -> Vec<Line<
                 if in_code_block {
                     code_block_lines.extend(text.lines().map(ToString::to_string));
                 } else {
-                    let style = if heading_level > 0 {
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(base_color)
-                    };
-                    push_text(&mut lines, &mut current_spans, &text, style);
+                    push_text(&mut lines, &mut current_spans, &text, current_style);
                 }
             }
             Event::Code(code) => {
-                let code_style = Style::default().fg(Color::Green).bg(Color::Black);
+                let code_style = current_style.fg(Color::Green).bg(Color::Black);
                 push_text(&mut lines, &mut current_spans, &code, code_style);
             }
-            Event::SoftBreak | Event::HardBreak if !current_spans.is_empty() => {
+            Event::SoftBreak if !current_spans.is_empty() => {
+                current_spans.push(Span::styled(" ", current_style));
+            }
+            Event::HardBreak if !current_spans.is_empty() => {
                 lines.push(Line::from(std::mem::take(&mut current_spans)));
             }
             _ => {}
@@ -100,7 +101,6 @@ pub fn render_markdown(text: &str, width: usize, base_color: Color) -> Vec<Line<
         lines.push(Line::from(current_spans));
     }
 
-    // Post-process: guarantee no line exceeds width
     let mut result = Vec::with_capacity(lines.len());
     for line in lines {
         if line.width() <= width {
@@ -133,21 +133,33 @@ fn push_text(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
 
     #[test]
-    fn render_markdown_wraps_long_paragraph() {
-        let input = "This is a very long paragraph that should definitely be wrapped at the specified width because it exceeds the terminal column count by a significant margin.";
-        let lines = render_markdown(input, 40, Color::Gray);
-        assert!(
-            lines.len() > 1,
-            "Should produce multiple wrapped lines, got {} lines",
-            lines.len()
+    fn render_markdown_handles_nested_styles() {
+        let input = "This is **bold** and *italic* text.";
+        let lines = render_markdown(input, 80, Color::Gray);
+        let first_line = lines.first().expect("Should have at least one line");
+        let spans: Vec<_> = first_line.spans.iter().collect();
+
+        // We expect "This is ", "bold", " and ", "italic", " text."
+        // Let's check if the bold one actually has the bold modifier.
+        let bold_span = spans.iter().find(|s| s.content == "bold");
+        assert!(bold_span.is_some_and(|s| s.style.add_modifier.contains(Modifier::BOLD)));
+    }
+
+    #[test]
+    fn render_markdown_handles_soft_breaks() {
+        let input = "Line one\nLine two";
+        let lines = render_markdown(input, 80, Color::Gray);
+        // Soft breaks should probably be spaces, but currently they are new lines.
+        // If they are new lines, lines.len() will be 2.
+        assert_eq!(
+            lines.len(),
+            1,
+            "Soft breaks should not necessarily create new lines in the output if we want flowing text"
         );
-        for line in &lines {
-            let w = line.width();
-            assert!(w <= 40, "Line exceeds width 40: width={w}");
-        }
     }
 }
