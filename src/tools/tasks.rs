@@ -48,7 +48,7 @@ impl TaskList {
     }
 
     pub fn enforce_planning(&self, tool: &str) -> Result<(), String> {
-        tracing::debug!(tool, count = self.tasks.len(), "enforcing planning");
+        tracing::trace!(tool, count = self.tasks.len(), "enforcing planning");
         if self.is_empty() {
             return Err(format!(
                 "CRITICAL ERROR: You called '{tool}' without a task list. \

@@ -218,8 +218,7 @@ async fn main() -> anyhow::Result<()> {
 
 fn default_env_filter(default_level: &str) -> EnvFilter {
     let filter_str = match default_level {
-        "info" => "warn,p1e=debug,pie=debug,p1e_sandbox=debug,agentsdk=debug",
-        "debug" => "debug",
+        "debug" => "warn,p1e=debug,pie=debug,p1e_sandbox=debug",
         others => others,
     };
     EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter_str))

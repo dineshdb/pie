@@ -157,7 +157,8 @@ async fn handle_direct(
                 let format = OutputFormat::Default;
                 let sp = prompt::SystemPrompt::new(skills, agents)
                     .resolve(&query)
-                    .with_json(format.is_json());
+                    .with_json(format.is_json())
+                    .with_mode(prompt::RunMode::Cli);
 
                 let needed_skills = &sp.loaded_skills;
                 let loaded_skills = Arc::new(Mutex::new(

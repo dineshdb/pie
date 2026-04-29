@@ -95,7 +95,9 @@ pub async fn spawn_stream(
                     .filter(|e| e.role == Role::User)
                     .for_each(|e| query.clone().merge_mentions(&e.content));
 
-                let sp = SystemPrompt::new(&registry.skills, &registry.agents).resolve(&query);
+                let sp = SystemPrompt::new(&registry.skills, &registry.agents)
+                    .resolve(&query)
+                    .with_mode(crate::prompt::RunMode::Tui);
                 let loaded_skills = Arc::new(Mutex::new(
                     sp.loaded_skills
                         .iter()

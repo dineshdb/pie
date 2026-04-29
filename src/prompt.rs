@@ -7,6 +7,13 @@ use minijinja::Environment;
 
 const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../.pie/SYSTEM.md");
 
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RunMode {
+    Cli,
+    Tui,
+}
+
 /// A structured builder for rendering the system prompt with its full context.
 pub struct SystemPrompt<'a> {
     skills: &'a [Skill],
@@ -14,6 +21,7 @@ pub struct SystemPrompt<'a> {
     pub loaded_skills: Vec<&'a str>,
     agent: Option<&'a Agent>,
     json_output: bool,
+    mode: RunMode,
 }
 
 impl<'a> SystemPrompt<'a> {
@@ -25,6 +33,7 @@ impl<'a> SystemPrompt<'a> {
             loaded_skills: Vec::new(),
             agent: None,
             json_output: false,
+            mode: RunMode::Tui,
         }
     }
 
@@ -37,6 +46,12 @@ impl<'a> SystemPrompt<'a> {
     /// Set whether JSON output mode is enabled.
     pub fn with_json(mut self, json_output: bool) -> Self {
         self.json_output = json_output;
+        self
+    }
+
+    /// Set the run mode (CLI or TUI).
+    pub fn with_mode(mut self, mode: RunMode) -> Self {
+        self.mode = mode;
         self
     }
 
@@ -79,6 +94,7 @@ impl<'a> SystemPrompt<'a> {
                 pwd,
                 repo_root => git_repo_root(),
                 json_output => self.json_output,
+                run_mode => self.mode,
                 interactivity,
             },
         )
