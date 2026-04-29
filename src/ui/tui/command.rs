@@ -60,6 +60,8 @@ impl BuiltinCommand {
 pub enum Command {
     /// Send a chat message / invoke a skill/agent.
     Send(String),
+    /// Execute a shell command directly.
+    Shell(String),
     /// Invoke a named agent or skill with a query.
     Invoke {
         name: String,
@@ -74,6 +76,13 @@ impl Command {
     /// Parse raw input text into a [`Command`].
     pub fn parse(input: &str, registry: &crate::registry::Registry) -> Self {
         let trimmed = input.trim();
+        if let Some(after_bang) = trimmed.strip_prefix('!')
+            && !after_bang.is_empty()
+            && !after_bang.starts_with(char::is_whitespace)
+        {
+            return Self::Shell(after_bang.to_string());
+        }
+
         if trimmed.starts_with('/') {
             let (cmd_part, rest) = match trimmed.split_once(' ') {
                 Some((c, r)) => (c, Some(r.trim().to_string())),
@@ -119,6 +128,7 @@ impl Command {
                 BuiltinCommand::Clear => CommandAction::ClearMessages,
                 BuiltinCommand::New => CommandAction::NewSession,
             },
+            Self::Shell(command) => CommandAction::Shell(command),
             Self::Send(query) => CommandAction::Stream(query),
             Self::Invoke {
                 name,
@@ -144,6 +154,7 @@ pub enum CommandAction {
     ClearMessages,
     NewSession,
     Stream(String),
+    Shell(String),
     Model(Option<String>),
     Help,
     Quit,

@@ -10,7 +10,7 @@
 
 use crate::config::{PieConfig, ResolvedProvider};
 use crate::providers::{Model, fetch_models};
-use crate::session::Session;
+use crate::session::{Role, Session};
 use crate::ui::tui::command::{Command, CommandAction};
 use crate::ui::tui::components::chat::{ActiveDialog, ChatComponent};
 use crate::ui::tui::components::input::InputComponent;
@@ -159,7 +159,6 @@ fn handle_submit(
     }
 
     input.take_input();
-
     let cmd = Command::parse(text, &input.registry);
     match cmd.dispatch(&input.registry) {
         CommandAction::AddMessage(msg) => {
@@ -169,52 +168,7 @@ fn handle_submit(
             }
         }
         CommandAction::Model(name) => {
-            if let Some(new_model) = name {
-                input.set_model(&new_model);
-                if let Some(chat) = chat_mut!(app) {
-                    chat.add_message(ChatMessage::system(&format!(
-                        "Switched to model: {new_model}"
-                    )));
-                    chat.current_model = new_model;
-                }
-            } else {
-                let provider = input.get_provider();
-                let mut available_providers = input
-                    .available_providers
-                    .keys()
-                    .cloned()
-                    .collect::<Vec<_>>();
-                available_providers.sort();
-                let provider_idx = available_providers
-                    .iter()
-                    .position(|p| p == &provider.name)
-                    .unwrap_or(0);
-
-                if let Some(chat) = chat_mut!(app) {
-                    chat.active_dialog = ActiveDialog::ModelSelector {
-                        providers: available_providers,
-                        provider_idx,
-                        models: Vec::new(),
-                        selected_idx: None,
-                        is_loading: true,
-                        error: None,
-                    };
-                }
-                let tx = tx.clone();
-                tokio::spawn(async move {
-                    tracing::info!(provider = %provider.name, "fetching initial model list");
-                    match fetch_models(&provider).await {
-                        Ok(models) => {
-                            tracing::info!(count = models.len(), "fetched initial models");
-                            let _ = tx.send(StreamEvent::ModelList(models));
-                        }
-                        Err(e) => {
-                            tracing::error!(error = %e, "failed to fetch initial models");
-                            let _ = tx.send(StreamEvent::Error(e.to_string()));
-                        }
-                    }
-                });
-            }
+            handle_model_command(name, app, input, tx);
         }
         CommandAction::ClearMessages => {
             if let Some(chat) = chat_mut!(app) {
@@ -242,9 +196,103 @@ fn handle_submit(
             }
             input.start_stream(&query, tx);
         }
+        CommandAction::Shell(command) => {
+            execute_shell_direct(&command, app, input, tx);
+        }
         CommandAction::Quit => return Some(Msg::Quit),
     }
     None
+}
+
+fn handle_model_command(
+    name: Option<String>,
+    app: &mut App,
+    input: &mut InputComponent,
+    tx: &mpsc::UnboundedSender<StreamEvent>,
+) {
+    if let Some(new_model) = name {
+        input.set_model(&new_model);
+        if let Some(chat) = chat_mut!(app) {
+            chat.add_message(ChatMessage::system(&format!(
+                "Switched to model: {new_model}"
+            )));
+            chat.current_model = new_model;
+        }
+    } else {
+        let provider = input.get_provider();
+        let mut available_providers = input
+            .available_providers
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        available_providers.sort();
+        let provider_idx = available_providers
+            .iter()
+            .position(|p| p == &provider.name)
+            .unwrap_or(0);
+
+        if let Some(chat) = chat_mut!(app) {
+            chat.active_dialog = ActiveDialog::ModelSelector {
+                providers: available_providers,
+                provider_idx,
+                models: Vec::new(),
+                selected_idx: None,
+                is_loading: true,
+                error: None,
+            };
+        }
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            tracing::info!(provider = %provider.name, "fetching initial model list");
+            match fetch_models(&provider).await {
+                Ok(models) => {
+                    tracing::info!(count = models.len(), "fetched initial models");
+                    let _ = tx.send(StreamEvent::ModelList(models));
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to fetch initial models");
+                    let _ = tx.send(StreamEvent::Error(e.to_string()));
+                }
+            }
+        });
+    }
+}
+
+fn execute_shell_direct(
+    command: &str,
+    app: &mut App,
+    input: &mut InputComponent,
+    tx: &mpsc::UnboundedSender<StreamEvent>,
+) {
+    if let Some(chat) = chat_mut!(app) {
+        chat.add_message(ChatMessage::user(&format!("!{command}")));
+        chat.start_response();
+    }
+
+    let sandbox = input.sandbox_settings.clone();
+    let tx = tx.clone();
+    let command = command.to_string();
+    tokio::spawn(async move {
+        let output = p1e_sandbox::build_command(&command, &sandbox)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("PAGER", "cat")
+            .env("EDITOR", "true")
+            .output();
+
+        let result = match output {
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                if stderr.is_empty() {
+                    stdout
+                } else {
+                    format!("{stdout}\n\nError:\n{stderr}")
+                }
+            }
+            Err(e) => format!("Failed to execute command: {e}"),
+        };
+        let _ = tx.send(StreamEvent::Done(result));
+    });
 }
 
 pub async fn run_tui(
@@ -266,10 +314,10 @@ pub async fn run_tui(
     let mut messages = vec![ChatMessage::system("Welcome to pie! Type ? for help.")];
     for entry in session.history_entries() {
         let msg = match entry.role {
-            crate::session::Role::User => ChatMessage::user(&entry.content),
-            crate::session::Role::Assistant => ChatMessage::assistant(&entry.content),
-            crate::session::Role::System => ChatMessage::system(&entry.content),
-            crate::session::Role::Tool => ChatMessage::tool(&entry.content),
+            Role::User => ChatMessage::user(&entry.content),
+            Role::Assistant => ChatMessage::assistant(&entry.content),
+            Role::System => ChatMessage::system(&entry.content),
+            Role::Tool => ChatMessage::tool(&entry.content),
         };
         messages.push(msg);
     }

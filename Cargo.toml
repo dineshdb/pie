@@ -46,7 +46,7 @@ itertools = "0.14"
 tokio-stream = { version = "0.1", features = ["sync"] }
 
 reqwest = { version = "0.13", features = ["json"] }
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["bundled-full"] }
 schemars = "1"
 serde.workspace = true
 serde_json.workspace = true
