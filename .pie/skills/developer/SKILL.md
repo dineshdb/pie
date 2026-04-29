@@ -1,6 +1,10 @@
 ---
 name: developer
 description: Development workflow - understand, plan, edit, verify, fix cycle with language-specific commands
+needs: 
+  - git
+  - filesystem
+  - context7
 ---
 
 ## Development Loop
