@@ -36,7 +36,9 @@ Focus on:
 
 For each issue, report what happened, why it's inefficient, and a suggested fix.
 Also report: total LLM calls, total tool calls, efficiency score (1-5).
-Be specific. Reference actual commands from the log."""
+Be specific. Reference actual commands from the log.
+If you don't find any issue, just name it and add a checkmark. No need for description.
+Try to keep the output succint."""
 
 
 def green(s):

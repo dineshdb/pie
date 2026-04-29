@@ -35,12 +35,6 @@ pub struct TaskList {
 }
 
 impl TaskList {
-    pub fn current_task(&self) -> Option<&Task> {
-        self.tasks
-            .iter()
-            .find(|t| t.status == TaskStatus::InProgress)
-    }
-
     pub fn active_tasks(&self) -> Vec<String> {
         self.tasks
             .iter()
@@ -49,20 +43,20 @@ impl TaskList {
             .collect()
     }
 
-    pub fn progress_summary(&self) -> String {
-        let total = self.tasks.len();
-        if total == 0 {
-            return String::new();
+    pub fn is_empty(&self) -> bool {
+        self.tasks.is_empty()
+    }
+
+    pub fn enforce_planning(&self, tool: &str) -> Result<(), String> {
+        tracing::debug!(tool, count = self.tasks.len(), "enforcing planning");
+        if self.is_empty() {
+            return Err(format!(
+                "CRITICAL ERROR: You called '{tool}' without a task list. \
+                 You MUST call 'task_add' with a full plan before taking any actions. \
+                 This is your CORE MANDATE for reliability."
+            ));
         }
-        let done = self
-            .tasks
-            .iter()
-            .filter(|t| t.status == TaskStatus::Completed)
-            .count();
-        match self.current_task() {
-            Some(task) => format!("{}/{total}: {}", done.saturating_add(1), task.name),
-            None => format!("{done}/{total}"),
-        }
+        Ok(())
     }
 
     fn remaining(&self) -> usize {
@@ -139,9 +133,11 @@ fn build_task_add(state: SharedTaskList) -> anyhow::Result<Tool> {
     Tool::builder()
         .name("task_add")
         .description(
-            "REQUIRED FIRST CALL. Create ALL tasks before acting. \
-             Input: {\"tasks\": [{\"name\": \"step description\", \"status\": \"in_progress\"}, ...]} \
-             First task: in_progress, rest: pending.",
+            "CRITICAL: Planning phase. Call this FIRST before any action (write, replace, etc.). \
+             Define ALL required steps to reach the goal. \
+             Input: {\"tasks\": [{\"name\": \"verifiable step\", \"status\": \"in_progress\"}, ...]} \
+             Set first task to in_progress, others to pending. \
+             Always include a final verification task.",
         )
         .input_schema(schemars::schema_for!(TaskList))
         .execute(ToolExecute::from_sync(move |_ctx, params| {
@@ -167,8 +163,10 @@ fn build_task_update(state: SharedTaskList) -> anyhow::Result<Tool> {
     Tool::builder()
         .name("task_update")
         .description(
-            "REQUIRED after each step. Mark completed + next in_progress in one call. \
-             Input: {\"updates\": [{\"name\": \"done task\", \"status\": \"completed\"}, {\"name\": \"next task\", \"status\": \"in_progress\"}]}",
+            "MANDATORY: Call after EVERY task step. Update the current task to completed \
+             and the next logical task to in_progress in a single call. \
+             Input: {\"updates\": [{\"name\": \"completed task\", \"status\": \"completed\"}, {\"name\": \"next task\", \"status\": \"in_progress\"}]}. \
+             Never skip this step between tool calls.",
         )
         .input_schema(schemars::schema_for!(TaskUpdateList))
         .execute(ToolExecute::from_sync(move |_ctx, params| {

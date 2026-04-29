@@ -140,8 +140,6 @@ async fn main() -> anyhow::Result<()> {
     } else {
         init_file_subscriber(&session.id.to_string(), &config.log_level)?;
     }
-    debug!(config = ?config, "config");
-
     if cli.list_skills {
         cmd::handle_list_skills(&registry);
         return Ok(());

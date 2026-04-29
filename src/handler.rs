@@ -5,7 +5,7 @@ use crate::prompt;
 use crate::providers::Model;
 use crate::session::{Role, Session};
 use crate::tools::subagent::Subagent;
-use crate::tools::tasks::{SharedTaskList, TaskList, task_tools};
+use crate::tools::tasks::task_tools;
 use crate::tools::{
     execute_skill_script_tool, load_references_tool, load_skills_tool, read_file_tool,
     replace_tool, shell, subagent_tool, write_file_tool,
@@ -18,83 +18,6 @@ use p1e_srt::SandboxConfig;
 use std::collections::HashSet;
 use std::iter::once;
 use std::sync::{Arc, Mutex};
-
-pub fn build_request(
-    model: &Model,
-    query: &Instructions,
-    history: &[crate::session::HistoryEntry],
-    sandbox_settings: Arc<SandboxConfig>,
-    max_steps: u32,
-    registry: &Arc<crate::registry::Registry>,
-    task_state: &SharedTaskList,
-) -> Result<LanguageModelRequest<Model>> {
-    let skills = &registry.skills;
-    let agents = &registry.agents;
-
-    // all mentioned skills from current and past user queries
-    let mut query = query.clone();
-    history
-        .iter()
-        .filter(|e| e.role == Role::User)
-        .for_each(|e| query.merge_mentions(&e.content));
-
-    let format = OutputFormat::Default;
-    let sp = prompt::SystemPrompt::new(skills, agents)
-        .resolve(&query)
-        .with_json(format.is_json());
-
-    let needed_skills = &sp.loaded_skills;
-    let loaded_skills = Arc::new(Mutex::new(
-        needed_skills
-            .iter()
-            .map(ToString::to_string)
-            .collect::<HashSet<String>>(),
-    ));
-
-    let system = sp.render();
-
-    let messages = history
-        .iter()
-        .filter_map(|entry| match entry.role {
-            Role::User => Some(Message::User(UserMessage::new(&entry.content))),
-            Role::Assistant => Some(Message::Assistant(AssistantMessage::from(
-                entry.content.clone(),
-            ))),
-            _ => None,
-        })
-        .chain(once(Message::User(UserMessage::new(&query.raw))))
-        .collect();
-
-    tracing::debug!(system = %system, query = %query.raw, "agent:");
-    let loaded_refs = Arc::new(Mutex::new(HashSet::new()));
-    let mut builder = LanguageModelRequest::builder()
-        .model(model.clone())
-        .system(&system)
-        .messages(messages)
-        .with_tool(shell(sandbox_settings.clone()))
-        .with_tool(read_file_tool())
-        .with_tool(write_file_tool())
-        .with_tool(replace_tool())
-        .with_tool(load_skills_tool(
-            registry.clone(),
-            Some(loaded_skills.clone()),
-        ))
-        .with_tool(load_references_tool(loaded_refs))
-        .with_tool(execute_skill_script_tool(sandbox_settings.clone()))
-        .with_tool(subagent_tool(
-            model.clone(),
-            registry.clone(),
-            sandbox_settings,
-            task_state.clone(),
-        ))
-        .stop_when(step_count_is(max_steps as usize));
-
-    for tool in task_tools(task_state).context("failed to build task tools")? {
-        builder = builder.with_tool(tool);
-    }
-
-    Ok(builder.build())
-}
 
 const CONTROL_TOKENS: &[&str] = &["<eos>", "<|end|>", "</think_end>", "<|end_of_turn|>"];
 
@@ -142,25 +65,6 @@ pub fn extract_output_text(
         .to_string()
 }
 
-/// Emit a `PROGRESS:` prefixed line to stderr.
-fn emit_progress(summary: &str) {
-    eprintln!("PROGRESS: {summary}");
-}
-
-/// Emit PROGRESS lines for task tools (inputs are emitted by tools themselves).
-fn emit_tool_results(results: &[aisdk::core::ToolResultInfo], task_list: &SharedTaskList) {
-    for result in results {
-        let name = &result.tool.name;
-        if name == "task_add" || name == "task_update" {
-            let guard = crate::tools::safe_lock(task_list);
-            let summary = guard.progress_summary();
-            if !summary.is_empty() {
-                emit_progress(&summary);
-            }
-        }
-    }
-}
-
 /// Print response to stdout and persist to session.
 fn output_response(
     output: &str,
@@ -195,7 +99,7 @@ async fn subsume_agent(
     registry: Arc<crate::registry::Registry>,
     agent_name: String,
 ) -> Result<()> {
-    let task_list = SharedTaskList::default();
+    let task_list = session.task_state.clone();
     let subagent = Subagent::new(model.clone(), registry, sandbox_settings, task_list);
 
     tracing::info!(agent = %agent_name, "subsuming subagent role");
@@ -223,7 +127,7 @@ async fn handle_direct(
     registry: Arc<crate::registry::Registry>,
 ) -> Result<()> {
     let history = session.history_entries().to_vec();
-    let task_list: SharedTaskList = Arc::new(Mutex::new(TaskList::default()));
+    let task_list = session.task_state.clone();
 
     let response = crate::utils::execute_with_retry("generate_text", {
         let model = model.clone();
@@ -240,20 +144,80 @@ async fn handle_direct(
             let task_list = task_list.clone();
 
             async move {
-                let mut req = build_request(
-                    &model, &query, &history, sandbox, max_steps, &registry, &task_list,
-                )?;
-                req.generate_text().await.map_err(|e| anyhow::anyhow!(e))
+                let skills = &registry.skills;
+                let agents = &registry.agents;
+
+                // all mentioned skills from current and past user queries
+                let mut query = query.clone();
+                history
+                    .iter()
+                    .filter(|e| e.role == Role::User)
+                    .for_each(|e| query.merge_mentions(&e.content));
+
+                let format = OutputFormat::Default;
+                let sp = prompt::SystemPrompt::new(skills, agents)
+                    .resolve(&query)
+                    .with_json(format.is_json());
+
+                let needed_skills = &sp.loaded_skills;
+                let loaded_skills = Arc::new(Mutex::new(
+                    needed_skills
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<HashSet<String>>(),
+                ));
+
+                let system = sp.render();
+
+                let messages = history
+                    .iter()
+                    .filter_map(|entry| match entry.role {
+                        Role::User => Some(Message::User(UserMessage::new(&entry.content))),
+                        Role::Assistant => Some(Message::Assistant(AssistantMessage::from(
+                            entry.content.clone(),
+                        ))),
+                        _ => None,
+                    })
+                    .chain(once(Message::User(UserMessage::new(&query.raw))))
+                    .collect();
+
+                let loaded_refs = Arc::new(Mutex::new(HashSet::new()));
+                let mut builder = LanguageModelRequest::builder()
+                    .model(model.clone())
+                    .system(&system)
+                    .messages(messages)
+                    .with_tool(shell(sandbox.clone(), task_list.clone()))
+                    .with_tool(read_file_tool())
+                    .with_tool(write_file_tool(task_list.clone()))
+                    .with_tool(replace_tool(task_list.clone()))
+                    .with_tool(load_skills_tool(
+                        registry.clone(),
+                        Some(loaded_skills.clone()),
+                    ))
+                    .with_tool(load_references_tool(loaded_refs))
+                    .with_tool(execute_skill_script_tool(sandbox.clone()))
+                    .with_tool(subagent_tool(
+                        model.clone(),
+                        registry.clone(),
+                        sandbox.clone(),
+                        task_list.clone(),
+                    ))
+                    .stop_when(step_count_is(max_steps as usize));
+
+                for tool in task_tools(&task_list).context("failed to build task tools")? {
+                    builder = builder.with_tool(tool);
+                }
+
+                builder
+                    .build()
+                    .generate_text()
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))
             }
         }
     })
     .await
     .map_err(|e| anyhow::anyhow!(e).context("generate_text failed"))?;
-
-    emit_tool_results(
-        response.tool_results().as_deref().unwrap_or_default(),
-        &task_list,
-    );
 
     let assistant_text = response.text().unwrap_or_default();
     let output = extract_output_text(&assistant_text, response.tool_results().as_deref());

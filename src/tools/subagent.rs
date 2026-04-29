@@ -54,10 +54,10 @@ impl Subagent {
 
     fn build_tools(&self, depth: u32, parent_id: Option<Uuid>) -> anyhow::Result<Vec<Tool>> {
         let mut tools = vec![
-            shell(self.sandbox_settings.clone()),
+            shell(self.sandbox_settings.clone(), self.task_state.clone()),
             read_file_tool(),
-            write_file_tool(),
-            replace_tool(),
+            write_file_tool(self.task_state.clone()),
+            replace_tool(self.task_state.clone()),
             load_skills_tool(self.registry.clone(), Some(self.loaded_skills.clone())),
             load_references_tool(self.loaded_refs.clone()),
             execute_skill_script_tool(self.sandbox_settings.clone()),
@@ -173,7 +173,7 @@ fn make_subagent_tool(
     sandbox_settings: Arc<SandboxConfig>,
     parent_id: Option<Uuid>,
     depth: u32,
-    task_state: SharedTaskList,
+    _task_state: SharedTaskList,
 ) -> Tool {
     Tool::builder()
         .name("subagent")
@@ -191,11 +191,14 @@ fn make_subagent_tool(
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
+
+            // Subagents get their own independent task list to enforce local planning
+            let subagent_task_state = SharedTaskList::default();
             let subagent = Subagent::new(
                 model.clone(),
                 registry.clone(),
                 sandbox_settings.clone(),
-                task_state.clone(),
+                subagent_task_state,
             );
             async move { subagent.execute(&name, &query, depth, parent_id).await }
         }))

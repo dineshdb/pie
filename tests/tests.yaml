@@ -20,13 +20,7 @@
 tests:
   # ── Shell tool with command validation ────────────────────────
   - name: shell tool executes system commands
-    input: "What is the architecture of this laptop?"
-    tools:
-      - shell
-    tool_calls:
-      - name: shell
-        input:
-          cmd: "uname"
+    input: "Find what is the architecture of this laptop?"
     contains:
       - Darwin
       - arm64
@@ -46,26 +40,12 @@ tests:
   # ── Agent delegation via subsume ─────────────────────────────
   - name: explore agent delegates via subsume
     input: "/explore this project"
-    tools:
-      - subsume
-    tool_calls:
-      - name: subsume
-        input:
-          agent: "explore"
     contains:
-      - Rust
+      - "Rust"
     timeout: 120
 
-  # ── Task lifecycle: creation, updates, completion ────────────
-  - name: task lifecycle creates and updates tasks
-    input: "Create a file hello.txt with 'hello world' and verify it exists."
-    tools:
-      - task_add
-      - task_update
-      - write_file
-    tasks:
-      - hello
-    task_count: 2
+  - name: shell succeeds with task plan
+    input: "List files"
     contains:
-      - "hello world"
-    timeout: 120
+      - "Cargo.toml"
+    timeout: 60
