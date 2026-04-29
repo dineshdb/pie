@@ -212,7 +212,11 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn default_env_filter(default_level: &str) -> EnvFilter {
-    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level))
+    let filter_str = match default_level {
+        "debug" | "info" => "warn,p1e=debug,p1e_sandbox=debug",
+        others => others,
+    };
+    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter_str))
 }
 
 fn init_stderr_subscriber(debug: bool, config_level: &str) {

@@ -37,7 +37,7 @@ futures = "0.3"
 include_dir = "0.7"
 minijinja = "2"
 p1e-sandbox = { path = "crates/p1e-sandbox", version = "0.2.0" }
-pulldown-cmark = "0.12"
+pulldown-cmark = "0.13"
 r2d2 = "0.8"
 r2d2_sqlite = "0.31"
 refinery = { version = "0.9", features = ["rusqlite"] }
@@ -45,7 +45,7 @@ retry = "2"
 itertools = "0.14"
 tokio-stream = { version = "0.1", features = ["sync"] }
 
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 schemars = "1"
 serde.workspace = true

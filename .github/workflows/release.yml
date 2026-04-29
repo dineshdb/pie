@@ -51,6 +51,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y musl-tools gcc-aarch64-linux-gnu
 
+      - name: Test
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
+        run: |
+          cargo test --workspace --target ${{ matrix.target }}
+
       - name: Build
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
@@ -93,7 +99,6 @@ jobs:
 
           # Bump Cargo.toml versions
           sed -i 's/^version = ".*"/version = "${{ inputs.version }}"/' Cargo.toml
-          sed -i 's/^version = ".*"/version = "${{ inputs.version }}"/' crates/p1e-srt/Cargo.toml
 
           # Update homebrew formula
           ARM_SHA=$(grep 'aarch64-apple-darwin' dist/checksums.txt | awk '{print $1}')
@@ -108,7 +113,7 @@ jobs:
           }" Formula/pie.rb
 
           # Single commit, tag, push
-          git add Cargo.toml crates/p1e-srt/Cargo.toml Formula/pie.rb
+          git add Cargo.toml Formula/pie.rb
           git commit -m "release: v${{ inputs.version }}"
           git tag "v${{ inputs.version }}"
           git push origin HEAD:refs/heads/main

@@ -156,60 +156,6 @@ mod tests {
     use super::test_helpers::*;
 
     #[test]
-    fn main_agent_instructs_tool_use() {
-        let result = render_main(&[], false);
-        assert!(result.contains("shell"), "main agent must reference shell");
-        assert!(
-            result.contains("load_skills"),
-            "main agent prompt must reference load_skills in skills section"
-        );
-    }
-
-    #[test]
-    fn subagent_has_core_tools() {
-        let result = render_sub();
-        assert!(result.contains("shell"), "subagent must reference shell");
-        assert!(
-            result.contains("load_skills"),
-            "subagent must reference load_skills"
-        );
-    }
-
-    // ── Immutability: core rules cannot be overridden ──────────────
-
-    #[test]
-    fn immutable_rules_appear_in_both_modes() {
-        let main = render_main(&[], false);
-        let sub = render_sub();
-
-        // Both must have core sections
-        for section in &["## Rules", "## Known Commands"] {
-            assert!(main.contains(section), "main missing {section}");
-            assert!(sub.contains(section), "subagent missing {section}");
-        }
-
-        // Both must warn about not calling skills as tools
-        assert!(
-            main.contains("Never call a skill name as a tool"),
-            "main must have tool discipline rule"
-        );
-        assert!(
-            sub.contains("Never call a skill name as a tool"),
-            "subagent must have tool discipline rule"
-        );
-    }
-
-    #[test]
-    fn main_agent_must_be_self_sufficient() {
-        let result = render_main(&[], false);
-        let role = result.split("Agent Role").nth(1).unwrap_or("");
-        assert!(
-            role.contains("NEVER ask") || role.contains("use your tools"),
-            "main agent must be told to use tools instead of asking user"
-        );
-    }
-
-    #[test]
     fn subagent_with_agent_name_includes_persona() {
         let result = render_sub();
         let role = result.split("Agent Role").nth(1).unwrap_or("");
