@@ -124,7 +124,8 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
         let provider = provider_cfg.merge(cli.provider_config);
         let max_steps = pie.agent.as_ref().and_then(|a| a.max_steps).unwrap_or(25);
 
-        let log_level = if cli.debug { "debug" } else { pie.log_level() };
+        let debug = cli.debug;
+        let log_level = if debug { "debug" } else { pie.log_level() };
         let mut resolved_provider = ResolvedProvider::try_from(provider.clone())?;
         resolved_provider.name = provider_name.unwrap_or("env").to_string();
 
@@ -133,7 +134,7 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
             max_steps,
             output_format,
             log_level: log_level.to_string(),
-            debug: cli.debug,
+            debug,
         })
     }
 }

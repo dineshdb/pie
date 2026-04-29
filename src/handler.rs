@@ -102,8 +102,8 @@ async fn subsume_agent(
     let task_list = session.task_state.clone();
     let subagent = Subagent::new(model.clone(), registry, sandbox_settings, task_list);
 
-    tracing::info!(agent = %agent_name, "subsuming subagent role");
-    eprintln!("TOOL: subsume {}", serde_json::json!({"agent": agent_name}));
+    tracing::debug!(agent = %agent_name, "subsuming subagent role");
+    tracing::debug!("TOOL: subsume {}", serde_json::json!({"agent": agent_name}));
 
     let output = subagent
         .execute(&agent_name, &query.raw, 0, None)

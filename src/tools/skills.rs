@@ -35,7 +35,7 @@ pub fn load_skills_tool(
 ) -> Tool {
     Tool::builder()
         .name("load_skills")
-        .description("Load skill knowledge")
+        .description("Load skills for provided names")
         .input_schema(schemars::schema_for!(LoadSkillsInput))
         .execute(ToolExecute::from_sync(move |_ctx, params| {
             super::emit_tool_input("load_skills", &params);

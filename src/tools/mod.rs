@@ -18,5 +18,5 @@ pub(crate) fn safe_lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard
 
 /// Emit a `TOOL:` line with tool name and input parameters for test observability.
 pub(crate) fn emit_tool_input(name: &str, params: &serde_json::Value) {
-    eprintln!("TOOL: {name} {params}");
+    tracing::debug!("TOOL: {name} {params}");
 }
