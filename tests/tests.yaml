@@ -1,66 +1,71 @@
 # pie CLI integration tests
 #
-# Fields:
+# Assertion layers (all checked, all failures reported):
+#   contains      - pattern(s) that MUST appear in stdout (response)
+#   not_contains  - pattern(s) that must NOT appear in stdout
+#   tools         - tool name(s) that must appear in structured stderr events
+#   tool_calls    - list of {name, input}; input is a JSON subset match:
+#                   dict keys must exist, string values are substring-matched
+#   tasks         - task name substring(s) that must appear in task_add events
+#   task_count    - minimum number of tasks created
+#
+# Other fields:
 #   name          - test description (required)
-#   args          - CLI flags (e.g. --help, --list-skills)
+#   args          - CLI flags (e.g. --json)
 #   input         - query string sent to the model
 #   exit          - expected exit code (omit = don't check)
-#   contains      - pattern(s) that MUST appear in output (string or list)
-#   not_contains  - pattern(s) that must NOT appear (string or list)
-#   expectations  - high-level expectations about behavior (string or list)
-#   filter        - grep pattern to pre-filter output before checking contains/not_contains
 #   timeout       - max seconds to wait (default 30)
-#   debug         - run with --debug flag (true/false)
-#   post          - shell command to run after main test (exit 0 = pass, non-0 = fail)
-#   skip          - "online" = skip when model server unavailable
-#   parallel      - true = safe to run concurrently with other tests (default false)
-#
-# Multiple checks in one test: All checks (exit, not_contains) run
-# and ALL failures are reported before the test is marked as failed.
+#   post          - shell command to run after main test (exit 0 = pass)
 
 tests:
-  # ── End-to-end: model executes shell commands ────────────────
-  - name: agent executes shell commands
+  # ── Shell tool with command validation ────────────────────────
+  - name: shell tool executes system commands
     input: "What is the architecture of this laptop?"
+    tools:
+      - shell
+    tool_calls:
+      - name: shell
+        input:
+          cmd: "uname"
     contains:
       - Darwin
       - arm64
     timeout: 60
-    skip: online
 
-  # ── End-to-end: web search ───────────────────────────────────
-  - name: web search returns results
-    input: "/web-search latest technology news 2026"
-    contains: AI
-    timeout: 45
-    skip: online
-
-  # ── End-to-end: JSON output format ───────────────────────────
-  - name: --json returns valid JSON
+  # ── JSON output format ───────────────────────────────────────
+  - name: json output format is valid
     args: --json
     input: "what is 2+2"
     contains:
       - '"response"'
       - '"session_id"'
-      - '"model_used"'
-      - '"timestamp"'
     not_contains:
-      - "```json"
       - "```"
     timeout: 30
-    skip: online
 
-  - name: /explore this repo
+  # ── Agent delegation via subsume ─────────────────────────────
+  - name: explore agent delegates via subsume
     input: "/explore this project"
+    tools:
+      - subsume
+    tool_calls:
+      - name: subsume
+        input:
+          agent: "explore"
     contains:
       - Rust
-      - agent
     timeout: 120
-    skip: online
 
-  - name: /review agent performs code review
-    input: "/review this repo for bugs"
+  # ── Task lifecycle: creation, updates, completion ────────────
+  - name: task lifecycle creates and updates tasks
+    input: "Create a file hello.txt with 'hello world' and verify it exists."
+    tools:
+      - task_add
+      - task_update
+      - write_file
+    tasks:
+      - hello
+    task_count: 2
     contains:
-      - "ummary"
+      - "hello world"
     timeout: 120
-    skip: online

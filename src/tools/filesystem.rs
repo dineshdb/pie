@@ -56,6 +56,7 @@ pub fn read_file_tool() -> Tool {
         .description("Read the content of a file, optionally within a line range.")
         .input_schema(schemars::schema_for!(ReadFileInput))
         .execute(ToolExecute::from_sync(|_ctx, params| {
+            super::emit_tool_input("read_file", &params);
             let path_str = params
                 .get("path")
                 .and_then(serde_json::Value::as_str)
@@ -110,6 +111,7 @@ pub fn write_file_tool() -> Tool {
         .description("Write content to a file. Overwrites if it exists.")
         .input_schema(schemars::schema_for!(WriteFileInput))
         .execute(ToolExecute::from_sync(|_ctx, params| {
+            super::emit_tool_input("write_file", &params);
             let path_str = params
                 .get("path")
                 .and_then(serde_json::Value::as_str)
@@ -144,6 +146,7 @@ pub fn replace_tool() -> Tool {
         .description("Search and replace a specific string in a file. Fails if old_string is not found or is ambiguous.")
         .input_schema(schemars::schema_for!(ReplaceInput))
         .execute(ToolExecute::from_sync(|_ctx, params| {
+            super::emit_tool_input("replace", &params);
             let path_str = params
                 .get("path")
                 .and_then(serde_json::Value::as_str)

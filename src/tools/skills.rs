@@ -38,6 +38,7 @@ pub fn load_skills_tool(
         .description("Load skill knowledge")
         .input_schema(schemars::schema_for!(LoadSkillsInput))
         .execute(ToolExecute::from_sync(move |_ctx, params| {
+            super::emit_tool_input("load_skills", &params);
             let names = extract_string_array(&params, "skills");
 
             if names.is_empty() {
@@ -113,6 +114,7 @@ pub fn load_references_tool(loaded_refs: Arc<Mutex<HashSet<String>>>) -> Tool {
         .description("Load reference files of a skill for extra knowledge")
         .input_schema(schemars::schema_for!(LoadReferencesInput))
         .execute(ToolExecute::from_sync(move |_ctx, params| {
+            super::emit_tool_input("load_references", &params);
             let Some(skill_name) = params.get("skill").and_then(|v| v.as_str()) else {
                 return Err("skill parameter is required".to_string());
             };
@@ -202,6 +204,7 @@ pub fn execute_skill_script_tool(sandbox_settings: Arc<SandboxConfig>) -> Tool {
         .description("Execute a script from a skill directory. Runs inside a sandbox with read access to the skill directory.")
         .input_schema(schemars::schema_for!(ExecuteSkillScriptInput))
         .execute(ToolExecute::from_sync(move |_ctx, params| {
+            super::emit_tool_input("execute_skill_script", &params);
             let Some(skill_name) = params.get("skill").and_then(|v| v.as_str()) else {
                 return Err("skill parameter is required".to_string());
             };

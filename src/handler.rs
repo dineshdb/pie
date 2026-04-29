@@ -142,27 +142,126 @@ pub fn extract_output_text(
         .to_string()
 }
 
-/// CLI-mode only: format tool call result for stderr display.
-fn format_tool_call_for_cli(result: &aisdk::core::ToolResultInfo) -> String {
-    let name = &result.tool.name;
-    let output = result
-        .output
-        .as_ref()
-        .ok()
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+/// Emit a `PROGRESS:` prefixed line to stderr.
+fn emit_progress(summary: &str) {
+    eprintln!("PROGRESS: {summary}");
+}
 
-    if output.is_empty() {
-        format!("Tool: {name}")
-    } else {
-        let first_line = output.lines().next().unwrap_or("");
-        let truncated = if first_line.len() > 100 {
-            format!("{}...", &first_line[..100])
-        } else {
-            first_line.to_string()
-        };
-        format!("Tool: {name} -> {truncated}")
+/// Emit PROGRESS lines for task tools (inputs are emitted by tools themselves).
+fn emit_tool_results(results: &[aisdk::core::ToolResultInfo], task_list: &SharedTaskList) {
+    for result in results {
+        let name = &result.tool.name;
+        if name == "task_add" || name == "task_update" {
+            let guard = crate::tools::safe_lock(task_list);
+            let summary = guard.progress_summary();
+            if !summary.is_empty() {
+                emit_progress(&summary);
+            }
+        }
     }
+}
+
+/// Print response to stdout and persist to session.
+fn output_response(
+    output: &str,
+    session: &mut Session,
+    format: OutputFormat,
+    model: &Model,
+) -> Result<()> {
+    if output.is_empty() {
+        return Ok(());
+    }
+    if format.is_json() {
+        let json_resp = JsonResponse::new(
+            output.to_string(),
+            Some(session.id.to_string()),
+            Some(model.name()),
+        );
+        println!("{}", serde_json::to_string(&json_resp)?);
+    } else {
+        println!("{output}");
+    }
+    session.add_assistant(output)?;
+    Ok(())
+}
+
+/// Handle a query delegated to a subagent (subsumption path).
+async fn subsume_agent(
+    model: &Model,
+    query: &Instructions,
+    session: &mut Session,
+    format: OutputFormat,
+    sandbox_settings: Arc<SandboxConfig>,
+    registry: Arc<crate::registry::Registry>,
+    agent_name: String,
+) -> Result<()> {
+    let task_list = SharedTaskList::default();
+    let subagent = Subagent::new(model.clone(), registry, sandbox_settings, task_list);
+
+    tracing::info!(agent = %agent_name, "subsuming subagent role");
+    eprintln!("TOOL: subsume {}", serde_json::json!({"agent": agent_name}));
+
+    let output = subagent
+        .execute(&agent_name, &query.raw, 0, None)
+        .await
+        .map_err(|e| anyhow::anyhow!("Subagent subsumption failed: {e}"))?;
+
+    let output = strip_control_tokens(&output);
+    session.add_user(&query.raw)?;
+    output_response(&output, session, format, model)?;
+    Ok(())
+}
+
+/// Handle a direct query (non-subsumption path).
+async fn handle_direct(
+    model: &Model,
+    query: &Instructions,
+    session: &mut Session,
+    format: OutputFormat,
+    sandbox_settings: Arc<SandboxConfig>,
+    max_steps: u32,
+    registry: Arc<crate::registry::Registry>,
+) -> Result<()> {
+    let history = session.history_entries().to_vec();
+    let task_list: SharedTaskList = Arc::new(Mutex::new(TaskList::default()));
+
+    let response = crate::utils::execute_with_retry("generate_text", {
+        let model = model.clone();
+        let query = query.clone();
+        let sandbox = sandbox_settings;
+        let task_list = task_list.clone();
+
+        move || {
+            let model = model.clone();
+            let query = query.clone();
+            let history = history.clone();
+            let sandbox = sandbox.clone();
+            let registry = registry.clone();
+            let task_list = task_list.clone();
+
+            async move {
+                let mut req = build_request(
+                    &model, &query, &history, sandbox, max_steps, &registry, &task_list,
+                )?;
+                req.generate_text().await.map_err(|e| anyhow::anyhow!(e))
+            }
+        }
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!(e).context("generate_text failed"))?;
+
+    emit_tool_results(
+        response.tool_results().as_deref().unwrap_or_default(),
+        &task_list,
+    );
+
+    let assistant_text = response.text().unwrap_or_default();
+    let output = extract_output_text(&assistant_text, response.tool_results().as_deref());
+    let output = strip_control_tokens(&output);
+
+    session.add_user(&query.raw)?;
+    output_response(&output, session, format, model)?;
+    Ok(())
 }
 
 pub async fn handle_query(
@@ -175,104 +274,28 @@ pub async fn handle_query(
     registry: Arc<crate::registry::Registry>,
 ) -> Result<()> {
     if let Some(agent_name) = find_subsume_candidate(query, &registry.agents) {
-        let task_list = SharedTaskList::default();
-        let subagent = Subagent::new(
-            model.clone(),
-            registry.clone(),
-            sandbox_settings.clone(),
-            task_list,
-        );
-
-        tracing::info!(agent = %agent_name, "subsuming subagent role");
-        let result = subagent.execute(&agent_name, &query.raw, 0, None).await;
-        match result {
-            Ok(output) => {
-                let output = strip_control_tokens(&output);
-                session.add_user(&query.raw)?;
-                if !output.is_empty() {
-                    if format.is_json() {
-                        let json_resp = JsonResponse::new(
-                            output.clone(),
-                            Some(session.id.to_string()),
-                            Some(model.name()),
-                        );
-                        println!("{}", serde_json::to_string(&json_resp)?);
-                    } else {
-                        println!("{output}");
-                    }
-                    session.add_assistant(&output)?;
-                }
-                return Ok(());
-            }
-            Err(e) => {
-                anyhow::bail!("Subagent subsumption failed: {e}");
-            }
-        }
-    }
-
-    let model_clone = model.clone();
-    let query_clone = query.clone();
-    let history_clone = session.history_entries().to_vec();
-    let sandbox_clone = sandbox_settings.clone();
-    let registry_clone = registry.clone();
-
-    let task_list: SharedTaskList = Arc::new(Mutex::new(TaskList::default()));
-    let task_list_clone = task_list.clone();
-
-    let response = crate::utils::execute_with_retry("generate_text", move || {
-        let model = model_clone.clone();
-        let query = query_clone.clone();
-        let history = history_clone.clone();
-        let sandbox = sandbox_clone.clone();
-        let registry = registry_clone.clone();
-        let task_list = task_list_clone.clone();
-        async move {
-            let mut req = build_request(
-                &model, &query, &history, sandbox, max_steps, &registry, &task_list,
-            )?;
-            req.generate_text().await.map_err(|e| anyhow::anyhow!(e))
-        }
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!(e).context("generate_text failed"))?;
-
-    for result in response.tool_results().iter().flatten() {
-        if result.tool.name == "task_add" || result.tool.name == "task_update" {
-            let guard = crate::tools::safe_lock(&task_list);
-            eprintln!("Progress: {}", guard.progress_summary());
-        } else {
-            let tool = aisdk::core::ToolResultInfo {
-                tool: result.tool.clone(),
-                output: result.output.clone(),
-            };
-            let display = format_tool_call_for_cli(&tool);
-            eprintln!("{display}");
-        }
-    }
-
-    let assistant_text = response.text().unwrap_or_default();
-    let output = extract_output_text(&assistant_text, response.tool_results().as_deref());
-    let output = strip_control_tokens(&output);
-
-    session.add_user(&query.raw)?;
-
-    if output.is_empty() {
-        return Ok(());
-    }
-
-    if format.is_json() {
-        let json_resp = JsonResponse::new(
-            output.clone(),
-            Some(session.id.to_string()),
-            Some(model.name()),
-        );
-        println!("{}", serde_json::to_string(&json_resp)?);
+        subsume_agent(
+            model,
+            query,
+            session,
+            format,
+            sandbox_settings,
+            registry,
+            agent_name,
+        )
+        .await
     } else {
-        println!("{output}");
+        handle_direct(
+            model,
+            query,
+            session,
+            format,
+            sandbox_settings,
+            max_steps,
+            registry,
+        )
+        .await
     }
-    session.add_assistant(&output)?;
-
-    Ok(())
 }
 
 #[cfg(test)]

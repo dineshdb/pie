@@ -20,7 +20,7 @@ pub enum TaskStatus {
 
 #[derive(Debug, Clone, Serialize, JsonSchema, Deserialize)]
 pub struct Task {
-    pub title: String,
+    pub name: String,
     #[serde(default = "default_status")]
     pub status: TaskStatus,
 }
@@ -45,7 +45,7 @@ impl TaskList {
         self.tasks
             .iter()
             .filter(|t| t.status == TaskStatus::InProgress)
-            .map(|t| t.title.clone())
+            .map(|t| t.name.clone())
             .collect()
     }
 
@@ -59,10 +59,61 @@ impl TaskList {
             .iter()
             .filter(|t| t.status == TaskStatus::Completed)
             .count();
-        let current = self.current_task();
-        match current {
-            Some(task) => format!("{}/{total}: {}", done.saturating_add(1), task.title),
+        match self.current_task() {
+            Some(task) => format!("{}/{total}: {}", done.saturating_add(1), task.name),
             None => format!("{done}/{total}"),
+        }
+    }
+
+    fn remaining(&self) -> usize {
+        self.tasks
+            .iter()
+            .filter(|t| {
+                !matches!(
+                    t.status,
+                    TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Skipped
+                )
+            })
+            .count()
+    }
+
+    /// Upsert tasks by name (case-insensitive). Returns names that were processed.
+    fn upsert(&mut self, incoming: Vec<Task>) -> Vec<String> {
+        let added: Vec<String> = incoming.iter().map(|t| t.name.clone()).collect();
+
+        for t in incoming {
+            let title = t.name.trim();
+            if title.is_empty() {
+                continue;
+            }
+            if let Some(existing) = self
+                .tasks
+                .iter_mut()
+                .find(|e| e.name.trim().eq_ignore_ascii_case(title))
+            {
+                existing.status = t.status;
+            } else {
+                self.tasks.push(Task {
+                    name: title.to_string(),
+                    status: t.status,
+                });
+            }
+        }
+
+        added
+    }
+
+    /// Update task statuses by name (case-insensitive).
+    fn update_statuses(&mut self, updates: &[TaskUpdate]) {
+        for update in updates {
+            let target = update.name.trim();
+            if let Some(task) = self
+                .tasks
+                .iter_mut()
+                .find(|t| t.name.trim().eq_ignore_ascii_case(target))
+            {
+                task.status = update.status.clone();
+            }
         }
     }
 }
@@ -72,7 +123,8 @@ struct GetTasksInput {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TaskUpdate {
-    pub title: String,
+    #[serde(alias = "title")]
+    pub name: String,
     pub status: TaskStatus,
 }
 
@@ -81,107 +133,88 @@ pub struct TaskUpdateList {
     pub updates: Vec<TaskUpdate>,
 }
 
+// ── Tool builders ──────────────────────────────────────────────────
+
+fn build_task_add(state: SharedTaskList) -> anyhow::Result<Tool> {
+    Tool::builder()
+        .name("task_add")
+        .description(
+            "REQUIRED FIRST CALL. Create ALL tasks before acting. \
+             Input: {\"tasks\": [{\"name\": \"step description\", \"status\": \"in_progress\"}, ...]} \
+             First task: in_progress, rest: pending.",
+        )
+        .input_schema(schemars::schema_for!(TaskList))
+        .execute(ToolExecute::from_sync(move |_ctx, params| {
+            crate::tools::emit_tool_input("task_add", &params);
+            let input: TaskList = serde_json::from_value(params.clone())
+                .map_err(|e| format!("Invalid task_add input: {e}"))?;
+
+            let mut guard = crate::tools::safe_lock(&state);
+            let added = guard.upsert(input.tasks);
+
+            Ok(json!({
+                "status": "ok",
+                "added": added,
+                "remaining": guard.remaining()
+            })
+            .to_string())
+        }))
+        .build()
+        .context("failed to build task_add tool")
+}
+
+fn build_task_update(state: SharedTaskList) -> anyhow::Result<Tool> {
+    Tool::builder()
+        .name("task_update")
+        .description(
+            "REQUIRED after each step. Mark completed + next in_progress in one call. \
+             Input: {\"updates\": [{\"name\": \"done task\", \"status\": \"completed\"}, {\"name\": \"next task\", \"status\": \"in_progress\"}]}",
+        )
+        .input_schema(schemars::schema_for!(TaskUpdateList))
+        .execute(ToolExecute::from_sync(move |_ctx, params| {
+            crate::tools::emit_tool_input("task_update", &params);
+            let input: TaskUpdateList = serde_json::from_value(params.clone())
+                .map_err(|e| format!("Invalid task_update input: {e}"))?;
+
+            let updated: Vec<serde_json::Value> = input
+                .updates
+                .iter()
+                .map(|u| json!({"name": u.name, "status": u.status}))
+                .collect();
+
+            let mut guard = crate::tools::safe_lock(&state);
+            guard.update_statuses(&input.updates);
+
+            Ok(json!({
+                "status": "ok",
+                "updated": updated,
+                "remaining": guard.remaining()
+            })
+            .to_string())
+        }))
+        .build()
+        .context("failed to build task_update tool")
+}
+
+fn build_task_list(state: SharedTaskList) -> anyhow::Result<Tool> {
+    Tool::builder()
+        .name("task_list")
+        .description("List all tasks and their current status.")
+        .input_schema(schemars::schema_for!(GetTasksInput))
+        .execute(ToolExecute::from_sync(move |_ctx, _params| {
+            crate::tools::emit_tool_input("task_list", &serde_json::json!({}));
+            let guard = crate::tools::safe_lock(&state);
+            Ok(json!({ "tasks": guard.tasks }).to_string())
+        }))
+        .build()
+        .context("failed to build task_list tool")
+}
+
 pub fn task_tools(state: &SharedTaskList) -> anyhow::Result<Vec<Tool>> {
-    let task_add = {
-        let state = state.clone();
-        Tool::builder()
-            .name("task_add")
-            .description(
-                "Create tasks for your execution plan. Call this FIRST before acting. \
-                 Break the request into discrete, verifiable steps. \
-                 Re-calling with an existing title updates its status.",
-            )
-            .input_schema(schemars::schema_for!(TaskList))
-            .execute(ToolExecute::from_sync(move |_ctx, params| {
-                let input: TaskList = serde_json::from_value(params.clone())
-                    .map_err(|e| format!("Invalid task_add input: {e}"))?;
-
-                let mut guard = crate::tools::safe_lock(&state);
-
-                for t in input.tasks {
-                    let title = t.title.trim();
-                    if title.is_empty() {
-                        continue;
-                    }
-
-                    // Find existing task by title (case-insensitive)
-                    let existing = guard
-                        .tasks
-                        .iter_mut()
-                        .find(|existing| existing.title.trim().eq_ignore_ascii_case(title));
-
-                    if let Some(task) = existing {
-                        task.status = t.status;
-                    } else {
-                        guard.tasks.push(Task {
-                            title: title.to_string(),
-                            status: t.status,
-                        });
-                    }
-                }
-
-                Ok(json!({
-                    "status": "ok",
-                    "remaining": guard.tasks.iter().filter(|t| !matches!(t.status, TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Skipped)).count()
-                })
-                .to_string())
-            }))
-            .build()
-            .context("failed to build task_add tool")?
-    };
-
-    let update_task = {
-        let state = state.clone();
-        Tool::builder()
-            .name("task_update")
-            .description(
-                "Mark task status as you progress. \
-                 Always mark the completed task as 'completed' and the next as 'in_progress' in the same call.",
-            )
-            .input_schema(schemars::schema_for!(TaskUpdateList))
-            .execute(ToolExecute::from_sync(move |_ctx, params| {
-                let input: TaskUpdateList = serde_json::from_value(params.clone())
-                    .map_err(|e| format!("Invalid task_update input: {e}"))?;
-
-                let mut guard = crate::tools::safe_lock(&state);
-                for update in input.updates {
-                    let target_title = update.title.trim();
-                    if let Some(task) = guard.tasks.iter_mut().find(|t| {
-                        t.title.trim().eq_ignore_ascii_case(target_title)
-                    }) {
-                        task.status = update.status;
-                    }
-                }
-
-                let remaining = guard
-                    .tasks
-                    .iter()
-                    .filter(|t| !matches!(t.status, TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Skipped))
-                    .count();
-
-                Ok(json!({
-                    "status": "ok",
-                    "remaining": remaining
-                })
-                .to_string())
-            }))
-            .build()
-            .context("failed to build task_update tool")?
-    };
-
-    let get_tasks = {
-        let state = state.clone();
-        Tool::builder()
-            .name("task_list")
-            .description("List all tasks and their current status.")
-            .input_schema(schemars::schema_for!(GetTasksInput))
-            .execute(ToolExecute::from_sync(move |_ctx, _params| {
-                let guard = crate::tools::safe_lock(&state);
-                Ok(json!({ "tasks": guard.tasks }).to_string())
-            }))
-            .build()
-            .context("failed to build task_list tool")?
-    };
-
-    Ok(vec![task_add, update_task, get_tasks])
+    let s = state.clone();
+    Ok(vec![
+        build_task_add(s.clone())?,
+        build_task_update(s.clone())?,
+        build_task_list(s)?,
+    ])
 }

@@ -406,7 +406,7 @@ impl InputComponent {
                         | crate::tools::tasks::TaskStatus::Skipped
                 )
             })
-            .map(|t| vec![t.title.clone()])
+            .map(|t| vec![t.name.clone()])
             .unwrap_or_default()
     }
 

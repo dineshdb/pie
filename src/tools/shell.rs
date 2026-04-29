@@ -16,6 +16,7 @@ pub fn shell(sandbox_settings: Arc<SandboxConfig>) -> Tool {
         .description("Execute a system command, bash tools, clis, etc.")
         .input_schema(schemars::schema_for!(ShellInput))
         .execute(ToolExecute::from_sync(move |_ctx, params| {
+            super::emit_tool_input("shell", &params);
             let Some(cmd) = params.get("cmd").and_then(|v| v.as_str()) else {
                 return Err("cmd parameter is required".to_string());
             };

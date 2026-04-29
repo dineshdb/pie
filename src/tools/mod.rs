@@ -15,3 +15,8 @@ pub(crate) fn safe_lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
+
+/// Emit a `TOOL:` line with tool name and input parameters for test observability.
+pub(crate) fn emit_tool_input(name: &str, params: &serde_json::Value) {
+    eprintln!("TOOL: {name} {params}");
+}

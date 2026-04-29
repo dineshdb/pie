@@ -57,7 +57,7 @@ fn append_task_list_lines(
             TaskStatus::Skipped => ("↷", Color::DarkGray),
         };
 
-        let task_text = super::truncate_str(&task.title, width.saturating_sub(4));
+        let task_text = super::truncate_str(&task.name, width.saturating_sub(4));
         lines.push(Line::from(vec![
             prefix.clone(),
             Span::styled(format!("{icon} "), Style::default().fg(color)),

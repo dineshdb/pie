@@ -5,8 +5,8 @@
 # ///
 """YAML-driven integration tests for pie.
 
-Runs all tests with debug tracing, then analyzes tool-call efficiency
-with a single LLM call.
+Runs all tests with debug tracing, parses structured JSON events from
+stderr, and validates tool calls, tasks, and response content.
 
 Usage: uv run scripts/test.py
 """
@@ -29,24 +29,14 @@ PIE = ["cargo", "run", "--quiet", "--"]
 ANALYSIS_PROMPT = """Analyze these debug logs from pie test runs for efficiency issues.
 Focus on:
 1. REDUNDANT TOOL CALLS: Same or similar commands run multiple times
-2. UNNECESSARY AGENT SPAWNS: Subagent used when direct tool call would suffice (rule: if only one subagent would be spawned, do it yourself)
-3. FAILED RETRIES: Tool calls that failed and had to be retried due to bad command formatting
-4. EXCESSIVE BACK-AND-FORTH: More LLM round-trips than needed for the task
-5. MISSED PRELOADING: Skills/agents mentioned in the query that weren't pre-loaded, requiring extra tool calls to load them
+2. UNNECESSARY AGENT SPAWNS: Subagent used when direct tool call would suffice
+3. FAILED RETRIES: Tool calls that failed and had to be retried
+4. EXCESSIVE BACK-AND-FORTH: More LLM round-trips than needed
+5. MISSED PRELOADING: Skills mentioned in the query that weren't pre-loaded
 
-For each issue found, report:
-- What happened (with the specific tool call)
-- Why it's inefficient
-- Suggested fix
-
-Also report a summary:
-- Total LLM calls (count "raw model response" lines)
-- Total tool calls (count "shell", "subagent", "load_skills", "load_references")
-- Efficiency score: 1-5 (5 = optimal, 1 = very wasteful)
-
-Be specific. Reference actual commands and line content from the log. Skip a section if no issues are found."""
-
-MAX_VALUE_LEN = 200
+For each issue, report what happened, why it's inefficient, and a suggested fix.
+Also report: total LLM calls, total tool calls, efficiency score (1-5).
+Be specific. Reference actual commands from the log."""
 
 
 def green(s):
@@ -71,25 +61,12 @@ def ensure_list(val):
     return val if isinstance(val, list) else [val]
 
 
-def check_online():
-    try:
-        urllib.request.urlopen("http://127.0.0.1:8000/v1/models", timeout=2)
-        return True
-    except urllib.error.HTTPError:
-        return True
-    except Exception:
-        return False
-
-
-def truncate_value(s, max_len=MAX_VALUE_LEN):
-    s = s.strip()
-    if len(s) <= max_len:
-        return s
-    return s[:max_len] + f"... ({len(s)} chars total)"
-
-
-def run_pie(args, input_text=None, timeout=30):
-    cmd = PIE + args
+def run_pie(args, input_text=None, timeout=30, provider=None):
+    """Run pie and return (stdout, stderr, exit_code) separately."""
+    cmd = PIE[:]
+    if provider:
+        cmd += ["-p", provider]
+    cmd += args
     if input_text:
         cmd += [input_text]
     cmd.append("--debug")
@@ -98,111 +75,213 @@ def run_pie(args, input_text=None, timeout=30):
         r = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout, cwd=ROOT
         )
-        return r.stdout + r.stderr, r.returncode
+        return r.stdout, r.stderr, r.returncode
     except subprocess.TimeoutExpired:
-        return "(timeout)", -1
+        return "(timeout)", "", -1
 
 
-def extract_trace(raw_output):
-    """Extract concise tool-call trace from debug output, truncating verbose values."""
+def _strip_ansi(s):
+    """Remove ANSI escape codes from a string."""
+    return re.sub(r"\x1b\[[0-9;]*m", "", s)
+
+
+def parse_events(stderr):
+    """Parse TOOL:/PROGRESS: lines from pie stderr.
+
+    Returns (tool_names, task_titles, progress, tool_inputs).
+    - tool_names: set of tool names that were called
+    - task_titles: list of all task titles from task_add events
+    - progress: list of progress summary strings
+    - tool_inputs: dict mapping tool name -> list of parsed JSON data
+    """
+    tool_names = set()
+    task_titles = []
+    progress = []
+    tool_inputs = {}
+
+    for line in stderr.splitlines():
+        raw = line.strip()
+
+        # TOOL: <name> <optional_json>
+        if raw.startswith("TOOL: "):
+            rest = raw[6:]
+            parts = rest.split(" ", 1)
+            name = parts[0]
+            tool_names.add(name)
+
+            if len(parts) > 1:
+                try:
+                    data = json.loads(parts[1])
+                except json.JSONDecodeError:
+                    data = None
+                tool_inputs.setdefault(name, []).append(data)
+
+                if name == "task_add" and isinstance(data, dict):
+                    # Input format: {"tasks": [{"title": "...", "status": "..."}]}
+                    # Also accepts "name" as alias for "title"
+                    for task in data.get("tasks", []):
+                        if isinstance(task, dict):
+                            title = task.get("title", "") or task.get("name", "")
+                            if title:
+                                task_titles.append(title)
+                        elif isinstance(task, str):
+                            task_titles.append(task)
+
+        # PROGRESS: <summary>
+        elif raw.startswith("PROGRESS: "):
+            progress.append(raw[10:])
+
+    return tool_names, task_titles, progress, tool_inputs
+
+
+def _input_matches(expected, actual):
+    """Check if expected is a subset of actual.
+
+    - If both are dicts: every key in expected must exist in actual with a matching value
+    - If expected is a dict but actual is a string (e.g. Rust Debug format):
+      check each key/value appears in the string
+    - If expected is a string: substring match against str(actual)
+    - Otherwise: equality check
+    """
+    if isinstance(expected, dict) and isinstance(actual, dict):
+        return all(
+            _input_matches(expected[k], actual.get(k))
+            for k in expected
+        )
+    if isinstance(expected, dict) and isinstance(actual, str):
+        # Rust Debug format: Object {"key": String("value")}
+        # Check each expected key and value appear in the string
+        for key, val in expected.items():
+            if f'"{key}"' not in actual:
+                return False
+            if isinstance(val, str) and val not in actual:
+                return False
+        return True
+    if isinstance(expected, str):
+        return expected in str(actual)
+    return expected == actual
+
+
+def validate_structured(stderr, test):
+    """Validate structured assertions (tools, tasks, task_count, tool_calls) against stderr."""
+    failures = []
+    tool_names, task_titles, _progress, tool_inputs = parse_events(stderr)
+
+    # Check required tool names
+    for required in ensure_list(test.get("tools")):
+        if required not in tool_names:
+            failures.append(f"missing tool: {required!r} (found: {sorted(tool_names)})")
+
+    # Check tool call input/output parameters
+    for call in ensure_list(test.get("tool_calls")):
+        name = call["name"]
+        if name not in tool_inputs:
+            failures.append(f"tool {name!r} was never called (found: {sorted(tool_inputs)})")
+            continue
+        if "input" in call:
+            expected = call["input"]
+            found = any(
+                _input_matches(expected, actual)
+                for actual in tool_inputs[name]
+                if actual is not None
+            )
+            if not found:
+                failures.append(
+                    f"tool {name!r} input not matched: expected {expected!r}"
+                )
+
+    # Check required task title substrings
+    for substr in ensure_list(test.get("tasks")):
+        found = any(substr.lower() in t.lower() for t in task_titles)
+        if not found:
+            failures.append(
+                f"missing task with {substr!r} (tasks: {task_titles})"
+            )
+
+    # Check minimum task count
+    min_count = test.get("task_count")
+    if min_count is not None and len(task_titles) < min_count:
+        failures.append(
+            f"expected >= {min_count} tasks, got {len(task_titles)}"
+        )
+
+    return failures
+
+
+def validate_response(stdout, test):
+    """Validate response content assertions against stdout."""
+    failures = []
+
+    for pat in ensure_list(test.get("contains")):
+        if pat not in stdout:
+            failures.append(f"missing in response: {pat!r}")
+
+    for pat in ensure_list(test.get("not_contains")):
+        if pat in stdout:
+            failures.append(f"unexpected in response: {pat!r}")
+
+    return failures
+
+
+def extract_trace(stderr, stdout):
+    """Extract concise trace from TOOL:/PROGRESS: lines for LLM analysis."""
     lines = []
-    for line in raw_output.splitlines():
-        clean = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
 
-        if "raw model response text" in clean:
-            m = re.search(r"text=(.+)$", clean)
-            text = m.group(1).strip() if m else "(empty)"
-            lines.append(f"  LLM response: {truncate_value(text, 120)}")
-
-        elif "raw model tool call" in clean:
-            m = re.search(r"tool=(\S+)\s+input=(.+)$", clean)
-            if m:
-                tool_name = m.group(1)
-                tool_input = truncate_value(m.group(2).strip())
-                lines.append(f"  TOOL CALL: {tool_name} | {tool_input}")
-
-        elif clean.startswith("shell:") and "cmd=" in clean:
-            m = re.search(r"cmd=(.+)$", clean)
-            if m:
-                lines.append(f"  shell cmd: {m.group(1).strip()}")
-
-        elif "shell:" in clean and "exit_code=" in clean:
-            m = re.search(r"exit_code=(\d+)\s+stdout_len=(\d+)", clean)
-            if m:
-                code, size = m.group(1), m.group(2)
-                status = "OK" if code == "0" else f"FAIL({code})"
-                lines.append(f"  shell result: {status}, {size} chars")
-
-        elif "subagent" in clean and ("name=" in clean or "done" in clean):
-            truncated = re.sub(r"(text=|sys=).{100,}", r"\1...(truncated)", clean)
-            lines.append(f"  {truncated}")
-
-        elif "load_skills" in clean and "already loaded" in clean:
-            lines.append("  load_skills: already loaded (skipped)")
+    for line in stderr.splitlines():
+        raw = line.strip()
+        if raw.startswith("TOOL: ") or raw.startswith("PROGRESS: "):
+            lines.append(f"  {raw}")
 
     return "\n".join(lines)
 
 
-def run_test(test):
+def run_test(test, provider=None):
+    """Run a single test and return (name, status, failures, trace)."""
     name = test["name"]
-    max_retries = 3 if test.get("skip") == "online" else 1
+    failures = []
 
-    for attempt in range(max_retries):
-        failures = []
+    args = test.get("args", "").split() if test.get("args") else []
+    stdout, stderr, exit_code = run_pie(
+        args,
+        input_text=test.get("input"),
+        timeout=test.get("timeout", 30),
+        provider=provider,
+    )
 
-        args = test.get("args", "").split() if test.get("args") else []
-        out, exit_code = run_pie(
-            args,
-            input_text=test.get("input"),
-            timeout=test.get("timeout", 30),
-        )
+    # Exit code check
+    if "exit" in test and exit_code != test["exit"]:
+        failures.append(f"exit: expected {test['exit']}, got {exit_code}")
 
-        check = out
-        if test.get("filter"):
-            check = "\n".join(re.findall(test["filter"], out))
+    # Response content checks (stdout only)
+    failures.extend(validate_response(stdout, test))
 
-        if "exit" in test and exit_code != test["exit"]:
-            failures.append(f"exit: expected {test['exit']}, got {exit_code}")
+    # Structured event checks (stderr only)
+    failures.extend(validate_structured(stderr, test))
 
-        for pat in ensure_list(test.get("contains")):
-            if pat not in check:
-                failures.append(f"missing: {pat!r}")
+    # Post-run command
+    post_cmd = test.get("post")
+    if post_cmd:
+        try:
+            r = subprocess.run(
+                post_cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=ROOT,
+            )
+            if r.returncode != 0:
+                failures.append(f"post: {post_cmd!r} exited {r.returncode}")
+        except subprocess.TimeoutExpired:
+            failures.append(f"post: {post_cmd!r} timed out")
 
-        for pat in ensure_list(test.get("not_contains")):
-            if pat in check:
-                failures.append(f"unexpected: {pat!r}")
-
-        post_cmd = test.get("post")
-        if post_cmd:
-            try:
-                r = subprocess.run(
-                    post_cmd,
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                    cwd=ROOT,
-                )
-                if r.returncode != 0:
-                    preview = (r.stdout + r.stderr).strip().splitlines()[:3]
-                    failures.append(f"post: {post_cmd!r} exited {r.returncode}")
-                    for line in preview:
-                        failures.append(f"  {line}")
-            except subprocess.TimeoutExpired:
-                failures.append(f"post: {post_cmd!r} timed out")
-
-        if not failures:
-            break
-
-    trace = extract_trace(out)
+    trace = extract_trace(stderr, stdout)
     status = "fail" if failures else "pass"
     return name, status, failures, trace
 
 
 def print_result(name, status, failures):
-    if status == "skip":
-        yellow(f"  SKIP: {name}")
-    elif status == "fail":
+    if status == "fail":
         red(f"  FAIL: {name}")
         for f in failures:
             red(f"    - {f}")
@@ -211,7 +290,7 @@ def print_result(name, status, failures):
 
 
 def analyze_traces(traces):
-    """Single direct LLM call to analyze all test traces."""
+    """Single LLM call to analyze all test traces for efficiency."""
     combined = []
     for name, trace in traces:
         combined.append(f"=== TEST: {name} ===\n{trace}\n")
@@ -219,7 +298,7 @@ def analyze_traces(traces):
 
     base_url = (
         os.environ.get("OPENAI_BASE_URL")
-        or os.environ.get("OPENAI_BASE_URL", "http://127.0.0.1:8000/v1")
+        or "http://127.0.0.1:8000/v1"
     ).rstrip("/")
     model = os.environ.get("OPENAI_MODEL", "")
     api_key = os.environ.get("OPENAI_API_KEY", "ollama")
@@ -249,7 +328,7 @@ def analyze_traces(traces):
             return data["choices"][0]["message"]["content"].strip()
     except urllib.error.HTTPError as e:
         body = e.read().decode()[:500]
-        return f"(analysis failed: HTTP {e.code} — {body})"
+        return f"(analysis failed: HTTP {e.code} - {body})"
     except Exception as e:
         return f"(analysis failed: {e})"
 
@@ -257,43 +336,64 @@ def analyze_traces(traces):
 def main():
     load_dotenv(ROOT / ".env")
 
+    # Resolve provider: if OPENAI_BASE_URL is set, derive provider name from
+    # pie.toml config that matches the base_url. Otherwise fall back to None
+    # (pie uses its default_provider).
+    provider = None
+    env_url = os.environ.get("OPENAI_BASE_URL", "").rstrip("/")
+    if env_url:
+        # Find a pie.toml provider matching the env base_url
+        config_paths = [
+            Path.home() / ".pie" / "pie.toml",
+            ROOT / ".pie" / "pie.toml",
+        ]
+        for config_path in config_paths:
+            if not config_path.exists():
+                continue
+            try:
+                import tomllib
+                with open(config_path, "rb") as f:
+                    pie_cfg = tomllib.load(f)
+                for name, cfg in pie_cfg.get("provider", {}).items():
+                    if cfg.get("base_url", "").rstrip("/") == env_url:
+                        provider = name
+                        break
+            except (ImportError, Exception):
+                pass
+            if provider:
+                break
+
     print("Building pie...")
     subprocess.run(["cargo", "build", "--quiet"], cwd=ROOT, check=True)
+    if provider:
+        print(f"Provider: {provider}")
     print()
 
     with open(ROOT / "tests" / "tests.yaml") as f:
         tests = yaml.safe_load(f)["tests"]
 
-    print("══ Running tests ══\n")
-
     traces = []
-    passed = failed = skipped = 0
+    passed = failed = 0
 
     for test in tests:
-        name, status, failures, trace = run_test(test)
+        name, status, failures, trace = run_test(test, provider=provider)
         print_result(name, status, failures)
         if status == "pass":
             passed += 1
-        elif status == "fail":
-            failed += 1
         else:
-            skipped += 1
-        if status != "skip" and trace:
+            failed += 1
+        if trace:
             traces.append((name, trace))
 
-    print("\n══ Results ══")
+    print(f"\n== Results ==")
     green(f"  Passed: {passed}")
     if failed:
         red(f"  Failed: {failed}")
     else:
         print(f"  Failed: {failed}")
-    if skipped:
-        yellow(f"  Skipped: {skipped}")
-    else:
-        print(f"  Skipped: {skipped}")
 
     if traces:
-        print("\n══ Efficiency Analysis ══\n")
+        print("\n== Efficiency Analysis ==\n")
         analysis = analyze_traces(traces)
         if analysis:
             cyan(analysis)

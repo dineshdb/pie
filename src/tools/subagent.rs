@@ -180,6 +180,7 @@ fn make_subagent_tool(
         .description("Delegate a task to an subagent with detailed instructions.")
         .input_schema(schemars::schema_for!(SubagentInput))
         .execute(ToolExecute::from_async(move |_ctx, params| {
+            crate::tools::emit_tool_input("subagent", &params);
             let name = params
                 .get("name")
                 .and_then(|v| v.as_str())
