@@ -7,9 +7,9 @@ use crate::tools::{
     execute_skill_script_tool, load_references_tool, load_skills_tool, read_file_tool,
     replace_tool, shell, write_file_tool,
 };
-use aisdk::core::tools::{Tool, ToolExecute};
-use aisdk::core::utils::step_count_is;
-use aisdk::core::{LanguageModelRequest, Message, UserMessage};
+use agentsdk::core::tools::{Tool, ToolExecute};
+use agentsdk::core::utils::step_count_is;
+use agentsdk::core::{LanguageModelRequest, Message, UserMessage};
 use p1e_srt::SandboxConfig;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};

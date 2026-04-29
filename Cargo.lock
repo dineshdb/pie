@@ -9,20 +9,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
-name = "aho-corasick"
-version = "1.1.4"
+name = "agentsdk"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddd31a130427c27518df266943a5308ed92d4b226cc639f5a8f1002816174301"
+checksum = "3f7e163e8cb45ce2113d6603cf09c1e4ca82fa8a76918588cbee448c923b6297"
 dependencies = [
- "memchr",
-]
-
-[[package]]
-name = "aisdk"
-version = "0.5.2"
-source = "git+https://github.com/qretaio/aisdk#b64dc34062e9f26d2462076284774620b089b80a"
-dependencies = [
- "aisdk-macros",
+ "agentsdk-macros",
  "async-trait",
  "derive_builder",
  "futures",
@@ -39,13 +31,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "aisdk-macros"
-version = "0.3.0"
-source = "git+https://github.com/qretaio/aisdk#b64dc34062e9f26d2462076284774620b089b80a"
+name = "agentsdk-macros"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "327cdd30b46f339177d91c83d80eb696c77f7b45614aab20002e1e40ac3276cb"
 dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "aho-corasick"
+version = "1.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ddd31a130427c27518df266943a5308ed92d4b226cc639f5a8f1002816174301"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]
@@ -1824,9 +1826,9 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "p1e"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
- "aisdk",
+ "agentsdk",
  "anyhow",
  "arboard",
  "async-trait",

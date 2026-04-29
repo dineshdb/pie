@@ -1,4 +1,4 @@
-use aisdk::core::tools::{Tool, ToolExecute};
+use agentsdk::core::tools::{Tool, ToolExecute};
 use anyhow::Context;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

@@ -10,9 +10,9 @@ use crate::tools::{
     execute_skill_script_tool, load_references_tool, load_skills_tool, read_file_tool,
     replace_tool, shell, subagent_tool, write_file_tool,
 };
-use aisdk::core::LanguageModel;
-use aisdk::core::utils::step_count_is;
-use aisdk::core::{AssistantMessage, LanguageModelRequest, Message, UserMessage};
+use agentsdk::core::LanguageModel;
+use agentsdk::core::utils::step_count_is;
+use agentsdk::core::{AssistantMessage, LanguageModelRequest, Message, UserMessage};
 use anyhow::{Context, Result};
 use p1e_srt::SandboxConfig;
 use std::collections::HashSet;
@@ -34,7 +34,7 @@ pub fn strip_control_tokens(text: &str) -> String {
 /// Extract the output text from a response (handles both text and tool results).
 pub fn extract_output_text(
     text: &str,
-    tool_results: Option<&[aisdk::core::ToolResultInfo]>,
+    tool_results: Option<&[agentsdk::core::ToolResultInfo]>,
 ) -> String {
     // If the LLM produced text, prefer it — unless the last tool call was
     // a subagent, in which case the subagent's structured output is the answer.
@@ -265,10 +265,10 @@ pub async fn handle_query(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aisdk::core::tools::ToolDetails;
+    use agentsdk::core::tools::ToolDetails;
 
-    fn tool_result(tool_name: &str, output: &str) -> aisdk::core::ToolResultInfo {
-        aisdk::core::ToolResultInfo {
+    fn tool_result(tool_name: &str, output: &str) -> agentsdk::core::ToolResultInfo {
+        agentsdk::core::ToolResultInfo {
             tool: ToolDetails {
                 name: tool_name.to_string(),
                 ..Default::default()

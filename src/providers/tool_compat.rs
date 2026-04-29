@@ -1,5 +1,5 @@
-use aisdk::core::language_model::{LanguageModelResponse, LanguageModelResponseContentType};
-use aisdk::core::tools::ToolCallInfo;
+use agentsdk::core::language_model::{LanguageModelResponse, LanguageModelResponseContentType};
+use agentsdk::core::tools::ToolCallInfo;
 
 /// Pass through tool calls as-is. If the tool name doesn't match a registered
 /// tool, `ToolList::execute` returns "Tool not found" and the model self-corrects

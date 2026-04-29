@@ -1,17 +1,17 @@
 use super::tool_compat::post_process_response;
 use crate::config::ResolvedProvider;
 use crate::utils::execute_with_retry;
-use aisdk::core::DynamicModel;
-use aisdk::core::capabilities::{
+use agentsdk::core::DynamicModel;
+use agentsdk::core::capabilities::{
     AudioInputSupport, AudioOutputSupport, ImageInputSupport, ImageOutputSupport, ReasoningSupport,
     StructuredOutputSupport, TextInputSupport, TextOutputSupport, ToolCallSupport,
     VideoInputSupport, VideoOutputSupport,
 };
-use aisdk::core::language_model::{
+use agentsdk::core::language_model::{
     LanguageModel, LanguageModelOptions, LanguageModelResponse, LanguageModelResponseContentType,
     ProviderStream,
 };
-use aisdk::providers::OpenAICompatible;
+use agentsdk::providers::OpenAICompatible;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use itertools::Itertools;
@@ -63,7 +63,7 @@ impl LanguageModel for Model {
     async fn generate_text(
         &mut self,
         options: LanguageModelOptions,
-    ) -> aisdk::error::Result<LanguageModelResponse> {
+    ) -> agentsdk::error::Result<LanguageModelResponse> {
         let response = self.inner.generate_text(options).await?;
         for content in &response.contents {
             match content {
@@ -84,7 +84,7 @@ impl LanguageModel for Model {
     async fn stream_text(
         &mut self,
         options: LanguageModelOptions,
-    ) -> aisdk::error::Result<ProviderStream> {
+    ) -> agentsdk::error::Result<ProviderStream> {
         self.inner.stream_text(options).await
     }
 }

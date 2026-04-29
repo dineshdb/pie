@@ -1,6 +1,6 @@
 [package]
 name = "p1e"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 default-run = "pie"
 description = "A minimal AI coding agent with sandboxed command execution"
@@ -25,7 +25,7 @@ name = "pie"
 path = "src/main.rs"
 
 [dependencies]
-aisdk = { git = "https://github.com/qretaio/aisdk", features = ["openaicompatible", "openai"] }
+agentsdk = { version = "0.6.2", features = ["openaicompatible", "openai"] }
 anyhow = "1"
 arboard = "3"
 async-trait = "0.1"

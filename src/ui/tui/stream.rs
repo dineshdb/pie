@@ -14,8 +14,8 @@ use crate::ui::tui::components::input::InputComponent;
 use crate::ui::tui::realm::StreamEvent;
 use crate::ui::tui::widgets::tool_display::ToolCallResult;
 use crate::utils::execute_with_retry;
-use aisdk::core::utils::step_count_is;
-use aisdk::core::{
+use agentsdk::core::utils::step_count_is;
+use agentsdk::core::{
     AssistantMessage, LanguageModelRequest, LanguageModelStreamChunkType, Message,
     StreamTextResponse, UserMessage,
 };
@@ -297,7 +297,7 @@ impl From<CompletedToolCall> for StreamEvent {
     }
 }
 
-fn tool_output_text(result: &aisdk::core::ToolResultInfo) -> String {
+fn tool_output_text(result: &agentsdk::core::ToolResultInfo) -> String {
     result
         .output
         .as_ref()

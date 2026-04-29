@@ -1,5 +1,5 @@
 use crate::skill::{self, Skill};
-use aisdk::core::tools::{Tool, ToolExecute};
+use agentsdk::core::tools::{Tool, ToolExecute};
 use p1e_srt::{SandboxConfig, build_command};
 use serde_json::json;
 use std::collections::HashSet;
@@ -256,7 +256,7 @@ pub fn execute_skill_script_tool(sandbox_settings: Arc<SandboxConfig>) -> Tool {
 mod tests {
     use super::*;
     use crate::config::pie_home;
-    use aisdk::core::ToolContext;
+    use agentsdk::core::ToolContext;
     use std::fs;
 
     /// Create a temporary skill in ~/.pie/skills/ with a SKILL.md and optional script files.
