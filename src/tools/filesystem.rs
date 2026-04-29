@@ -56,6 +56,7 @@ pub fn read_file_tool() -> Tool {
         .description("Read the content of a file, optionally within a line range.")
         .input_schema(schemars::schema_for!(ReadFileInput))
         .execute(ToolExecute::from_sync(|_ctx, params| {
+            super::emit_tool_input("read_file", &params);
             let path_str = params
                 .get("path")
                 .and_then(serde_json::Value::as_str)
@@ -104,12 +105,19 @@ pub fn read_file_tool() -> Tool {
 
 #[allow(clippy::unwrap_used)]
 #[must_use]
-pub fn write_file_tool() -> Tool {
+pub fn write_file_tool(state: crate::tools::tasks::SharedTaskList) -> Tool {
     Tool::builder()
         .name("write_file")
-        .description("Write content to a file. Overwrites if it exists.")
+        .description("Write content to a file. Overwrites if it exists. Requires task plan.")
         .input_schema(schemars::schema_for!(WriteFileInput))
-        .execute(ToolExecute::from_sync(|_ctx, params| {
+        .execute(ToolExecute::from_sync(move |_ctx, params| {
+            super::emit_tool_input("write_file", &params);
+
+            {
+                let guard = super::safe_lock(&state);
+                guard.enforce_planning("write_file")?;
+            }
+
             let path_str = params
                 .get("path")
                 .and_then(serde_json::Value::as_str)
@@ -138,12 +146,19 @@ pub fn write_file_tool() -> Tool {
 
 #[allow(clippy::unwrap_used)]
 #[must_use]
-pub fn replace_tool() -> Tool {
+pub fn replace_tool(state: crate::tools::tasks::SharedTaskList) -> Tool {
     Tool::builder()
         .name("replace")
-        .description("Search and replace a specific string in a file. Fails if old_string is not found or is ambiguous.")
+        .description("Search and replace a specific string in a file. Fails if old_string is not found or is ambiguous. Requires task plan.")
         .input_schema(schemars::schema_for!(ReplaceInput))
-        .execute(ToolExecute::from_sync(|_ctx, params| {
+        .execute(ToolExecute::from_sync(move |_ctx, params| {
+            super::emit_tool_input("replace", &params);
+
+            {
+                let guard = super::safe_lock(&state);
+                guard.enforce_planning("replace")?;
+            }
+
             let path_str = params
                 .get("path")
                 .and_then(serde_json::Value::as_str)

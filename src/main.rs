@@ -140,8 +140,6 @@ async fn main() -> anyhow::Result<()> {
     } else {
         init_file_subscriber(&session.id.to_string(), &config.log_level)?;
     }
-    debug!(config = ?config, "config");
-
     if cli.list_skills {
         cmd::handle_list_skills(&registry);
         return Ok(());
@@ -220,17 +218,14 @@ fn default_env_filter(default_level: &str) -> EnvFilter {
 fn init_stderr_subscriber(debug: bool, config_level: &str) {
     let filter = default_env_filter(if debug { "debug" } else { config_level });
 
-    let subscriber = tracing_subscriber::fmt()
+    tracing_subscriber::fmt()
+        .with_writer(io::stderr)
         .with_target(false)
-        .with_level(false)
+        .with_level(true)
+        .without_time()
         .with_env_filter(filter)
-        .compact();
-
-    if debug {
-        subscriber.init();
-    } else {
-        subscriber.without_time().init();
-    }
+        .compact()
+        .init();
 }
 
 fn init_file_subscriber(session_id: &str, log_level: &str) -> anyhow::Result<()> {

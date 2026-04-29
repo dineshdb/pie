@@ -62,6 +62,10 @@ impl Widget for HelpOverlay<'_> {
                 Span::raw("     Scroll messages"),
             ]),
             Line::from(vec![
+                Span::styled("  Ctrl-T", Style::default().fg(Color::Green)),
+                Span::raw("             Toggle task list (Full / Compact)"),
+            ]),
+            Line::from(vec![
                 Span::styled("  Esc", Style::default().fg(Color::Green)),
                 Span::raw("               Close dialog / Cancel"),
             ]),

@@ -1,4 +1,5 @@
 use crate::db::DbPool;
+use crate::tools::tasks::SharedTaskList;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use strum::{AsRefStr, EnumString, IntoStaticStr};
@@ -58,6 +59,7 @@ pub struct Session {
     pub id: Uuid,
     pool: Arc<DbPool>,
     cache: Vec<HistoryEntry>,
+    pub task_state: SharedTaskList,
 }
 
 impl Session {
@@ -73,6 +75,7 @@ impl Session {
             id,
             pool,
             cache: Vec::new(),
+            task_state: SharedTaskList::default(),
         })
     }
 
@@ -92,6 +95,7 @@ impl Session {
             id: session_id,
             pool,
             cache: Vec::new(),
+            task_state: SharedTaskList::default(),
         };
         session.rebuild_cache()?;
         Ok(session)

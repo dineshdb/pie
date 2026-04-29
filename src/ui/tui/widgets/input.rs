@@ -2,7 +2,7 @@ use tuirealm::ratatui::buffer::Buffer;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::{Color, Modifier, Style};
 use tuirealm::ratatui::text::{Line, Span};
-use tuirealm::ratatui::widgets::{Block, Borders, Paragraph, Widget};
+use tuirealm::ratatui::widgets::{Paragraph, Widget};
 
 const PROMPT: &str = "> ";
 
@@ -17,15 +17,9 @@ pub struct InputView<'a> {
 
 impl Widget for InputView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let border_style = if self.is_streaming {
-            Style::default().fg(Color::Rgb(255, 140, 0))
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-
         let has_hint = !self.hint.is_empty();
         #[allow(clippy::cast_possible_truncation)]
-        let line_width = area.width.saturating_sub(5) as usize;
+        let line_width = area.width.saturating_sub(3) as usize;
 
         let prompt_style = Style::default()
             .fg(if self.is_streaming {
@@ -72,13 +66,7 @@ impl Widget for InputView<'_> {
             }
         }
 
-        Paragraph::new(rendered)
-            .block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .border_style(border_style),
-            )
-            .render(area, buf);
+        Paragraph::new(rendered).render(area, buf);
     }
 }
 
@@ -87,7 +75,7 @@ pub fn cursor_position(area: Rect, cursor_row: usize, cursor_col: usize) -> (u16
     #[allow(clippy::cast_possible_truncation)]
     (
         area.x + cursor_col as u16 + col_offset,
-        area.y + 1 + cursor_row as u16,
+        area.y + cursor_row as u16,
     )
 }
 
@@ -124,8 +112,8 @@ mod tests {
             is_streaming: false,
         };
         let buf = render_input(view, 30, 3);
-        // Row 1 is the content row (row 0 is the top border)
-        let content = row(&buf, 1);
+        // Row 0 is the content row (no border anymore)
+        let content = row(&buf, 0);
         assert!(
             content.contains("Type something"),
             "empty input should show placeholder, got: {content}"
@@ -143,13 +131,12 @@ mod tests {
             is_streaming: false,
         };
         let buf = render_input(view, 30, 3);
-        let content = row(&buf, 1);
-        assert!(content.contains('>'), "non-empty input should show prompt");
+        let content = row(&buf, 0);
         assert!(content.contains("hello"), "input should show typed content");
     }
 
     #[test]
-    fn streaming_input_has_colored_border() {
+    fn streaming_input_has_correct_styling() {
         let view = InputView {
             text_lines: &[String::new()],
             cursor_row: 0,
@@ -159,12 +146,12 @@ mod tests {
             is_streaming: true,
         };
         let buf = render_input(view, 30, 3);
-        // Top border should be orange (streaming color)
-        let border_cell = &buf[(0, 0)];
+        // Prompt cell should be Cyan
+        let prompt_cell = &buf[(0, 0)];
         assert_eq!(
-            border_cell.fg,
-            Color::Rgb(255, 140, 0),
-            "streaming border should be orange"
+            prompt_cell.fg,
+            Color::Cyan,
+            "prompt should be cyan when streaming"
         );
     }
 
@@ -174,7 +161,7 @@ mod tests {
         // Row 0 with col 0 should offset by 2 (prompt "> ")
         let (x, y) = cursor_position(area, 0, 0);
         assert_eq!(x, 2, "first row cursor should offset for prompt");
-        assert_eq!(y, 1, "cursor should be below top border");
+        assert_eq!(y, 0, "cursor should be at row 0 (no border)");
 
         // Row 1+ should have no offset
         let (x, _) = cursor_position(area, 1, 5);

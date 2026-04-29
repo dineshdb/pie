@@ -2,6 +2,7 @@ use crate::instructions::Instructions;
 use crate::prompt::SystemPrompt;
 use crate::providers::Model;
 use crate::registry::Registry;
+use crate::tools::tasks::{SharedTaskList, task_tools};
 use crate::tools::{
     execute_skill_script_tool, load_references_tool, load_skills_tool, read_file_tool,
     replace_tool, shell, write_file_tool,
@@ -24,6 +25,7 @@ pub(crate) struct Subagent {
     sandbox_settings: Arc<SandboxConfig>,
     loaded_skills: Arc<Mutex<HashSet<String>>>,
     loaded_refs: Arc<Mutex<HashSet<String>>>,
+    task_state: SharedTaskList,
 }
 
 impl Subagent {
@@ -31,6 +33,7 @@ impl Subagent {
         model: Model,
         registry: Arc<Registry>,
         sandbox_settings: Arc<SandboxConfig>,
+        task_state: SharedTaskList,
     ) -> Self {
         Self {
             model,
@@ -38,6 +41,7 @@ impl Subagent {
             sandbox_settings,
             loaded_skills: Arc::new(Mutex::new(HashSet::new())),
             loaded_refs: Arc::new(Mutex::new(HashSet::new())),
+            task_state,
         }
     }
 
@@ -48,16 +52,19 @@ impl Subagent {
         }
     }
 
-    fn build_tools(&self, depth: u32, parent_id: Option<Uuid>) -> Vec<Tool> {
+    fn build_tools(&self, depth: u32, parent_id: Option<Uuid>) -> anyhow::Result<Vec<Tool>> {
         let mut tools = vec![
-            shell(self.sandbox_settings.clone()),
+            shell(self.sandbox_settings.clone(), self.task_state.clone()),
             read_file_tool(),
-            write_file_tool(),
-            replace_tool(),
+            write_file_tool(self.task_state.clone()),
+            replace_tool(self.task_state.clone()),
             load_skills_tool(self.registry.clone(), Some(self.loaded_skills.clone())),
             load_references_tool(self.loaded_refs.clone()),
             execute_skill_script_tool(self.sandbox_settings.clone()),
         ];
+
+        tools.extend(task_tools(&self.task_state)?);
+
         if depth < MAX_DEPTH {
             tools.push(make_subagent_tool(
                 self.model.clone(),
@@ -65,9 +72,10 @@ impl Subagent {
                 self.sandbox_settings.clone(),
                 parent_id,
                 depth + 1,
+                self.task_state.clone(),
             ));
         }
-        tools
+        Ok(tools)
     }
 
     pub fn build_request(
@@ -107,7 +115,9 @@ impl Subagent {
         let messages = vec![Message::User(UserMessage::new(user_content))];
 
         tracing::debug!(name, query = %query.raw, %sys, "subagent request");
-        let tools = self.build_tools(depth, parent_id);
+        let tools = self
+            .build_tools(depth, parent_id)
+            .map_err(|e| e.to_string())?;
         let mut builder = LanguageModelRequest::builder()
             .model(self.model.clone())
             .system(sys)
@@ -163,12 +173,14 @@ fn make_subagent_tool(
     sandbox_settings: Arc<SandboxConfig>,
     parent_id: Option<Uuid>,
     depth: u32,
+    _task_state: SharedTaskList,
 ) -> Tool {
     Tool::builder()
         .name("subagent")
         .description("Delegate a task to an subagent with detailed instructions.")
         .input_schema(schemars::schema_for!(SubagentInput))
         .execute(ToolExecute::from_async(move |_ctx, params| {
+            crate::tools::emit_tool_input("subagent", &params);
             let name = params
                 .get("name")
                 .and_then(|v| v.as_str())
@@ -179,7 +191,15 @@ fn make_subagent_tool(
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
-            let subagent = Subagent::new(model.clone(), registry.clone(), sandbox_settings.clone());
+
+            // Subagents get their own independent task list to enforce local planning
+            let subagent_task_state = SharedTaskList::default();
+            let subagent = Subagent::new(
+                model.clone(),
+                registry.clone(),
+                sandbox_settings.clone(),
+                subagent_task_state,
+            );
             async move { subagent.execute(&name, &query, depth, parent_id).await }
         }))
         .build()
@@ -191,8 +211,9 @@ pub fn subagent_tool(
     model: Model,
     registry: Arc<Registry>,
     sandbox_settings: Arc<SandboxConfig>,
+    task_state: SharedTaskList,
 ) -> Tool {
-    make_subagent_tool(model, registry, sandbox_settings, None, 0)
+    make_subagent_tool(model, registry, sandbox_settings, None, 0, task_state)
 }
 
 #[cfg(test)]
@@ -234,6 +255,7 @@ mod tests {
                 completions: Vec::new(),
             }),
             Arc::new(SandboxConfig::default()),
+            SharedTaskList::default(),
         ))
     }
 
@@ -371,7 +393,7 @@ mod tests {
     fn build_tools_has_core_tools_at_all_depths() -> anyhow::Result<()> {
         let sub = new_subagent(vec![], vec![])?;
         for depth in 0..=2 {
-            let tools = sub.build_tools(depth, None);
+            let tools = sub.build_tools(depth, None)?;
             let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
             assert!(names.contains(&"shell"), "depth {depth}: must have shell");
             assert!(
@@ -393,9 +415,9 @@ mod tests {
     #[test]
     fn build_tools_includes_subagent_below_max_depth() -> anyhow::Result<()> {
         let sub = new_subagent(vec![], vec![])?;
-        let tools_0 = sub.build_tools(0, None);
-        let tools_1 = sub.build_tools(1, None);
-        let tools_2 = sub.build_tools(2, None);
+        let tools_0 = sub.build_tools(0, None)?;
+        let tools_1 = sub.build_tools(1, None)?;
+        let tools_2 = sub.build_tools(2, None)?;
         assert!(
             tools_0.iter().any(|t| t.name == "subagent"),
             "depth 0 must have subagent"
@@ -423,6 +445,7 @@ mod tests {
             Arc::new(SandboxConfig::default()),
             None,
             0,
+            SharedTaskList::default(),
         );
         assert!(
             !tool.description.is_empty(),

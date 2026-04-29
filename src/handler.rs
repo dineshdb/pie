@@ -5,6 +5,7 @@ use crate::prompt;
 use crate::providers::Model;
 use crate::session::{Role, Session};
 use crate::tools::subagent::Subagent;
+use crate::tools::tasks::task_tools;
 use crate::tools::{
     execute_skill_script_tool, load_references_tool, load_skills_tool, read_file_tool,
     replace_tool, shell, subagent_tool, write_file_tool,
@@ -12,82 +13,11 @@ use crate::tools::{
 use aisdk::core::LanguageModel;
 use aisdk::core::utils::step_count_is;
 use aisdk::core::{AssistantMessage, LanguageModelRequest, Message, UserMessage};
-use anyhow::Result;
+use anyhow::{Context, Result};
+use p1e_srt::SandboxConfig;
 use std::collections::HashSet;
 use std::iter::once;
 use std::sync::{Arc, Mutex};
-
-use p1e_srt::SandboxConfig;
-
-pub fn build_request(
-    model: &Model,
-    query: &Instructions,
-    history: &[crate::session::HistoryEntry],
-    sandbox_settings: Arc<SandboxConfig>,
-    max_steps: u32,
-    registry: &Arc<crate::registry::Registry>,
-) -> LanguageModelRequest<Model> {
-    let skills = &registry.skills;
-    let agents = &registry.agents;
-
-    // all mentioned skills from current and past user queries
-    let mut query = query.clone();
-    history
-        .iter()
-        .filter(|e| e.role == Role::User)
-        .for_each(|e| query.merge_mentions(&e.content));
-
-    let format = OutputFormat::Default;
-    let sp = prompt::SystemPrompt::new(skills, agents)
-        .resolve(&query)
-        .with_json(format.is_json());
-
-    let needed_skills = &sp.loaded_skills;
-    let loaded_skills = Arc::new(Mutex::new(
-        needed_skills
-            .iter()
-            .map(ToString::to_string)
-            .collect::<HashSet<String>>(),
-    ));
-
-    let system = sp.render();
-
-    let messages = history
-        .iter()
-        .filter_map(|entry| match entry.role {
-            Role::User => Some(Message::User(UserMessage::new(&entry.content))),
-            Role::Assistant => Some(Message::Assistant(AssistantMessage::from(
-                entry.content.clone(),
-            ))),
-            _ => None,
-        })
-        .chain(once(Message::User(UserMessage::new(&query.raw))))
-        .collect();
-
-    tracing::debug!(system = %system, query = %query.raw, "agent:");
-    let loaded_refs = Arc::new(Mutex::new(HashSet::new()));
-    LanguageModelRequest::builder()
-        .model(model.clone())
-        .system(&system)
-        .messages(messages)
-        .with_tool(shell(sandbox_settings.clone()))
-        .with_tool(read_file_tool())
-        .with_tool(write_file_tool())
-        .with_tool(replace_tool())
-        .with_tool(load_skills_tool(
-            registry.clone(),
-            Some(loaded_skills.clone()),
-        ))
-        .with_tool(load_references_tool(loaded_refs))
-        .with_tool(execute_skill_script_tool(sandbox_settings.clone()))
-        .with_tool(subagent_tool(
-            model.clone(),
-            registry.clone(),
-            sandbox_settings,
-        ))
-        .stop_when(step_count_is(max_steps as usize))
-        .build()
-}
 
 const CONTROL_TOKENS: &[&str] = &["<eos>", "<|end|>", "</think_end>", "<|end_of_turn|>"];
 
@@ -135,8 +65,60 @@ pub fn extract_output_text(
         .to_string()
 }
 
-pub async fn handle_query(
-    model: &mut Model,
+/// Print response to stdout and persist to session.
+fn output_response(
+    output: &str,
+    session: &mut Session,
+    format: OutputFormat,
+    model: &Model,
+) -> Result<()> {
+    if output.is_empty() {
+        return Ok(());
+    }
+    if format.is_json() {
+        let json_resp = JsonResponse::new(
+            output.to_string(),
+            Some(session.id.to_string()),
+            Some(model.name()),
+        );
+        println!("{}", serde_json::to_string(&json_resp)?);
+    } else {
+        println!("{output}");
+    }
+    session.add_assistant(output)?;
+    Ok(())
+}
+
+/// Handle a query delegated to a subagent (subsumption path).
+async fn subsume_agent(
+    model: &Model,
+    query: &Instructions,
+    session: &mut Session,
+    format: OutputFormat,
+    sandbox_settings: Arc<SandboxConfig>,
+    registry: Arc<crate::registry::Registry>,
+    agent_name: String,
+) -> Result<()> {
+    let task_list = session.task_state.clone();
+    let subagent = Subagent::new(model.clone(), registry, sandbox_settings, task_list);
+
+    tracing::info!(agent = %agent_name, "subsuming subagent role");
+    eprintln!("TOOL: subsume {}", serde_json::json!({"agent": agent_name}));
+
+    let output = subagent
+        .execute(&agent_name, &query.raw, 0, None)
+        .await
+        .map_err(|e| anyhow::anyhow!("Subagent subsumption failed: {e}"))?;
+
+    let output = strip_control_tokens(&output);
+    session.add_user(&query.raw)?;
+    output_response(&output, session, format, model)?;
+    Ok(())
+}
+
+/// Handle a direct query (non-subsumption path).
+async fn handle_direct(
+    model: &Model,
     query: &Instructions,
     session: &mut Session,
     format: OutputFormat,
@@ -144,51 +126,94 @@ pub async fn handle_query(
     max_steps: u32,
     registry: Arc<crate::registry::Registry>,
 ) -> Result<()> {
-    if let Some(agent_name) = find_subsume_candidate(query, &registry.agents) {
-        let subagent = Subagent::new(model.clone(), registry.clone(), sandbox_settings.clone());
+    let history = session.history_entries().to_vec();
+    let task_list = session.task_state.clone();
 
-        tracing::info!(agent = %agent_name, "subsuming subagent role");
-        let result = subagent.execute(&agent_name, &query.raw, 0, None).await;
-        match result {
-            Ok(output) => {
-                let output = strip_control_tokens(&output);
-                session.add_user(&query.raw)?;
-                if !output.is_empty() {
-                    if format.is_json() {
-                        let json_resp = JsonResponse::new(
-                            output.clone(),
-                            Some(session.id.to_string()),
-                            Some(model.name()),
-                        );
-                        println!("{}", serde_json::to_string(&json_resp)?);
-                    } else {
-                        println!("{output}");
-                    }
-                    session.add_assistant(&output)?;
+    let response = crate::utils::execute_with_retry("generate_text", {
+        let model = model.clone();
+        let query = query.clone();
+        let sandbox = sandbox_settings;
+        let task_list = task_list.clone();
+
+        move || {
+            let model = model.clone();
+            let query = query.clone();
+            let history = history.clone();
+            let sandbox = sandbox.clone();
+            let registry = registry.clone();
+            let task_list = task_list.clone();
+
+            async move {
+                let skills = &registry.skills;
+                let agents = &registry.agents;
+
+                // all mentioned skills from current and past user queries
+                let mut query = query.clone();
+                history
+                    .iter()
+                    .filter(|e| e.role == Role::User)
+                    .for_each(|e| query.merge_mentions(&e.content));
+
+                let format = OutputFormat::Default;
+                let sp = prompt::SystemPrompt::new(skills, agents)
+                    .resolve(&query)
+                    .with_json(format.is_json());
+
+                let needed_skills = &sp.loaded_skills;
+                let loaded_skills = Arc::new(Mutex::new(
+                    needed_skills
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<HashSet<String>>(),
+                ));
+
+                let system = sp.render();
+
+                let messages = history
+                    .iter()
+                    .filter_map(|entry| match entry.role {
+                        Role::User => Some(Message::User(UserMessage::new(&entry.content))),
+                        Role::Assistant => Some(Message::Assistant(AssistantMessage::from(
+                            entry.content.clone(),
+                        ))),
+                        _ => None,
+                    })
+                    .chain(once(Message::User(UserMessage::new(&query.raw))))
+                    .collect();
+
+                let loaded_refs = Arc::new(Mutex::new(HashSet::new()));
+                let mut builder = LanguageModelRequest::builder()
+                    .model(model.clone())
+                    .system(&system)
+                    .messages(messages)
+                    .with_tool(shell(sandbox.clone(), task_list.clone()))
+                    .with_tool(read_file_tool())
+                    .with_tool(write_file_tool(task_list.clone()))
+                    .with_tool(replace_tool(task_list.clone()))
+                    .with_tool(load_skills_tool(
+                        registry.clone(),
+                        Some(loaded_skills.clone()),
+                    ))
+                    .with_tool(load_references_tool(loaded_refs))
+                    .with_tool(execute_skill_script_tool(sandbox.clone()))
+                    .with_tool(subagent_tool(
+                        model.clone(),
+                        registry.clone(),
+                        sandbox.clone(),
+                        task_list.clone(),
+                    ))
+                    .stop_when(step_count_is(max_steps as usize));
+
+                for tool in task_tools(&task_list).context("failed to build task tools")? {
+                    builder = builder.with_tool(tool);
                 }
-                return Ok(());
-            }
-            Err(e) => {
-                anyhow::bail!("Subagent subsumption failed: {e}");
-            }
-        }
-    }
 
-    let model_clone = model.clone();
-    let query_clone = query.clone();
-    let history_clone = session.history_entries().to_vec();
-    let sandbox_clone = sandbox_settings.clone();
-    let registry_clone = registry.clone();
-
-    let response = crate::utils::execute_with_retry("generate_text", move || {
-        let model = model_clone.clone();
-        let query = query_clone.clone();
-        let history = history_clone.clone();
-        let sandbox = sandbox_clone.clone();
-        let registry = registry_clone.clone();
-        async move {
-            let mut req = build_request(&model, &query, &history, sandbox, max_steps, &registry);
-            req.generate_text().await.map_err(|e| anyhow::anyhow!(e))
+                builder
+                    .build()
+                    .generate_text()
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))
+            }
         }
     })
     .await
@@ -199,24 +224,42 @@ pub async fn handle_query(
     let output = strip_control_tokens(&output);
 
     session.add_user(&query.raw)?;
-
-    if output.is_empty() {
-        return Ok(());
-    }
-
-    if format.is_json() {
-        let json_resp = JsonResponse::new(
-            output.clone(),
-            Some(session.id.to_string()),
-            Some(model.name()),
-        );
-        println!("{}", serde_json::to_string(&json_resp)?);
-    } else {
-        println!("{output}");
-    }
-    session.add_assistant(&output)?;
-
+    output_response(&output, session, format, model)?;
     Ok(())
+}
+
+pub async fn handle_query(
+    model: &mut Model,
+    query: &Instructions,
+    session: &mut Session,
+    format: OutputFormat,
+    sandbox_settings: Arc<SandboxConfig>,
+    max_steps: u32,
+    registry: Arc<crate::registry::Registry>,
+) -> Result<()> {
+    if let Some(agent_name) = find_subsume_candidate(query, &registry.agents) {
+        subsume_agent(
+            model,
+            query,
+            session,
+            format,
+            sandbox_settings,
+            registry,
+            agent_name,
+        )
+        .await
+    } else {
+        handle_direct(
+            model,
+            query,
+            session,
+            format,
+            sandbox_settings,
+            max_steps,
+            registry,
+        )
+        .await
+    }
 }
 
 #[cfg(test)]

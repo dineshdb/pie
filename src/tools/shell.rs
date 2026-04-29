@@ -1,3 +1,4 @@
+use crate::tools::tasks::SharedTaskList;
 use aisdk::core::tools::{Tool, ToolExecute};
 use p1e_srt::{SandboxConfig, build_command};
 use serde_json::json;
@@ -10,12 +11,19 @@ struct ShellInput {
 
 /// Execute a shell command inside the sandbox and return its stdout, stderr, and exit code.
 #[allow(clippy::unwrap_used)]
-pub fn shell(sandbox_settings: Arc<SandboxConfig>) -> Tool {
+pub fn shell(sandbox_settings: Arc<SandboxConfig>, state: SharedTaskList) -> Tool {
     Tool::builder()
         .name("shell")
-        .description("Execute a system command, bash tools, clis, etc.")
+        .description("Execute a system command, bash tools, clis, etc. Requires task plan.")
         .input_schema(schemars::schema_for!(ShellInput))
         .execute(ToolExecute::from_sync(move |_ctx, params| {
+            super::emit_tool_input("shell", &params);
+
+            {
+                let guard = super::safe_lock(&state);
+                guard.enforce_planning("shell")?;
+            }
+
             let Some(cmd) = params.get("cmd").and_then(|v| v.as_str()) else {
                 return Err("cmd parameter is required".to_string());
             };

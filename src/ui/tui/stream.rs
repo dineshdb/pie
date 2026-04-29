@@ -1,15 +1,29 @@
 use crate::agent::find_subsume_candidate;
-use crate::handler::{build_request, extract_output_text, strip_control_tokens};
+use crate::handler::{extract_output_text, strip_control_tokens};
 use crate::instructions::Instructions;
+use crate::prompt::SystemPrompt;
 use crate::providers::Model;
-use crate::session::Session;
+use crate::session::{Role, Session};
 use crate::tools::subagent::Subagent;
+use crate::tools::tasks::task_tools;
+use crate::tools::{
+    execute_skill_script_tool, load_references_tool, load_skills_tool, read_file_tool,
+    replace_tool, shell, subagent_tool, write_file_tool,
+};
+use crate::ui::tui::components::input::InputComponent;
 use crate::ui::tui::realm::StreamEvent;
 use crate::ui::tui::widgets::tool_display::ToolCallResult;
-use aisdk::core::{LanguageModelStreamChunkType, StreamTextResponse};
+use crate::utils::execute_with_retry;
+use aisdk::core::utils::step_count_is;
+use aisdk::core::{
+    AssistantMessage, LanguageModelRequest, LanguageModelStreamChunkType, Message,
+    StreamTextResponse, UserMessage,
+};
+use anyhow::Context;
 use itertools::Itertools;
 use p1e_srt::SandboxConfig;
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_stream::StreamExt;
 
@@ -21,10 +35,11 @@ pub struct StreamContext {
     pub pool: Arc<crate::db::DbPool>,
     pub max_steps: u32,
     pub registry: Arc<crate::registry::Registry>,
+    pub task_list: crate::tools::tasks::SharedTaskList,
 }
 
-impl From<&crate::ui::tui::components::input::InputComponent> for StreamContext {
-    fn from(input: &crate::ui::tui::components::input::InputComponent) -> Self {
+impl From<&InputComponent> for StreamContext {
+    fn from(input: &InputComponent) -> Self {
         Self {
             model: input.model.clone(),
             sandbox: input.sandbox_settings.clone(),
@@ -32,6 +47,7 @@ impl From<&crate::ui::tui::components::input::InputComponent> for StreamContext 
             pool: input.session_pool.clone(),
             max_steps: input.max_steps,
             registry: input.registry.clone(),
+            task_list: input.task_list.clone(),
         }
     }
 }
@@ -54,28 +70,79 @@ pub async fn spawn_stream(
     let history = session.history_entries().to_vec();
     // Persist user message before streaming so tool calls land after it in DB order.
     let _ = session.add_user(&query.raw);
-
-    let history_clone = history.clone();
-    let query_clone = query.clone();
-    let sandbox_clone = ctx.sandbox.clone();
-    let model_clone = ctx.model.clone();
-
-    let mut response = match crate::utils::execute_with_retry("stream_text", move || {
-        let history = history_clone.clone();
-        let query = query_clone.clone();
-        let sandbox = sandbox_clone.clone();
-        let model = model_clone.clone();
+    let mut response = match execute_with_retry("stream_text", move || {
+        let history = history.clone();
+        let query = query.clone();
+        let sandbox = ctx.sandbox.clone();
+        let model = ctx.model.clone();
         let registry = ctx.registry.clone();
+        let task_list = ctx.task_list.clone();
 
         async move {
-            let model = model.clone();
             let mut req = if let Some(agent) = find_subsume_candidate(&query, &registry.agents) {
-                let subagent = Subagent::new(model.clone(), registry.clone(), sandbox.clone());
+                let subagent = Subagent::new(
+                    model.clone(),
+                    registry.clone(),
+                    sandbox.clone(),
+                    task_list.clone(),
+                );
                 subagent
                     .build_request(&agent, &query.raw, 0, None)
                     .map_err(|e| anyhow::anyhow!(e))?
             } else {
-                build_request(&model, &query, &history, sandbox, ctx.max_steps, &registry)
+                history
+                    .iter()
+                    .filter(|e| e.role == Role::User)
+                    .for_each(|e| query.clone().merge_mentions(&e.content));
+
+                let sp = SystemPrompt::new(&registry.skills, &registry.agents).resolve(&query);
+                let loaded_skills = Arc::new(Mutex::new(
+                    sp.loaded_skills
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<HashSet<String>>(),
+                ));
+
+                let system = sp.render();
+                let messages = history
+                    .iter()
+                    .filter_map(|entry| match entry.role {
+                        Role::User => Some(Message::User(UserMessage::new(&entry.content))),
+                        Role::Assistant => Some(Message::Assistant(AssistantMessage::from(
+                            entry.content.clone(),
+                        ))),
+                        _ => None,
+                    })
+                    .chain(std::iter::once(Message::User(UserMessage::new(&query.raw))))
+                    .collect();
+
+                let loaded_refs = Arc::new(Mutex::new(HashSet::new()));
+                let mut builder = LanguageModelRequest::builder()
+                    .model(model.clone())
+                    .system(&system)
+                    .messages(messages)
+                    .with_tool(shell(sandbox.clone(), task_list.clone()))
+                    .with_tool(read_file_tool())
+                    .with_tool(write_file_tool(task_list.clone()))
+                    .with_tool(replace_tool(task_list.clone()))
+                    .with_tool(load_skills_tool(
+                        registry.clone(),
+                        Some(loaded_skills.clone()),
+                    ))
+                    .with_tool(load_references_tool(loaded_refs))
+                    .with_tool(execute_skill_script_tool(sandbox.clone()))
+                    .with_tool(subagent_tool(
+                        model.clone(),
+                        registry.clone(),
+                        sandbox.clone(),
+                        task_list.clone(),
+                    ))
+                    .stop_when(step_count_is(ctx.max_steps as usize));
+
+                for tool in task_tools(&task_list).context("failed to build task tools")? {
+                    builder = builder.with_tool(tool);
+                }
+                builder.build()
             };
             req.stream_text().await.map_err(|e| anyhow::anyhow!(e))
         }
@@ -156,9 +223,12 @@ impl<'a> StreamProcessor<'a> {
             }
             LanguageModelStreamChunkType::ToolCallEnd(result) => {
                 let output = tool_output_text(&result);
+                let name = std::mem::take(&mut self.pending_tool.name);
+                let params = std::mem::take(&mut self.pending_tool.params);
+
                 let event = CompletedToolCall {
-                    name: std::mem::take(&mut self.pending_tool.name),
-                    params: std::mem::take(&mut self.pending_tool.params),
+                    name: name.clone(),
+                    params,
                     output,
                 };
                 let display = if event.params.is_empty() {
@@ -166,6 +236,12 @@ impl<'a> StreamProcessor<'a> {
                 } else {
                     format!("{}: {}", event.name, event.params)
                 };
+
+                // For task tools, also trigger a TaskUpdate event to refresh task UI
+                if name == "task_add" || name == "task_update" {
+                    let _ = self.event_tx.send(StreamEvent::TaskUpdate);
+                }
+
                 persist_tool_call(self.session, &event.name, &display, &event.output);
                 let _ = self.event_tx.send(event.into());
             }

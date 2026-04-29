@@ -68,10 +68,10 @@ impl LanguageModel for Model {
         for content in &response.contents {
             match content {
                 LanguageModelResponseContentType::Text(t) => {
-                    tracing::debug!(text = %t, "raw model response text");
+                    tracing::trace!(text = %t, "raw model response text");
                 }
                 LanguageModelResponseContentType::ToolCall(info) => {
-                    tracing::debug!(tool = %info.tool.name, input = ?info.input, "raw model tool call");
+                    tracing::trace!(tool = %info.tool.name, input = ?info.input, "raw model tool call");
                 }
                 other => {
                     tracing::debug!(?other, "raw model response other");
