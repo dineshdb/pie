@@ -10,7 +10,7 @@ use crate::tools::{
 use agentsdk::core::tools::{Tool, ToolExecute};
 use agentsdk::core::utils::step_count_is;
 use agentsdk::core::{LanguageModelRequest, Message, UserMessage};
-use p1e_srt::SandboxConfig;
+use p1e_sandbox::SandboxConfig;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;

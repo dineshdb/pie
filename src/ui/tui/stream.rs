@@ -21,7 +21,7 @@ use agentsdk::core::{
 };
 use anyhow::Context;
 use itertools::Itertools;
-use p1e_srt::SandboxConfig;
+use p1e_sandbox::SandboxConfig;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};

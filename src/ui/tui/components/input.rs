@@ -13,7 +13,7 @@ use crate::ui::tui::stream::{StreamContext, spawn_stream};
 use crate::ui::tui::widgets::completion::{CompletionPopup, CompletionState, Direction};
 use crate::ui::tui::widgets::history::InputHistory;
 use crate::ui::tui::widgets::input::{InputView, cursor_position};
-use p1e_srt::SandboxConfig;
+use p1e_sandbox::SandboxConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;

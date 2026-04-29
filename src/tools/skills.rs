@@ -1,6 +1,6 @@
 use crate::skill::{self, Skill};
 use agentsdk::core::tools::{Tool, ToolExecute};
-use p1e_srt::{SandboxConfig, build_command};
+use p1e_sandbox::{SandboxConfig, build_command};
 use serde_json::json;
 use std::collections::HashSet;
 use std::fmt::Write;

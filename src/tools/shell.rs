@@ -1,6 +1,6 @@
 use crate::tools::tasks::SharedTaskList;
 use agentsdk::core::tools::{Tool, ToolExecute};
-use p1e_srt::{SandboxConfig, build_command};
+use p1e_sandbox::{SandboxConfig, build_command};
 use serde_json::json;
 use std::sync::Arc;
 

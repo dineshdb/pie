@@ -6,7 +6,7 @@ use figment::{
     providers::{Format, Toml},
 };
 use include_dir::{Dir, include_dir};
-use p1e_srt::SandboxConfig;
+use p1e_sandbox::SandboxConfig;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;

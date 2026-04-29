@@ -20,7 +20,7 @@ use crate::ui::tui::widgets::status_bar::StatusBar;
 use crate::ui::tui::widgets::task_list::TaskView;
 use anyhow::{Context, Result};
 use arboard::Clipboard;
-use p1e_srt::SandboxConfig;
+use p1e_sandbox::SandboxConfig;
 use std::io::stdout;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

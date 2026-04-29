@@ -1840,7 +1840,7 @@ dependencies = [
  "include_dir",
  "itertools",
  "minijinja",
- "p1e-srt",
+ "p1e-sandbox",
  "pulldown-cmark",
  "r2d2",
  "r2d2_sqlite",
@@ -1866,7 +1866,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "p1e-srt"
+name = "p1e-sandbox"
 version = "0.2.0"
 dependencies = [
  "dirs",

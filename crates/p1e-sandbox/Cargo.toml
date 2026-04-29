@@ -1,5 +1,5 @@
 [package]
-name = "p1e-srt"
+name = "p1e-sandbox"
 version = "0.2.0"
 edition = "2024"
 description = "Native OS sandbox runtime for p1e — sandbox-exec (macOS) and bwrap (Linux)"

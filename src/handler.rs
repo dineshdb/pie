@@ -14,7 +14,7 @@ use agentsdk::core::LanguageModel;
 use agentsdk::core::utils::step_count_is;
 use agentsdk::core::{AssistantMessage, LanguageModelRequest, Message, UserMessage};
 use anyhow::{Context, Result};
-use p1e_srt::SandboxConfig;
+use p1e_sandbox::SandboxConfig;
 use std::collections::HashSet;
 use std::iter::once;
 use std::sync::{Arc, Mutex};

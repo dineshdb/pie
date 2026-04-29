@@ -41,8 +41,8 @@ jobs:
           if [ "$CURRENT" = "${{ inputs.version }}" ]; then
             echo "Version already $CURRENT, skipping"
           else
-            sed -i 's/^version = ".*"/version = "${{ inputs.version }}"/' Cargo.toml
-            sed -i 's/^version = ".*"/version = "${{ inputs.version }}"/' crates/p1e-srt/Cargo.toml
+            echo "Version mismatch"
+            exit 1
           fi
 
       - name: Install cross-compilation tools

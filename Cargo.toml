@@ -8,7 +8,7 @@ license = "MIT"
 repository = "https://github.com/dineshdb/pie"
 
 [workspace]
-members = [".", "crates/p1e-srt"]
+members = [".", "crates/p1e-sandbox"]
 
 [workspace.dependencies]
 dirs = "6"
@@ -36,7 +36,7 @@ figment = { version = "0.10", features = ["toml"] }
 futures = "0.3"
 include_dir = "0.7"
 minijinja = "2"
-p1e-srt = { path = "crates/p1e-srt" }
+p1e-sandbox = { path = "crates/p1e-sandbox", version = "0.2.0" }
 pulldown-cmark = "0.12"
 r2d2 = "0.8"
 r2d2_sqlite = "0.31"
