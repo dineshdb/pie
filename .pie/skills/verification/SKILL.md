@@ -1,27 +1,37 @@
 ---
 name: verification
-description: Mandates a "Reproduction -> Fix -> Verification" workflow. Use this to ensure bugs are truly fixed and no regressions are introduced.
+description: Reproduce bugs, validate fixes, and run regressions.
 ---
 
-# Verification Skill
+# Verification Workflow
 
-You MUST follow this workflow for every bug fix or feature:
+Evidence-based development. No completion claims without fresh proof of success.
 
-1. **Reproduction**: Create a minimal script or test case that fails CURRENTLY.
-2. **Implementation**: Apply your changes using `replace` or `write_file`.
-3. **Verification**: Run the reproduction script. It MUST pass.
-4. **Regression Check**: Run the project's main test suite (`repo test`).
+## 1. Reproduction (The "Failing State")
+Before fixing, prove the bug exists with a minimal test or script.
+```bash
+cat > repro.py << 'EOF'
+# Minimal code to trigger the failure
+EOF
+python3 repro.py # Should FAIL
+```
 
-## Commands
+## 2. Validation (The "Passing State")
+After implementation, run the *same* reproduction script to confirm the fix.
+```bash
+python3 repro.py # Should now PASS
+```
 
-- `repo repro <script_path>`: Run a specific reproduction script.
-- `repo verify`: Run all project tests.
+## 3. Regression Check
+Ensure no collateral damage by running existing test suites.
+```bash
+cargo test
+uv run pytest
+repo verify
+```
 
-## Patterns
-
-If you are fixing a bug:
-
-- **Think**: Why is this happening?
-- **Repro**: `cat > repro.py <<EOF ... EOF && python3 repro.py`
-- **Fix**: Use `replace`
-- **Verify**: `python3 repro.py`
+## Principles
+- **Repro First**: Never fix a bug you haven't reproduced.
+- **Isolate**: Keep reproduction scripts minimal and independent.
+- **Clean Up**: Remove temporary repro scripts after verification is complete.
+- **Evidence**: Prefer actual command output over "hand-wavy" assertions of success.

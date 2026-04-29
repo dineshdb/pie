@@ -1,47 +1,26 @@
 ---
 name: context7
-description: Fetch library documentation via Context7 API — search for a library, then fetch version-specific docs and code examples.
+description: Fetch library documentation and code examples.
 ---
 
 ## Context7 API
 
-Context7 provides version-specific documentation and code examples for libraries
-and frameworks.
+Fetch version-specific documentation and code examples directly from library sources.
 
-### Step 1: Search for a library
-
+## 1. Search for Library
+Always search first to identify the correct `owner/repo` slug.
 ```bash
 curl -s 'https://context7.com/api/v1/search?query=LIBRARY_NAME'
 ```
 
-Parse the JSON response. Pick the best match from `results` — use the `id` field
-(without the leading `/`) as the library slug. Prefer results with high `stars`,
-`trustScore`, and `benchmarkScore`. If ambiguous, pick the most popular result.
-
-### Step 2: Fetch documentation
-
+## 2. Fetch Docs/Examples
+Use the slug (e.g., `tokio-rs/tokio`) to get specific information.
 ```bash
 curl -s 'https://context7.com/api/v1/OWNER/REPO?topic=TOPIC'
 ```
+*Tip: Omit `topic` for a general overview.*
 
-- `OWNER/REPO` — the slug from step 1 (e.g. `facebook/react`, `tokio-rs/tokio`,
-  `n0-computer/iroh`)
-- `topic` — specific feature or concept (optional; omit for general overview)
-
-If you see `has been redirected to` in the response, use the redirected slug
-instead and retry.
-
-### Error handling
-
-| Response                     | Meaning                     | Action                              |
-| ---------------------------- | --------------------------- | ----------------------------------- |
-| `{"error":"invalid_format"}` | Missing `owner/repo` format | Fix slug to `owner/repo`            |
-| `Library ... not found`      | Wrong slug                  | Try alternative from search results |
-| `has been redirected to`     | Library moved               | Use the new slug from the message   |
-| Empty search results         | Library not indexed         | Report and try alternative sources  |
-
-### Rules
-
-- ALWAYS search first (step 1) to get the correct slug — never guess
-- Pass a `topic` parameter when the user asks about a specific feature
-- For multi-library queries, search and fetch each separately
+## Handling Results
+- **Redirects**: If the response says `has been redirected to`, use the new slug provided.
+- **Popularity**: Prefer results with high `stars` and `trustScore`.
+- **Accuracy**: Never guess slugs; the search API is the source of truth.
