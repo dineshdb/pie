@@ -10,7 +10,9 @@ use p1e_sandbox::SandboxConfig;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+
+pub static CONFIG: OnceLock<ResolvedConfig> = OnceLock::new();
 
 /// The embedded `.pie/` directory compiled into the binary.
 pub(crate) static EMBEDDED_PIE_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/.pie");
@@ -81,6 +83,7 @@ pub struct ResolvedConfig {
     pub max_steps: u32,
     pub output_format: OutputFormat,
     pub log_level: String,
+    pub debug: bool,
 }
 
 impl ProviderConfig {
@@ -130,6 +133,7 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
             max_steps,
             output_format,
             log_level: log_level.to_string(),
+            debug: cli.debug,
         })
     }
 }

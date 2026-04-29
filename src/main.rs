@@ -132,6 +132,11 @@ async fn main() -> anyhow::Result<()> {
 
     let pie_config = load_config()?;
     let config: ResolvedConfig = (cli.clone(), pie_config.clone()).try_into()?;
+
+    #[allow(clippy::unwrap_used)]
+    config::CONFIG.set(config).unwrap();
+    let config = config::CONFIG.get().context("config should be set")?;
+
     let session = resolve_session(pool.clone(), cli.r#continue)?;
     let registry = registry::Registry::load();
 
@@ -201,7 +206,7 @@ async fn main() -> anyhow::Result<()> {
     let session = resolve_session(pool, cli.r#continue)?;
     ui::tui::run_tui(
         model,
-        config.provider,
+        config.provider.clone(),
         session,
         sandbox_settings,
         config.max_steps,

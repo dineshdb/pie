@@ -243,7 +243,14 @@ impl<'a> StreamProcessor<'a> {
                 }
 
                 persist_tool_call(self.session, &event.name, &display, &event.output);
-                let _ = self.event_tx.send(event.into());
+
+                let is_task_tool = name == "task_add" || name == "task_update";
+                let show_tool =
+                    !is_task_tool || crate::config::CONFIG.get().is_some_and(|c| c.debug);
+
+                if show_tool {
+                    let _ = self.event_tx.send(event.into());
+                }
             }
             LanguageModelStreamChunkType::Failed(err) => {
                 let _ = self.event_tx.send(StreamEvent::Error(err));
