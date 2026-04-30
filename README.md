@@ -14,8 +14,8 @@ persistent sessions, skill-based subagents, and sandboxed shell execution.
 # Interactive mode — just start talking
 pie
 
-# Continue your last conversation in this directory
-pie -c
+# resume your last conversation in this directory
+pie -r # or pie --resume
 
 # Pipe a question
 echo "what does src/main.rs do?" | pie --md
@@ -27,7 +27,7 @@ pie -m mlx-community/gemma-4-e4b-it-4bit
 ## Features
 
 - **Persistent sessions** — conversations saved per directory, resume with
-  `pie -c`
+  `pie -r`
 - **Any provider** — works with OpenAI, Anthropic, Groq, Ollama, or any
   OpenAI-compatible API
 - **Skills & subagents** — markdown-based skills from
@@ -43,8 +43,8 @@ pie -m mlx-community/gemma-4-e4b-it-4bit
 # Interactive (default)
 pie
 
-# Continue last session
-pie -c
+# Resume last session
+pie -r
 
 # Single-shot output
 pie --md "explain this function"
@@ -79,12 +79,14 @@ export OPENAI_BASE_URL="http://localhost:1234/v1"
 
 ### `pie.toml`
 
-For managing multiple providers or project-specific settings, use `pie.toml`. Pie searches for this file in:
+For managing multiple providers or project-specific settings, use `pie.toml`.
+Pie searches for this file in:
 
-1.  `~/.pie/pie.toml` (Global configuration)
-2.  `./.pie/pie.toml` (Project-specific configuration)
+1. `~/.pie/pie.toml` (Global configuration)
+2. `./.pie/pie.toml` (Project-specific configuration)
 
-For a full list of configuration options, see [.pie/pie.toml.example](.pie/pie.toml.example).
+For a full list of configuration options, see
+[.pie/pie.toml.example](.pie/pie.toml.example).
 
 #### Example `pie.toml`
 
@@ -112,16 +114,16 @@ pie -p ollama "how are you?"
 
 ### CLI Flags
 
-| Flag            | Description                   |
-| --------------- | ----------------------------- |
-| `-m`, `--model` | Model name                    |
-| `--base-url`    | API base URL                  |
-| `--api-key`     | API key                       |
+| Flag               | Description                   |
+| ------------------ | ----------------------------- |
+| `-m`, `--model`    | Model name                    |
+| `--base-url`       | API base URL                  |
+| `--api-key`        | API key                       |
 | `-p`, `--provider` | Config provider name          |
-| `-c`, `--continue` | Continue last session         |
-| `--md`          | Markdown output (single-shot) |
-| `--json`        | JSON output (single-shot)     |
-| `-d`, `--debug` | Debug logging                 |
+| `-r`, `--resume`   | Continue last session         |
+| `--md`             | Markdown output (single-shot) |
+| `--json`           | JSON output (single-shot)     |
+| `-d`, `--debug`    | Debug logging                 |
 
 ### Advanced Configuration
 

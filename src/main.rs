@@ -88,12 +88,12 @@ struct Cli {
 
     /// Continue the last session for this directory
     #[arg(short, long)]
-    r#continue: bool,
+    resume: bool,
 }
 
 impl Cli {
     pub fn is_persistent(&self) -> bool {
-        self.r#continue && !self.md && !self.json
+        self.resume && !self.md && !self.json
     }
 
     pub fn output_format(&self) -> OutputFormat {
@@ -137,7 +137,7 @@ async fn main() -> anyhow::Result<()> {
     config::CONFIG.set(config).unwrap();
     let config = config::CONFIG.get().context("config should be set")?;
 
-    let session = resolve_session(pool.clone(), cli.r#continue)?;
+    let session = resolve_session(pool.clone(), cli.resume)?;
     let registry = registry::Registry::load();
 
     if format.is_some() {
@@ -203,7 +203,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Interactive mode: session-based REPL with file logging
-    let session = resolve_session(pool, cli.r#continue)?;
+    let session = resolve_session(pool, cli.resume)?;
     ui::tui::run_tui(
         model,
         config.provider.clone(),
