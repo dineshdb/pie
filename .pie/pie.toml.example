@@ -1,0 +1,72 @@
+# pie.toml.example
+# Copy this to ~/.pie/pie.toml or ./.pie/pie.toml and customize
+
+# Default provider to use when none is specified via CLI (-p)
+default_provider = "local"
+
+# Output format for single-shot queries: "default", "markdown", or "json"
+output_format = "default"
+
+# Logging level: "debug", "info", "warn", "error"
+log_level = "info"
+
+[agent]
+# Maximum number of tool-call iterations per query
+max_steps = 25
+
+[provider.local]
+# Local model via MLX, Ollama, or LM Studio
+model = "mlx-community/gemma-4-e4b-it-4bit"
+base_url = "http://localhost:1234/v1"
+api_key = "not-needed-for-local"
+temperature = 0.7
+
+[provider.openai]
+model = "gpt-4o"
+base_url = "https://api.openai.com/v1"
+api_key = "sk-..."
+
+[provider.anthropic]
+# Note: Pie uses OpenAI-compatible headers. Some providers may need a proxy.
+model = "claude-3-5-sonnet-20240620"
+base_url = "https://api.anthropic.com/v1"
+api_key = "sk-ant-..."
+
+[sandbox]
+# Native OS-level isolation (sandbox-exec on macOS, bubblewrap on Linux)
+
+# Paths that the agent is explicitly forbidden from reading
+deny_read = [
+    "~/.ssh",
+    "~/.gnupg",
+    "~/.aws",
+    "~/.config/gcloud"
+]
+
+# Paths that the agent is explicitly allowed to read
+# If empty, most paths are readable by default unless denied
+allow_read = []
+
+# Paths where the agent is allowed to write files
+allow_write = [
+    ".",
+    "/tmp"
+]
+
+# Specific filenames or extensions to protect from writing
+deny_write = [
+    ".env",
+    ".env.local",
+    "id_rsa"
+]
+
+# Outbound network restrictions (Note: domain filtering varies by platform)
+allowed_domains = [
+    "github.com",
+    "*.github.com",
+    "npmjs.org",
+    "crates.io",
+    "pypi.org"
+]
+
+denied_domains = []

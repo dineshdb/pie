@@ -3,6 +3,11 @@
 A fast, minimal AI coding agent in Rust. Any OpenAI-compatible provider,
 persistent sessions, skill-based subagents, and sandboxed shell execution.
 
+> **Disclaimer:** This project is actively developed. While it supports any
+> OpenAI-compatible API, **not all models have been thoroughly tested**.
+> `mlx-community/gemma-4-e4b-it-4bit` (Gemma 4) is used as the primary model for
+> development and testing.
+
 ## Quick start
 
 ```bash
@@ -16,7 +21,7 @@ pie -c
 echo "what does src/main.rs do?" | pie --md
 
 # Use a specific model
-pie -m claude-sonnet-4-20250514
+pie -m mlx-community/gemma-4-e4b-it-4bit
 ```
 
 ## Features
@@ -27,9 +32,8 @@ pie -m claude-sonnet-4-20250514
   OpenAI-compatible API
 - **Skills & subagents** — markdown-based skills from
   [agentskills.io](https://agentskills.io), auto-loaded from queries
-- **Sandboxed commands** — all shell commands run through
-  [srt](https://github.com/anthropic-experimental/sandbox-runtime) (OS-level
-  isolation, no containers)
+- **Native Sandboxing** — shell commands run with built-in OS isolation
+  (sandbox-exec on macOS, bubblewrap on Linux)
 - **Streaming TUI** — real-time tool calls, markdown rendering, command history
 - **Scriptable** — `--json` and `--md` flags for single-shot mode
 
@@ -61,22 +65,69 @@ pie "/explore summarize this repo"
 
 ## Configuration
 
+Pie is configured via environment variables, a `pie.toml` file, or CLI flags.
+
+### Environment Variables
+
+The fastest way to get started is with environment variables:
+
 ```bash
-# .pie/sandbox.json — sandbox restrictions
-# .pie/skills/<name>/SKILL.md — custom skills
-# .pie/agents/<name>.md — custom subagents
-# AGENTS.md — project-level instructions
+export OPENAI_API_KEY="sk-..."
+export OPENAI_MODEL="mlx-community/gemma-4-e4b-it-4bit"
+export OPENAI_BASE_URL="http://localhost:1234/v1"
 ```
 
-| Flag         | Description                   |
-| ------------ | ----------------------------- |
-| `-m`         | Model name                    |
-| `--base-url` | API base URL                  |
-| `--api-key`  | API key                       |
-| `-c`         | Continue last session         |
-| `--md`       | Markdown output (single-shot) |
-| `--json`     | JSON output (single-shot)     |
-| `-d`         | Debug logging                 |
+### `pie.toml`
+
+For managing multiple providers or project-specific settings, use `pie.toml`. Pie searches for this file in:
+
+1.  `~/.pie/pie.toml` (Global configuration)
+2.  `./.pie/pie.toml` (Project-specific configuration)
+
+For a full list of configuration options, see [.pie/pie.toml.example](.pie/pie.toml.example).
+
+#### Example `pie.toml`
+
+```toml
+default_provider = "local"
+
+[provider.local]
+model = "mlx-community/gemma-4-e4b-it-4bit"
+base_url = "http://localhost:1234/v1"
+api_key = "sk-..."
+
+[provider.ollama]
+model = "llama3"
+base_url = "http://localhost:11434/v1"
+
+[agent]
+max_steps = 25 # Max tool-call iterations per query
+```
+
+To use a specific provider from your config:
+
+```bash
+pie -p ollama "how are you?"
+```
+
+### CLI Flags
+
+| Flag            | Description                   |
+| --------------- | ----------------------------- |
+| `-m`, `--model` | Model name                    |
+| `--base-url`    | API base URL                  |
+| `--api-key`     | API key                       |
+| `-p`, `--provider` | Config provider name          |
+| `-c`, `--continue` | Continue last session         |
+| `--md`          | Markdown output (single-shot) |
+| `--json`        | JSON output (single-shot)     |
+| `-d`, `--debug` | Debug logging                 |
+
+### Advanced Configuration
+
+- **Sandbox:** Configure restrictions in `pie.toml` under `[sandbox]`.
+- **Skills:** Add custom skills to `.pie/skills/<name>/SKILL.md`.
+- **Instructions:** Add project-level instructions to `AGENTS.md`.
 
 ## Install
 
