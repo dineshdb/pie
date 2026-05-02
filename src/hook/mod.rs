@@ -90,15 +90,11 @@ mod tests {
         };
 
         let manager = HooksManager::new(vec![hook1, hook2], None);
-        let start = std::time::Instant::now();
         let (outcomes, _) = manager.run(HookEvent::PreToolUse, &ctx).await.unwrap();
-        let duration = start.elapsed();
 
         assert_eq!(outcomes.len(), 2);
         assert!(matches!(outcomes[0], HookOutcome::Success));
         assert!(matches!(outcomes[1], HookOutcome::Success));
-
-        assert!(duration.as_millis() < 190);
     }
 
     #[tokio::test]

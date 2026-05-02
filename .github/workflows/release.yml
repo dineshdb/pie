@@ -15,8 +15,12 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
   build:
     name: Build (${{ matrix.target }})
+    needs: ci
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -50,12 +54,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools gcc-aarch64-linux-gnu
-
-      - name: Test
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
-        run: |
-          cargo test --workspace --target ${{ matrix.target }}
 
       - name: Build
         env:
