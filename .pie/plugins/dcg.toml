@@ -1,0 +1,12 @@
+name = "dcg"
+version = "0.1.0"
+description = "Protects against destructive shell commands"
+
+[[hooks]]
+name = "destructive-command-guard"
+event = "tool.pre"
+type = "cmd"
+handler = "dcg"
+scope = "validation"
+matcher = { tools = ["shell"] }
+on_failure = "abort"

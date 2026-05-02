@@ -56,13 +56,16 @@ pub struct PieConfig {
     pub sandbox: Option<SandboxConfig>,
     pub output_format: Option<String>,
     pub log_level: Option<String>,
+    #[serde(default)]
+    pub hooks: Vec<crate::hook::Hook>,
+    pub hooks_timeout_ms: Option<u64>,
 }
 
 impl PieConfig {
     pub fn output_format(&self) -> OutputFormat {
-        match self.output_format.as_deref().unwrap_or("default") {
-            "json" => OutputFormat::Json,
-            "markdown" | "md" => OutputFormat::Markdown,
+        match self.output_format.as_deref() {
+            Some("json") => OutputFormat::Json,
+            Some("markdown" | "md") => OutputFormat::Markdown,
             _ => OutputFormat::Default,
         }
     }
@@ -84,6 +87,7 @@ pub struct ResolvedConfig {
     pub output_format: OutputFormat,
     pub log_level: String,
     pub debug: bool,
+    pub hooks: crate::hook::HooksManager,
 }
 
 impl ProviderConfig {
@@ -104,6 +108,7 @@ impl ProviderConfig {
 
 impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
     type Error = anyhow::Error;
+
     fn try_from((cli, pie): (Cli, PieConfig)) -> Result<Self, Self::Error> {
         let provider_name = cli.provider.as_deref().or(pie.default_provider.as_deref());
 
@@ -116,25 +121,29 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
             None => ProviderConfig::default(),
         };
 
-        let output_format = match (cli.output_format(), pie.output_format()) {
-            (OutputFormat::Default, _) => pie.output_format(),
-            _ => cli.output_format(),
+        let output_format = match cli.output_format() {
+            OutputFormat::Default => pie.output_format(),
+            format => format,
         };
 
         let provider = provider_cfg.merge(cli.provider_config);
         let max_steps = pie.agent.as_ref().and_then(|a| a.max_steps).unwrap_or(25);
 
-        let debug = cli.debug;
-        let log_level = if debug { "debug" } else { pie.log_level() };
-        let mut resolved_provider = ResolvedProvider::try_from(provider.clone())?;
-        resolved_provider.name = provider_name.unwrap_or("env").to_string();
+        let mut resolved_provider = ResolvedProvider::try_from(provider)?;
+        if let Some(name) = provider_name {
+            resolved_provider.name = name.to_string();
+        }
+
+        let log_level = if cli.debug { "debug" } else { pie.log_level() }.to_string();
+        let hooks = crate::hook::HooksManager::new(pie.hooks, pie.hooks_timeout_ms);
 
         Ok(Self {
             provider: resolved_provider,
             max_steps,
             output_format,
-            log_level: log_level.to_string(),
-            debug,
+            log_level,
+            debug: cli.debug,
+            hooks,
         })
     }
 }
@@ -168,17 +177,51 @@ impl TryFrom<ProviderConfig> for ResolvedProvider {
 }
 
 pub fn load_config() -> anyhow::Result<PieConfig> {
-    let global = pie_home().join("pie.toml");
-    let project = git_repo_root().map(|root| PathBuf::from(root).join(".pie").join("pie.toml"));
+    let global_home = pie_home();
+    let global = global_home.join("pie.toml");
+    let project_root = git_repo_root().map(PathBuf::from);
+    let project_pie = project_root
+        .as_ref()
+        .map(|root| root.join(".pie").join("pie.toml"));
 
     let mut figment = Figment::new().merge(Toml::file_exact(global));
-    if let Some(p) = project.filter(|p| p.exists()) {
+    if let Some(p) = project_pie.filter(|p| p.exists()) {
         figment = figment.merge(Toml::file_exact(p));
     }
 
-    figment
+    let mut pie_config: PieConfig = figment
         .extract()
-        .map_err(|e| anyhow::anyhow!("config parse error: {e}"))
+        .map_err(|e| anyhow::anyhow!("config parse error: {e}"))?;
+
+    // Modular Hook Loading from plugins directory
+    let mut scan_dirs = Vec::new();
+    scan_dirs.push(global_home.join("plugins"));
+    if let Some(root) = &project_root {
+        scan_dirs.push(root.join(".pie").join("plugins"));
+    }
+
+    for dir in scan_dirs {
+        if dir.exists()
+            && let Ok(entries) = std::fs::read_dir(dir)
+        {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("toml")
+                    && let Ok(content) = std::fs::read_to_string(&path)
+                    && let Ok(plugin_config) = Figment::new()
+                        .merge(Toml::string(&content))
+                        .extract::<PieConfig>()
+                {
+                    pie_config.hooks.extend(plugin_config.hooks);
+                    if let Some(to) = plugin_config.hooks_timeout_ms {
+                        pie_config.hooks_timeout_ms = Some(to);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(pie_config)
 }
 
 /// Build sandbox settings from config. Uses pie.toml `[sandbox]` if present,

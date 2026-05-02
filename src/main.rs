@@ -33,6 +33,7 @@ mod cmd;
 mod config;
 mod db;
 mod handler;
+mod hook;
 mod instructions;
 mod output;
 mod prompt;

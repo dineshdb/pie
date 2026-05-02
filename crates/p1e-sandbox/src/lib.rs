@@ -97,7 +97,7 @@ pub fn build_command(cmd: &str, cfg: &SandboxConfig) -> Command {
         build_sandboxed(cmd, cfg)
     } else {
         tracing::warn!("sandbox tool not found, running unsandboxed");
-        let mut c = Command::new("sh");
+        let mut c = Command::new("bash");
         c.arg("-c").arg(cmd);
         c
     }
@@ -149,7 +149,7 @@ pub(crate) mod platform {
         let profile = generate_profile(cfg);
         tracing::debug!(%cmd, "sandbox-exec:");
         let mut c = Command::new(BINARY);
-        c.arg("-p").arg(&profile).arg("sh").arg("-c").arg(cmd);
+        c.arg("-p").arg(&profile).arg("bash").arg("-c").arg(cmd);
         c
     }
 
@@ -241,7 +241,7 @@ pub(crate) mod platform {
             );
         }
 
-        c.arg("sh").arg("-c").arg(cmd);
+        c.arg("bash").arg("-c").arg(cmd);
         tracing::debug!(%cmd, "bwrap:");
         c
     }

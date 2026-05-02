@@ -39,27 +39,32 @@ pub fn extract_output_text(
     // If the LLM produced text, prefer it — unless the last tool call was
     // a subagent, in which case the subagent's structured output is the answer.
     if !text.is_empty() {
-        if let Some(subagent_result) = tool_results.and_then(|results| {
+        let subagent_res = tool_results.and_then(|results| {
             results
                 .iter()
                 .rfind(|r| r.tool.name == "subagent")
-                .and_then(|r| r.output.as_ref().ok())
-                .and_then(|v| v.as_str())
-        }) && !subagent_result.is_empty()
+                .and_then(|r| r.output.as_ref().ok()?.as_str())
+        });
+
+        if let Some(res) = subagent_res
+            && !res.is_empty()
         {
-            return subagent_result.to_string();
+            return res.to_string();
         }
         return text.to_string();
     }
-    // No text — fall back to last tool result
+
+    // No text — fall back to last tool result (preferring shell)
     tool_results
         .and_then(|results| {
             results
                 .iter()
                 .rfind(|r| r.tool.name == "shell")
-                .or_else(|| results.last())
-                .and_then(|r| r.output.as_ref().ok())
-                .and_then(|v| v.as_str())
+                .or_else(|| results.last())?
+                .output
+                .as_ref()
+                .ok()?
+                .as_str()
         })
         .unwrap_or_default()
         .to_string()
@@ -128,12 +133,14 @@ async fn handle_direct(
 ) -> Result<()> {
     let history = session.history_entries().to_vec();
     let task_list = session.task_state.clone();
+    let session_id = session.id.to_string();
 
     let response = crate::utils::execute_with_retry("generate_text", {
         let model = model.clone();
         let query = query.clone();
         let sandbox = sandbox_settings;
         let task_list = task_list.clone();
+        let session_id = session_id.clone();
 
         move || {
             let model = model.clone();
@@ -142,70 +149,29 @@ async fn handle_direct(
             let sandbox = sandbox.clone();
             let registry = registry.clone();
             let task_list = task_list.clone();
+            let session_id = session_id.clone();
 
             async move {
-                let skills = &registry.skills;
-                let agents = &registry.agents;
+                let (system, loaded_skills) =
+                    prepare_system_prompt(&registry, &history, &query, &session_id).await?;
 
-                // all mentioned skills from current and past user queries
-                let mut query = query.clone();
-                history
-                    .iter()
-                    .filter(|e| e.role == Role::User)
-                    .for_each(|e| query.merge_mentions(&e.content));
+                let messages = build_messages(&history, &query);
+                let tools = build_tools(
+                    model.clone(),
+                    registry.clone(),
+                    sandbox,
+                    &task_list,
+                    &session_id,
+                    loaded_skills,
+                )?;
 
-                let format = OutputFormat::Default;
-                let sp = prompt::SystemPrompt::new(skills, agents)
-                    .resolve(&query)
-                    .with_json(format.is_json())
-                    .with_mode(prompt::RunMode::Cli);
-
-                let needed_skills = &sp.loaded_skills;
-                let loaded_skills = Arc::new(Mutex::new(
-                    needed_skills
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<HashSet<String>>(),
-                ));
-
-                let system = sp.render();
-
-                let messages = history
-                    .iter()
-                    .filter_map(|entry| match entry.role {
-                        Role::User => Some(Message::User(UserMessage::new(&entry.content))),
-                        Role::Assistant => Some(Message::Assistant(AssistantMessage::from(
-                            entry.content.clone(),
-                        ))),
-                        _ => None,
-                    })
-                    .chain(once(Message::User(UserMessage::new(&query.raw))))
-                    .collect();
-
-                let loaded_refs = Arc::new(Mutex::new(HashSet::new()));
                 let mut builder = LanguageModelRequest::builder()
-                    .model(model.clone())
+                    .model(model)
                     .system(&system)
                     .messages(messages)
-                    .with_tool(shell(sandbox.clone(), task_list.clone()))
-                    .with_tool(read_file_tool())
-                    .with_tool(write_file_tool(task_list.clone()))
-                    .with_tool(replace_tool(task_list.clone()))
-                    .with_tool(load_skills_tool(
-                        registry.clone(),
-                        Some(loaded_skills.clone()),
-                    ))
-                    .with_tool(load_references_tool(loaded_refs))
-                    .with_tool(execute_skill_script_tool(sandbox.clone()))
-                    .with_tool(subagent_tool(
-                        model.clone(),
-                        registry.clone(),
-                        sandbox.clone(),
-                        task_list.clone(),
-                    ))
                     .stop_when(step_count_is(max_steps as usize));
 
-                for tool in task_tools(&task_list).context("failed to build task tools")? {
+                for tool in tools {
                     builder = builder.with_tool(tool);
                 }
 
@@ -227,6 +193,140 @@ async fn handle_direct(
     session.add_user(&query.raw)?;
     output_response(&output, session, format, model)?;
     Ok(())
+}
+
+fn build_messages(history: &[crate::session::HistoryEntry], query: &Instructions) -> Vec<Message> {
+    history
+        .iter()
+        .filter_map(|entry| match entry.role {
+            Role::User => Some(Message::User(UserMessage::new(&entry.content))),
+            Role::Assistant => Some(Message::Assistant(AssistantMessage::from(
+                entry.content.clone(),
+            ))),
+            _ => None,
+        })
+        .chain(once(Message::User(UserMessage::new(&query.raw))))
+        .collect()
+}
+
+fn build_tools(
+    model: Model,
+    registry: Arc<crate::registry::Registry>,
+    sandbox: Arc<SandboxConfig>,
+    task_list: &crate::tools::tasks::SharedTaskList,
+    session_id: &str,
+    loaded_skills: Arc<Mutex<HashSet<String>>>,
+) -> Result<Vec<agentsdk::core::tools::Tool>> {
+    let mut tools = vec![
+        shell(sandbox.clone(), task_list.clone()),
+        read_file_tool(),
+        write_file_tool(task_list.clone()),
+        replace_tool(task_list.clone()),
+        load_skills_tool(registry.clone(), Some(loaded_skills)),
+        load_references_tool(Arc::new(Mutex::new(HashSet::new()))),
+        execute_skill_script_tool(sandbox.clone()),
+        subagent_tool(model, registry, sandbox, task_list.clone()),
+    ];
+
+    for tool in task_tools(task_list).context("failed to build task tools")? {
+        tools.push(tool);
+    }
+
+    Ok(crate::tools::wrap_tools_with_hooks(tools, session_id))
+}
+
+async fn prepare_system_prompt(
+    registry: &crate::registry::Registry,
+    history: &[crate::session::HistoryEntry],
+    query: &Instructions,
+    session_id: &str,
+) -> Result<(String, Arc<Mutex<HashSet<String>>>)> {
+    let mut query = query.clone();
+    history
+        .iter()
+        .filter(|e| e.role == Role::User)
+        .for_each(|e| query.merge_mentions(&e.content));
+
+    let sp = prompt::SystemPrompt::new(&registry.skills, &registry.agents)
+        .resolve(&query)
+        .with_json(false)
+        .with_mode(prompt::RunMode::Cli);
+
+    let loaded_skills = Arc::new(Mutex::new(
+        sp.loaded_skills
+            .iter()
+            .map(ToString::to_string)
+            .collect::<HashSet<String>>(),
+    ));
+
+    let (mut system, warnings) = run_pre_prompt_hooks(session_id, sp.render()).await?;
+
+    for warning in warnings {
+        system.push_str("\n\n");
+        system.push_str(&warning);
+    }
+
+    Ok((system, loaded_skills))
+}
+
+async fn run_pre_prompt_hooks(
+    session_id: &str,
+    system_prompt: String,
+) -> Result<(String, Vec<String>)> {
+    let mut system = system_prompt;
+    let mut warnings = Vec::new();
+
+    let Some(cfg) = crate::config::CONFIG.get() else {
+        return Ok((system, warnings));
+    };
+
+    let ctx = crate::hook::HookContext {
+        event: crate::hook::HookEvent::PrePrompt,
+        cwd: std::env::current_dir()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string(),
+        session_id: session_id.to_string(),
+        data: crate::hook::HookContextData::Prompt {
+            system: system.clone(),
+        },
+    };
+
+    match cfg.hooks.run(crate::hook::HookEvent::PrePrompt, &ctx).await {
+        Ok((outcomes, transformed_data)) => {
+            let mut errors = Vec::new();
+            for outcome in &outcomes {
+                if let crate::hook::HookOutcome::Error { .. } = outcome {
+                    errors.push(outcome.format());
+                }
+            }
+
+            if !errors.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "Prompt rejected by validation hooks:\n{}",
+                    errors.join("\n")
+                ));
+            }
+
+            if let Some(new_system) = transformed_data.get("system").and_then(|v| v.as_str()) {
+                system = new_system.to_string();
+            }
+
+            for outcome in outcomes {
+                if let crate::hook::HookOutcome::Warning { .. } = outcome {
+                    warnings.push(outcome.format());
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!("prompt.pre infrastructure failure: {}", e);
+            warnings.push(format!(
+                "[Hook Error] prompt.pre infrastructure failure: {e}"
+            ));
+        }
+    }
+
+    Ok((system, warnings))
 }
 
 pub async fn handle_query(
