@@ -31,7 +31,7 @@ impl Widget for HelpOverlay<'_> {
             ]),
             Line::from(vec![
                 Span::styled("  /skills, /ls", Style::default().fg(Color::Green)),
-                Span::raw("       List agents"),
+                Span::raw("       List agents and skills"),
             ]),
             Line::from(vec![
                 Span::styled("  /clear", Style::default().fg(Color::Green)),

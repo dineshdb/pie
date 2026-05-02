@@ -62,6 +62,9 @@ use tracing_subscriber::EnvFilter;
 #[command(about = "Minimal Pi-like agent using OpenAI-compatible providers")]
 #[allow(clippy::struct_excessive_bools)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
     #[command(flatten)]
     provider_config: config::ProviderConfig,
 
@@ -83,13 +86,17 @@ struct Cli {
     /// Query to process
     query: Vec<String>,
 
-    /// List available skills
-    #[arg(long)]
-    list_skills: bool,
-
     /// Continue the last session for this directory
     #[arg(short, long)]
     resume: bool,
+}
+
+#[derive(clap::Subcommand, Clone)]
+enum Commands {
+    /// Show current configuration and system status
+    Status,
+    /// List available skills and agents
+    Skills,
 }
 
 impl Cli {
@@ -141,14 +148,24 @@ async fn main() -> anyhow::Result<()> {
     let session = resolve_session(pool.clone(), cli.resume)?;
     let registry = registry::Registry::load();
 
+    if let Some(cmd) = cli.command {
+        init_stderr_subscriber(cli.debug, &config.log_level);
+        match cmd {
+            Commands::Status => {
+                cmd::handle_status(config, &registry);
+                return Ok(());
+            }
+            Commands::Skills => {
+                cmd::handle_skills(&registry);
+                return Ok(());
+            }
+        }
+    }
+
     if format.is_some() {
         init_stderr_subscriber(cli.debug, &config.log_level);
     } else {
         init_file_subscriber(&session.id.to_string(), &config.log_level)?;
-    }
-    if cli.list_skills {
-        cmd::handle_list_skills(&registry);
-        return Ok(());
     }
 
     let sandbox_settings = build_sandbox(&pie_config);

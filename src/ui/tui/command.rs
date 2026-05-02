@@ -160,11 +160,23 @@ pub enum CommandAction {
     Quit,
 }
 
-/// Build the full list of agents.
+/// Build the full list of agents and skills.
 fn build_skills_list(registry: &crate::registry::Registry) -> String {
-    if registry.agents.is_empty() {
-        return "No agents found.".to_string();
+    let mut parts = Vec::new();
+
+    if !registry.agents.is_empty() {
+        let names: Vec<&str> = registry.agents.iter().map(|a| a.name.as_str()).collect();
+        parts.push(format!("Agents: {}", names.join(", ")));
     }
-    let names: Vec<&str> = registry.agents.iter().map(|a| a.name.as_str()).collect();
-    format!("Agents: {}", names.join(", "))
+
+    if !registry.skills.is_empty() {
+        let names: Vec<&str> = registry.skills.iter().map(|s| s.name.as_str()).collect();
+        parts.push(format!("Skills: {}", names.join(", ")));
+    }
+
+    if parts.is_empty() {
+        "No agents or skills found.".to_string()
+    } else {
+        parts.join("\n")
+    }
 }
