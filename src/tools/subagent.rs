@@ -106,10 +106,14 @@ impl Subagent {
 
         let agent_name = if is_agent { Some(name) } else { None };
 
-        let sp = SystemPrompt::new(&self.registry.skills, &self.registry.agents)
-            .with_plan(self.pool.clone(), self.session_id.clone())
-            .with_agent(agent_name)
-            .resolve(&query_instr);
+        let sp = SystemPrompt::new(
+            &self.registry.skills,
+            &self.registry.agents,
+            &self.registry.plugins,
+        )
+        .with_plan(self.pool.clone(), self.session_id.clone())
+        .with_agent(agent_name)
+        .resolve(&query_instr);
 
         self.load_skills(&sp.loaded_skills);
         let sys = sp.render();
@@ -156,7 +160,7 @@ struct SubagentInput {
     query: String,
 }
 
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::expect_used)]
 fn make_subagent_tool(
     model: Model,
     registry: Arc<Registry>,
@@ -192,7 +196,7 @@ fn make_subagent_tool(
             }
         }))
         .build()
-        .unwrap()
+        .expect("subagent tool schema is valid")
 }
 
 pub fn subagent_tool(
@@ -221,6 +225,7 @@ mod tests {
             Arc::new(Registry {
                 agents,
                 skills,
+                plugins: Vec::new(),
                 completions: Vec::new(),
             }),
             Arc::new(SandboxConfig::default()),
@@ -246,6 +251,7 @@ mod tests {
             Arc::new(Registry {
                 agents: Vec::new(),
                 skills: Vec::new(),
+                plugins: Vec::new(),
                 completions: Vec::new(),
             }),
             Arc::new(SandboxConfig::default()),

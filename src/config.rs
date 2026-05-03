@@ -31,15 +31,15 @@ pub fn logs_dir() -> PathBuf {
 #[derive(Debug, Clone, Default, Deserialize, Parser)]
 #[serde(default)]
 pub struct ProviderConfig {
-    #[arg(short, long, env = "OPENAI_MODEL")]
+    #[arg(short, long)]
     pub model: Option<String>,
 
     /// API base URL for OpenAI-compatible providers
-    #[arg(long, env = "OPENAI_BASE_URL")]
+    #[arg(long)]
     pub base_url: Option<String>,
 
     /// API key for OpenAI-compatible providers
-    #[arg(long, env = "OPENAI_API_KEY")]
+    #[arg(long)]
     pub api_key: Option<String>,
 
     /// Sampling temperature (config file only)
@@ -57,7 +57,7 @@ pub struct PieConfig {
     pub output_format: Option<String>,
     pub log_level: Option<String>,
     #[serde(default)]
-    pub hooks: Vec<crate::hook::Hook>,
+    pub hooks: Vec<crate::hook::HookDef>,
     pub hooks_timeout_ms: Option<u64>,
 }
 
@@ -118,7 +118,12 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
                 .get(name)
                 .cloned()
                 .context(format!("provider '{name}' not found in config"))?,
-            None => ProviderConfig::default(),
+            None => ProviderConfig {
+                model: std::env::var("OPENAI_MODEL").ok(),
+                base_url: std::env::var("OPENAI_BASE_URL").ok(),
+                api_key: std::env::var("OPENAI_API_KEY").ok(),
+                temperature: None,
+            },
         };
 
         let output_format = match cli.output_format() {
@@ -135,7 +140,10 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
         }
 
         let log_level = if cli.debug { "debug" } else { pie.log_level() }.to_string();
-        let hooks = crate::hook::HooksManager::new(pie.hooks, pie.hooks_timeout_ms);
+        let hooks = crate::hook::HooksManager::new(
+            pie.hooks.into_iter().map(crate::hook::Hook::from).collect(),
+            pie.hooks_timeout_ms,
+        );
 
         Ok(Self {
             provider: resolved_provider,
@@ -201,12 +209,40 @@ pub fn load_config() -> anyhow::Result<PieConfig> {
     }
 
     for dir in scan_dirs {
-        if dir.exists()
-            && let Ok(entries) = std::fs::read_dir(dir)
-        {
+        if !dir.exists() {
+            continue;
+        }
+
+        // Support both flat .toml files and subdirectories with plugin.toml
+        if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("toml")
+
+                if path.is_dir() {
+                    let plugin_toml = path.join("plugin.toml");
+                    if plugin_toml.exists()
+                        && let Ok(content) = std::fs::read_to_string(&plugin_toml)
+                        && let Ok(mut plugin_config) = Figment::new()
+                            .merge(Toml::string(&content))
+                            .extract::<PieConfig>()
+                    {
+                        let plugin_dir_str = path.to_string_lossy().to_string();
+                        for hook in &mut plugin_config.hooks {
+                            hook.plugin_dir = Some(plugin_dir_str.clone());
+                            if hook.handler.starts_with("./") {
+                                let abs_handler = path
+                                    .join(&hook.handler)
+                                    .canonicalize()
+                                    .unwrap_or_else(|_| path.join(&hook.handler));
+                                hook.handler = abs_handler.to_string_lossy().to_string();
+                            }
+                        }
+                        pie_config.hooks.extend(plugin_config.hooks);
+                        if let Some(to) = plugin_config.hooks_timeout_ms {
+                            pie_config.hooks_timeout_ms = Some(to);
+                        }
+                    }
+                } else if path.extension().and_then(|s| s.to_str()) == Some("toml")
                     && let Ok(content) = std::fs::read_to_string(&path)
                     && let Ok(plugin_config) = Figment::new()
                         .merge(Toml::string(&content))

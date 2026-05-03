@@ -162,6 +162,7 @@ async fn handle_direct(
                         .await?;
 
                 let messages = build_messages(&history, &query);
+
                 let tools = build_tools(
                     model.clone(),
                     registry.clone(),
@@ -254,7 +255,7 @@ async fn prepare_system_prompt(
         .filter(|e| e.role == Role::User)
         .for_each(|e| query.merge_mentions(&e.content));
 
-    let sp = prompt::SystemPrompt::new(&registry.skills, &registry.agents)
+    let sp = prompt::SystemPrompt::new(&registry.skills, &registry.agents, &registry.plugins)
         .with_plan(pool, session_id.to_string())
         .resolve(&query)
         .with_json(false)
@@ -267,7 +268,7 @@ async fn prepare_system_prompt(
             .collect::<HashSet<String>>(),
     ));
 
-    let (mut system, warnings) = run_pre_prompt_hooks(session_id, sp.render()).await?;
+    let (mut system, warnings) = run_pre_prompt_hooks(session_id, sp.render(), &query).await?;
 
     for warning in warnings {
         system.push_str("\n\n");
@@ -280,6 +281,7 @@ async fn prepare_system_prompt(
 async fn run_pre_prompt_hooks(
     session_id: &str,
     system_prompt: String,
+    query: &Instructions,
 ) -> Result<(String, Vec<String>)> {
     let mut system = system_prompt;
     let mut warnings = Vec::new();
@@ -288,17 +290,18 @@ async fn run_pre_prompt_hooks(
         return Ok((system, warnings));
     };
 
-    let ctx = crate::hook::HookContext {
-        event: crate::hook::HookEvent::PrePrompt,
-        cwd: std::env::current_dir()
+    let ctx = crate::hook::HookContext::new(
+        crate::hook::HookEvent::PrePrompt,
+        std::env::current_dir()
             .unwrap_or_default()
             .to_string_lossy()
             .to_string(),
-        session_id: session_id.to_string(),
-        data: crate::hook::HookContextData::Prompt {
+        session_id.to_string(),
+        crate::hook::HookContextData::Prompt {
             system: system.clone(),
+            query: query.raw.clone(),
         },
-    };
+    );
 
     match cfg.hooks.run(crate::hook::HookEvent::PrePrompt, &ctx).await {
         Ok((outcomes, transformed_data)) => {

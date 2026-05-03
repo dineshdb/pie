@@ -123,10 +123,14 @@ fn build_stream_request(
         .filter(|e| e.role == Role::User)
         .for_each(|e| query.merge_mentions(&e.content));
 
-    let sp = SystemPrompt::new(&ctx.registry.skills, &ctx.registry.agents)
-        .with_plan(pool.clone(), session_id.clone())
-        .resolve(&query)
-        .with_mode(crate::prompt::RunMode::Tui);
+    let sp = SystemPrompt::new(
+        &ctx.registry.skills,
+        &ctx.registry.agents,
+        &ctx.registry.plugins,
+    )
+    .with_plan(pool.clone(), session_id.clone())
+    .resolve(&query)
+    .with_mode(crate::prompt::RunMode::Tui);
 
     let loaded_skills = Arc::new(Mutex::new(
         sp.loaded_skills

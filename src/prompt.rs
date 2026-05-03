@@ -2,10 +2,12 @@ use crate::agent::Agent;
 use crate::config::pie_home;
 use crate::db::DbPool;
 use crate::instructions::Instructions;
+use crate::registry::Plugin;
 use crate::skill::Skill;
 use crate::tools::plan::PlanRepo;
 use crate::utils::{find_upward_in_repo, git_repo_root, load_file};
 use minijinja::Environment;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../.pie/SYSTEM.md");
@@ -21,6 +23,7 @@ pub enum RunMode {
 pub struct SystemPrompt<'a> {
     skills: &'a [Skill],
     agents: &'a [Agent],
+    plugins: &'a [Plugin],
     pub loaded_skills: Vec<&'a str>,
     agent: Option<&'a Agent>,
     json_output: bool,
@@ -31,10 +34,11 @@ pub struct SystemPrompt<'a> {
 
 impl<'a> SystemPrompt<'a> {
     /// Create a new system prompt context from base registries.
-    pub fn new(skills: &'a [Skill], agents: &'a [Agent]) -> Self {
+    pub fn new(skills: &'a [Skill], agents: &'a [Agent], plugins: &'a [Plugin]) -> Self {
         Self {
             skills,
             agents,
+            plugins,
             loaded_skills: Vec::new(),
             agent: None,
             json_output: false,
@@ -98,7 +102,17 @@ impl<'a> SystemPrompt<'a> {
             Vec::new()
         };
 
-        let (date, pwd) = Self::context_vars();
+        let plugin_system_prompts: HashMap<String, String> = self
+            .plugins
+            .iter()
+            .filter_map(|p| {
+                p.system_prompt
+                    .as_ref()
+                    .map(|sp| (p.name.clone(), sp.clone()))
+            })
+            .collect();
+
+        let (date, pwd, os, arch, hostname) = Self::context_vars();
         render_template(
             "system_prompt",
             SYSTEM_PROMPT_TEMPLATE,
@@ -112,16 +126,20 @@ impl<'a> SystemPrompt<'a> {
                 local_agents_md,
                 date,
                 pwd,
+                os,
+                arch,
+                hostname,
                 repo_root => git_repo_root(),
                 json_output => self.json_output,
                 run_mode => self.mode,
                 interactivity,
                 steps,
+                plugin_system_prompts,
             },
         )
     }
 
-    pub fn context_vars() -> (String, String) {
+    pub fn context_vars() -> (String, String, String, String, String) {
         let date = chrono::Local::now().format("%Y-%m-%d").to_string();
         let pwd = std::env::var("PWD").unwrap_or_else(|_| {
             std::env::current_dir()
@@ -129,7 +147,14 @@ impl<'a> SystemPrompt<'a> {
                 .display()
                 .to_string()
         });
-        (date, pwd)
+        let os = std::env::consts::OS.to_string();
+        let arch = std::env::consts::ARCH.to_string();
+        let hostname = hostname::get().map_or_else(
+            |_| "unknown".to_string(),
+            |h| h.to_string_lossy().to_string(),
+        );
+
+        (date, pwd, os, arch, hostname)
     }
 }
 
@@ -165,7 +190,7 @@ mod test_helpers {
 
     /// Render the main agent prompt with deterministic values.
     pub fn render_main(skills: &[Skill], json_output: bool) -> String {
-        SystemPrompt::new(skills, &[])
+        SystemPrompt::new(skills, &[], &[])
             .with_json(json_output)
             .render()
     }
@@ -182,7 +207,7 @@ mod test_helpers {
         };
         let agents = vec![agent];
 
-        SystemPrompt::new(&[], &agents)
+        SystemPrompt::new(&[], &agents, &[])
             .with_agent(Some("test-agent"))
             .render()
     }

@@ -594,6 +594,7 @@ mod tests {
         Arc::new(Registry {
             agents: Vec::new(),
             skills: Vec::new(),
+            plugins: Vec::new(),
             completions: Vec::new(),
         })
     }
