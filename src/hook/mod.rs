@@ -15,7 +15,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_matches_hook_tools() {
-        let hook = Hook {
+        let hook = Hook::from(HookDef {
             name: "test".into(),
             event: HookEvent::PreToolUse,
             kind: HookType::Cmd,
@@ -27,37 +27,38 @@ mod tests {
             on_failure: OnFailure::Warn,
             timeout_ms: None,
             scope: HookScope::Validation,
-        };
+            plugin_dir: None,
+        });
 
-        let ctx = HookContext {
-            event: HookEvent::PreToolUse,
-            cwd: "/".into(),
-            session_id: "123".into(),
-            data: HookContextData::Tool {
+        let ctx = HookContext::new(
+            HookEvent::PreToolUse,
+            "/".into(),
+            "123".into(),
+            HookContextData::Tool {
                 tool: "shell".into(),
                 input: json!({}),
                 output: None,
             },
-        };
+        );
 
         assert!(hook.matches(&ctx));
 
-        let ctx_wrong = HookContext {
-            event: HookEvent::PreToolUse,
-            cwd: "/".into(),
-            session_id: "123".into(),
-            data: HookContextData::Tool {
+        let ctx_wrong = HookContext::new(
+            HookEvent::PreToolUse,
+            "/".into(),
+            "123".into(),
+            HookContextData::Tool {
                 tool: "write_file".into(),
                 input: json!({}),
                 output: None,
             },
-        };
+        );
         assert!(!hook.matches(&ctx_wrong));
     }
 
     #[tokio::test]
     async fn test_run_hooks_parallel_validation() {
-        let hook1 = Hook {
+        let hook1 = Hook::from(HookDef {
             name: "hook1".into(),
             event: HookEvent::PreToolUse,
             kind: HookType::Cmd,
@@ -66,8 +67,9 @@ mod tests {
             on_failure: OnFailure::Abort,
             timeout_ms: None,
             scope: HookScope::Validation,
-        };
-        let hook2 = Hook {
+            plugin_dir: None,
+        });
+        let hook2 = Hook::from(HookDef {
             name: "hook2".into(),
             event: HookEvent::PreToolUse,
             kind: HookType::Cmd,
@@ -76,18 +78,19 @@ mod tests {
             on_failure: OnFailure::Abort,
             timeout_ms: None,
             scope: HookScope::Validation,
-        };
+            plugin_dir: None,
+        });
 
-        let ctx = HookContext {
-            event: HookEvent::PreToolUse,
-            cwd: "/".into(),
-            session_id: "123".into(),
-            data: HookContextData::Tool {
+        let ctx = HookContext::new(
+            HookEvent::PreToolUse,
+            "/".into(),
+            "123".into(),
+            HookContextData::Tool {
                 tool: "shell".into(),
                 input: json!({}),
                 output: None,
             },
-        };
+        );
 
         let manager = HooksManager::new(vec![hook1, hook2], None);
         let (outcomes, _) = manager.run(HookEvent::PreToolUse, &ctx).await.unwrap();
@@ -101,7 +104,7 @@ mod tests {
     async fn test_run_hooks_sequential_transform() {
         // First transform adds a field, second transform changes it
         // We use extremely simple JSON to ensure cross-shell compatibility
-        let hook1 = Hook {
+        let hook1 = Hook::from(HookDef {
             name: "t1".into(),
             event: HookEvent::PreToolUse,
             kind: HookType::Cmd,
@@ -110,8 +113,9 @@ mod tests {
             on_failure: OnFailure::Abort,
             timeout_ms: None,
             scope: HookScope::Transform,
-        };
-        let hook2 = Hook {
+            plugin_dir: None,
+        });
+        let hook2 = Hook::from(HookDef {
             name: "t2".into(),
             event: HookEvent::PreToolUse,
             kind: HookType::Cmd,
@@ -120,18 +124,19 @@ mod tests {
             on_failure: OnFailure::Abort,
             timeout_ms: None,
             scope: HookScope::Transform,
-        };
+            plugin_dir: None,
+        });
 
-        let ctx = HookContext {
-            event: HookEvent::PreToolUse,
-            cwd: "/".into(),
-            session_id: "123".into(),
-            data: HookContextData::Tool {
+        let ctx = HookContext::new(
+            HookEvent::PreToolUse,
+            "/".into(),
+            "123".into(),
+            HookContextData::Tool {
                 tool: "shell".into(),
                 input: json!({}),
                 output: None,
             },
-        };
+        );
 
         let manager = HooksManager::new(vec![hook1, hook2], None);
         let result = manager.run(HookEvent::PreToolUse, &ctx).await;

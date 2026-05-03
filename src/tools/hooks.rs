@@ -81,16 +81,16 @@ async fn run_pre_tool_hooks(
         return Ok((current_tool_name, current_params, warnings));
     };
 
-    let hook_ctx = HookContext {
-        event: HookEvent::PreToolUse,
-        cwd: cwd.to_string(),
-        session_id: session_id.to_string(),
-        data: HookContextData::Tool {
+    let hook_ctx = HookContext::new(
+        HookEvent::PreToolUse,
+        cwd.to_string(),
+        session_id.to_string(),
+        HookContextData::Tool {
             tool: current_tool_name.clone(),
             input: current_params.clone(),
             output: None,
         },
-    };
+    );
 
     let (outcomes, transformed_data) = cfg
         .hooks
@@ -138,16 +138,16 @@ async fn run_post_tool_hooks(
     let output_json =
         serde_json::from_str::<Value>(output).unwrap_or_else(|_| Value::String(output.to_string()));
 
-    let hook_ctx = HookContext {
-        event: HookEvent::PostToolUse,
-        cwd: cwd.to_string(),
-        session_id: session_id.to_string(),
-        data: HookContextData::Tool {
+    let hook_ctx = HookContext::new(
+        HookEvent::PostToolUse,
+        cwd.to_string(),
+        session_id.to_string(),
+        HookContextData::Tool {
             tool: tool_name.to_string(),
             input: params,
             output: Some(output_json),
         },
-    };
+    );
 
     match cfg.hooks.run(HookEvent::PostToolUse, &hook_ctx).await {
         Ok((outcomes, transformed_data)) => {
