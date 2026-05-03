@@ -22,9 +22,10 @@ pub fn shell(
         .execute(ToolExecute::from_sync(move |_ctx, params| {
             super::emit_tool_input("shell", &params);
 
+            let cmd_str = params.get("cmd").and_then(|v| v.as_str());
             crate::tools::plan::enforce_planning(&pool, &session_id, "shell")?;
 
-            let Some(cmd) = params.get("cmd").and_then(|v| v.as_str()) else {
+            let Some(cmd) = cmd_str else {
                 return Err("cmd parameter is required".to_string());
             };
             let cmd = cmd.to_string();

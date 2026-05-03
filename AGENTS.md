@@ -33,3 +33,8 @@ After each change, run following tests to verify if the change is valid.
   However, don't complicate structs with references. Instead, opt to rearchitect
   the problem in a way copies are unnecessary. Hexagonal architecture, MVU
   patterns, etc help with this.
+
+## Scope
+
+- Keep only the relevant changes in this commit, removing any unnecessary refactors. You can  
+  add any TODO FIXME for later works if you find any issues.

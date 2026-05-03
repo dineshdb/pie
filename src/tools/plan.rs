@@ -74,10 +74,10 @@ impl PlanRepo for DbPool {
         let conn = self.get()?;
         let status_ref: &str = step.status.as_ref();
         conn.execute(
-            "INSERT INTO steps (session_id, name, status, updated_at) 
+            "INSERT INTO steps (session_id, name, status, updated_at)
              VALUES (?1, ?2, ?3, unixepoch('subsec') * 1000)
-             ON CONFLICT(session_id, name) DO UPDATE SET 
-             status = excluded.status, 
+             ON CONFLICT(session_id, name) DO UPDATE SET
+             status = excluded.status,
              updated_at = excluded.updated_at",
             params![session_id, step.name, status_ref],
         )?;
@@ -93,7 +93,7 @@ impl PlanRepo for DbPool {
         let conn = self.get()?;
         let status_ref: &str = status.as_ref();
         conn.execute(
-            "UPDATE steps SET status = ?, updated_at = unixepoch('subsec') * 1000 
+            "UPDATE steps SET status = ?, updated_at = unixepoch('subsec') * 1000
              WHERE session_id = ? AND name = ?",
             params![status_ref, session_id, name],
         )?;
