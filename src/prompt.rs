@@ -1,9 +1,12 @@
 use crate::agent::Agent;
 use crate::config::pie_home;
+use crate::db::DbPool;
 use crate::instructions::Instructions;
 use crate::skill::Skill;
+use crate::tools::tasks::TaskRepo;
 use crate::utils::{find_upward_in_repo, git_repo_root, load_file};
 use minijinja::Environment;
+use std::sync::Arc;
 
 const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../.pie/SYSTEM.md");
 
@@ -22,6 +25,8 @@ pub struct SystemPrompt<'a> {
     agent: Option<&'a Agent>,
     json_output: bool,
     mode: RunMode,
+    pool: Option<Arc<DbPool>>,
+    session_id: Option<String>,
 }
 
 impl<'a> SystemPrompt<'a> {
@@ -34,7 +39,16 @@ impl<'a> SystemPrompt<'a> {
             agent: None,
             json_output: false,
             mode: RunMode::Tui,
+            pool: None,
+            session_id: None,
         }
+    }
+
+    /// Add task repository for context.
+    pub fn with_tasks(mut self, pool: Arc<DbPool>, session_id: String) -> Self {
+        self.pool = Some(pool);
+        self.session_id = Some(session_id);
+        self
     }
 
     /// Use a specific agent persona.
@@ -78,6 +92,12 @@ impl<'a> SystemPrompt<'a> {
         let agent_content = self.agent.map(|a| a.content.as_str());
         let interactivity = self.agent.map_or("none", |a| a.interactivity.as_ref());
 
+        let tasks = if let (Some(pool), Some(session_id)) = (&self.pool, &self.session_id) {
+            pool.load_tasks(session_id).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
         let (date, pwd) = Self::context_vars();
         render_template(
             "system_prompt",
@@ -96,6 +116,7 @@ impl<'a> SystemPrompt<'a> {
                 json_output => self.json_output,
                 run_mode => self.mode,
                 interactivity,
+                tasks,
             },
         )
     }

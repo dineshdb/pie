@@ -11,6 +11,7 @@
 use crate::config::{PieConfig, ResolvedProvider};
 use crate::providers::{Model, fetch_models};
 use crate::session::{Role, Session};
+use crate::tools::tasks::TaskRepo;
 use crate::ui::tui::command::{Command, CommandAction};
 use crate::ui::tui::components::chat::{ActiveDialog, ChatComponent};
 use crate::ui::tui::components::input::InputComponent;
@@ -346,7 +347,8 @@ pub async fn run_tui(
             messages,
             current_model,
             registry,
-            input.task_list.clone(),
+            session.pool().clone(),
+            session.id.to_string(),
         )),
         vec![],
     )?;
@@ -433,11 +435,8 @@ fn render(app: &mut App, input: &mut InputComponent, terminal: &mut Terminal) ->
         let input_height = input_lines;
 
         let (show_tasks, task_count) = if let Some(chat) = chat_ref!(app) {
-            let guard = crate::tools::safe_lock(&chat.task_list);
-            (
-                chat.show_tasks && !guard.tasks.is_empty(),
-                guard.tasks.len(),
-            )
+            let tasks = chat.pool.load_tasks(&chat.session_id).unwrap_or_default();
+            (chat.show_tasks && !tasks.is_empty(), tasks.len())
         } else {
             (false, 0)
         };
@@ -483,8 +482,7 @@ fn render(app: &mut App, input: &mut InputComponent, terminal: &mut Terminal) ->
         if let Some(t_area) = tasks_area
             && let Some(chat) = chat_ref!(app)
         {
-            let guard = crate::tools::safe_lock(&chat.task_list);
-            let task_view = TaskView::new(&guard).block(
+            let task_view = TaskView::new(chat.pool.clone(), &chat.session_id).block(
                 Block::default()
                     .borders(Borders::TOP)
                     .border_style(Style::default().fg(Color::DarkGray))

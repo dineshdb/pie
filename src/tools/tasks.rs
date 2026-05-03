@@ -1,16 +1,30 @@
+use crate::db::DbPool;
 use agentsdk::core::tools::{Tool, ToolExecute};
 use anyhow::Context;
+use rusqlite::params;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use strum::{AsRefStr, Display, EnumString};
 
-/// Shared task list handle used across handler, subagent, and TUI.
-pub type SharedTaskList = Arc<Mutex<TaskList>>;
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(
+    Debug,
+    Clone,
+    JsonSchema,
+    Default,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    AsRefStr,
+    Display,
+    EnumString,
+)]
 #[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum TaskStatus {
+    #[default]
     Pending,
     InProgress,
     Completed,
@@ -18,98 +32,99 @@ pub enum TaskStatus {
     Skipped,
 }
 
-#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema, Deserialize, PartialEq, Eq)]
 pub struct Task {
+    pub id: Option<i64>,
     pub name: String,
-    #[serde(default = "default_status")]
+    #[serde(default)]
     pub status: TaskStatus,
 }
 
-fn default_status() -> TaskStatus {
-    TaskStatus::Pending
+pub trait TaskRepo {
+    fn load_tasks(&self, session_id: &str) -> anyhow::Result<Vec<Task>>;
+    fn save_task(&self, session_id: &str, task: &Task) -> anyhow::Result<i64>;
+    fn update_task_status(
+        &self,
+        session_id: &str,
+        name: &str,
+        status: TaskStatus,
+    ) -> anyhow::Result<()>;
+    fn delete_tasks(&self, session_id: &str) -> anyhow::Result<()>;
 }
 
-#[derive(Debug, Clone, JsonSchema, Default, Serialize, Deserialize)]
-pub struct TaskList {
-    pub tasks: Vec<Task>,
-}
+impl TaskRepo for DbPool {
+    fn load_tasks(&self, session_id: &str) -> anyhow::Result<Vec<Task>> {
+        let conn = self.get()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, status FROM tasks WHERE session_id = ? ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map(params![session_id], |row| {
+            let status_str: String = row.get(2)?;
+            Ok(Task {
+                id: Some(row.get(0)?),
+                name: row.get(1)?,
+                status: status_str.parse().unwrap_or(TaskStatus::Pending),
+            })
+        })?;
 
-impl TaskList {
-    pub fn active_tasks(&self) -> Vec<String> {
-        self.tasks
-            .iter()
-            .filter(|t| t.status == TaskStatus::InProgress)
-            .map(|t| t.name.clone())
-            .collect()
+        Ok(rows.flatten().collect())
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.tasks.is_empty()
+    fn save_task(&self, session_id: &str, task: &Task) -> anyhow::Result<i64> {
+        let conn = self.get()?;
+        let status_ref: &str = task.status.as_ref();
+        conn.execute(
+            "INSERT INTO tasks (session_id, name, status, updated_at) 
+             VALUES (?1, ?2, ?3, unixepoch('subsec') * 1000)
+             ON CONFLICT(session_id, name) DO UPDATE SET 
+             status = excluded.status, 
+             updated_at = excluded.updated_at",
+            params![session_id, task.name, status_ref],
+        )?;
+        Ok(conn.last_insert_rowid())
     }
 
-    pub fn enforce_planning(&self, tool: &str) -> Result<(), String> {
-        tracing::trace!(tool, count = self.tasks.len(), "enforcing planning");
-        if self.is_empty() {
-            return Err(format!(
-                "CRITICAL ERROR: You called '{tool}' without a task list. \
-                 You MUST call 'task_add' with a full plan before taking any actions. \
-                 This is your CORE MANDATE for reliability."
-            ));
-        }
+    fn update_task_status(
+        &self,
+        session_id: &str,
+        name: &str,
+        status: TaskStatus,
+    ) -> anyhow::Result<()> {
+        let conn = self.get()?;
+        let status_ref: &str = status.as_ref();
+        conn.execute(
+            "UPDATE tasks SET status = ?, updated_at = unixepoch('subsec') * 1000 
+             WHERE session_id = ? AND name = ?",
+            params![status_ref, session_id, name],
+        )?;
         Ok(())
     }
 
-    fn remaining(&self) -> usize {
-        self.tasks
-            .iter()
-            .filter(|t| {
-                !matches!(
-                    t.status,
-                    TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Skipped
-                )
-            })
-            .count()
+    fn delete_tasks(&self, session_id: &str) -> anyhow::Result<()> {
+        let conn = self.get()?;
+        conn.execute(
+            "DELETE FROM tasks WHERE session_id = ?",
+            params![session_id],
+        )?;
+        Ok(())
     }
+}
 
-    /// Upsert tasks by name (case-insensitive). Returns names that were processed.
-    fn upsert(&mut self, incoming: Vec<Task>) -> Vec<String> {
-        let added: Vec<String> = incoming.iter().map(|t| t.name.clone()).collect();
-
-        for t in incoming {
-            let title = t.name.trim();
-            if title.is_empty() {
-                continue;
-            }
-            if let Some(existing) = self
-                .tasks
-                .iter_mut()
-                .find(|e| e.name.trim().eq_ignore_ascii_case(title))
-            {
-                existing.status = t.status;
-            } else {
-                self.tasks.push(Task {
-                    name: title.to_string(),
-                    status: t.status,
-                });
-            }
-        }
-
-        added
+pub fn enforce_planning(pool: &Arc<DbPool>, session_id: &str, tool: &str) -> Result<(), String> {
+    let tasks = pool.load_tasks(session_id).unwrap_or_default();
+    if tasks.is_empty() {
+        return Err(format!(
+            "CRITICAL ERROR: You called '{tool}' without a task list. \
+             You MUST call 'task_add' with a full plan before taking any actions. \
+             This is your CORE MANDATE for reliability."
+        ));
     }
+    Ok(())
+}
 
-    /// Update task statuses by name (case-insensitive).
-    fn update_statuses(&mut self, updates: &[TaskUpdate]) {
-        for update in updates {
-            let target = update.name.trim();
-            if let Some(task) = self
-                .tasks
-                .iter_mut()
-                .find(|t| t.name.trim().eq_ignore_ascii_case(target))
-            {
-                task.status = update.status.clone();
-            }
-        }
-    }
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct TaskListInput {
+    pub tasks: Vec<Task>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -117,7 +132,6 @@ struct GetTasksInput {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TaskUpdate {
-    #[serde(alias = "title")]
     pub name: String,
     pub status: TaskStatus,
 }
@@ -129,90 +143,65 @@ pub struct TaskUpdateList {
 
 // ── Tool builders ──────────────────────────────────────────────────
 
-fn build_task_add(state: SharedTaskList) -> anyhow::Result<Tool> {
+fn build_task_add(pool: Arc<DbPool>, session_id: String) -> anyhow::Result<Tool> {
     Tool::builder()
         .name("task_add")
         .description(
-            "CRITICAL: Planning phase. Call this FIRST before any action (write, replace, etc.). \
-             Define ALL required steps to reach the goal. \
-             Input: {\"tasks\": [{\"name\": \"verifiable step\", \"status\": \"in_progress\"}, ...]} \
-             Set first task to in_progress, others to pending. \
-             Always include a final verification task.",
+            r#"CRITICAL: Planning phase. Call this FIRST. Input: {"tasks": [{"name": "..."}]}"#,
         )
-        .input_schema(schemars::schema_for!(TaskList))
+        .input_schema(schemars::schema_for!(TaskListInput))
         .execute(ToolExecute::from_sync(move |_ctx, params| {
-            crate::tools::emit_tool_input("task_add", &params);
-            let input: TaskList = serde_json::from_value(params.clone())
-                .map_err(|e| format!("Invalid task_add input: {e}"))?;
+            let input: TaskListInput = serde_json::from_value(params.clone())
+                .map_err(|e| format!("Invalid input: {e}"))?;
 
-            let mut guard = crate::tools::safe_lock(&state);
-            let added = guard.upsert(input.tasks);
+            for t in input.tasks {
+                let _ = pool.save_task(&session_id, &t);
+            }
 
-            Ok(json!({
-                "status": "ok",
-                "added": added,
-                "remaining": guard.remaining()
-            })
-            .to_string())
+            Ok(json!({ "status": "ok" }).to_string())
         }))
         .build()
         .context("failed to build task_add tool")
 }
 
-fn build_task_update(state: SharedTaskList) -> anyhow::Result<Tool> {
+fn build_task_update(pool: Arc<DbPool>, session_id: String) -> anyhow::Result<Tool> {
     Tool::builder()
         .name("task_update")
         .description(
-            "MANDATORY: Call after EVERY task step. Update the current task to completed \
-             and the next logical task to in_progress in a single call. \
-             Input: {\"updates\": [{\"name\": \"completed task\", \"status\": \"completed\"}, {\"name\": \"next task\", \"status\": \"in_progress\"}]}. \
-             Never skip this step between tool calls.",
+            r#"MANDATORY: Update task status after a step. Input: {"updates": [{"name": "...", "status": "completed"}]}"#,
         )
         .input_schema(schemars::schema_for!(TaskUpdateList))
         .execute(ToolExecute::from_sync(move |_ctx, params| {
-            crate::tools::emit_tool_input("task_update", &params);
             let input: TaskUpdateList = serde_json::from_value(params.clone())
-                .map_err(|e| format!("Invalid task_update input: {e}"))?;
+                .map_err(|e| format!("Invalid input: {e}"))?;
 
-            let updated: Vec<serde_json::Value> = input
-                .updates
-                .iter()
-                .map(|u| json!({"name": u.name, "status": u.status}))
-                .collect();
+            for update in input.updates {
+                let _ = pool.update_task_status(&session_id, &update.name, update.status);
+            }
 
-            let mut guard = crate::tools::safe_lock(&state);
-            guard.update_statuses(&input.updates);
-
-            Ok(json!({
-                "status": "ok",
-                "updated": updated,
-                "remaining": guard.remaining()
-            })
-            .to_string())
+            Ok(json!({ "status": "ok" }).to_string())
         }))
         .build()
         .context("failed to build task_update tool")
 }
 
-fn build_task_list(state: SharedTaskList) -> anyhow::Result<Tool> {
+fn build_task_list(pool: Arc<DbPool>, session_id: String) -> anyhow::Result<Tool> {
     Tool::builder()
         .name("task_list")
-        .description("List all tasks and their current status.")
+        .description("List all tasks and their current status for this session.")
         .input_schema(schemars::schema_for!(GetTasksInput))
         .execute(ToolExecute::from_sync(move |_ctx, _params| {
-            crate::tools::emit_tool_input("task_list", &serde_json::json!({}));
-            let guard = crate::tools::safe_lock(&state);
-            Ok(json!({ "tasks": guard.tasks }).to_string())
+            let tasks = pool.load_tasks(&session_id).unwrap_or_default();
+            Ok(json!({ "tasks": tasks }).to_string())
         }))
         .build()
         .context("failed to build task_list tool")
 }
 
-pub fn task_tools(state: &SharedTaskList) -> anyhow::Result<Vec<Tool>> {
-    let s = state.clone();
+pub fn task_tools(pool: Arc<DbPool>, session_id: String) -> anyhow::Result<Vec<Tool>> {
     Ok(vec![
-        build_task_add(s.clone())?,
-        build_task_update(s.clone())?,
-        build_task_list(s)?,
+        build_task_add(pool.clone(), session_id.clone())?,
+        build_task_update(pool.clone(), session_id.clone())?,
+        build_task_list(pool, session_id)?,
     ])
 }

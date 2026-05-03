@@ -1,5 +1,4 @@
 use crate::db::DbPool;
-use crate::tools::tasks::SharedTaskList;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use strum::{AsRefStr, EnumString, IntoStaticStr};
@@ -53,13 +52,30 @@ impl rusqlite::types::FromSql for Role {
     }
 }
 
+// Newtype wrapper for Uuid to satisfy orphan rules
+pub struct DbUuid(pub Uuid);
+
+impl rusqlite::types::ToSql for DbUuid {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(self.0.to_string().into())
+    }
+}
+
+impl rusqlite::types::FromSql for DbUuid {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        let s = value.as_str()?;
+        Uuid::parse_str(s)
+            .map(DbUuid)
+            .map_err(|_| rusqlite::types::FromSqlError::InvalidType)
+    }
+}
+
 // ── Session ────────────────────────────────────────────────────────
 
 pub struct Session {
     pub id: Uuid,
-    pool: Arc<DbPool>,
+    pub pool: Arc<DbPool>,
     cache: Vec<HistoryEntry>,
-    pub task_state: SharedTaskList,
 }
 
 impl Session {
@@ -69,13 +85,12 @@ impl Session {
         let conn = pool.get()?;
         conn.execute(
             "INSERT INTO sessions (id, cwd) VALUES (?, ?)",
-            rusqlite::params![id.to_string(), cwd],
+            rusqlite::params![DbUuid(id), cwd],
         )?;
         Ok(Self {
             id,
             pool,
             cache: Vec::new(),
-            task_state: SharedTaskList::default(),
         })
     }
 
@@ -84,7 +99,7 @@ impl Session {
             let conn = pool.get()?;
             conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?)",
-                rusqlite::params![session_id.to_string()],
+                rusqlite::params![DbUuid(session_id)],
                 |row| row.get::<_, bool>(0),
             )?
         };
@@ -95,26 +110,26 @@ impl Session {
             id: session_id,
             pool,
             cache: Vec::new(),
-            task_state: SharedTaskList::default(),
         };
         session.rebuild_cache()?;
         Ok(session)
     }
 
     pub fn find_latest_for_cwd(pool: Arc<DbPool>, cwd: &str) -> anyhow::Result<Option<Self>> {
-        let id_str = {
+        let id: Option<DbUuid> = {
             let conn = pool.get()?;
             conn.query_row(
                 "SELECT id FROM sessions WHERE cwd = ? ORDER BY updated_at DESC LIMIT 1",
                 rusqlite::params![cwd],
-                |row| row.get::<_, String>(0),
+                |row| row.get(0),
             )
             .ok()
         };
-        let Some(id_str) = id_str else {
-            return Ok(None);
-        };
-        Ok(Some(Self::load(pool, Uuid::parse_str(&id_str)?)?))
+        if let Some(id) = id {
+            Ok(Some(Self::load(pool, id.0)?))
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn history_entries(&self) -> &[HistoryEntry] {
@@ -128,13 +143,19 @@ impl Session {
     fn add_message(&mut self, role: Role, content: &str) -> anyhow::Result<()> {
         let conn = self.pool.get()?;
         let now_ms = chrono::Utc::now().timestamp_millis();
+
+        let mut hash = None;
+        if role == Role::Tool {
+            hash = Some(format!("{:x}", md5::compute(content)));
+        }
+
         conn.execute(
-            "INSERT INTO messages (session_id, ts, role, content) VALUES (?, ?, ?, ?)",
-            rusqlite::params![self.id.to_string(), now_ms * 1000, role, content,],
+            "INSERT INTO messages (session_id, ts, role, content, hash) VALUES (?, ?, ?, ?, ?)",
+            rusqlite::params![DbUuid(self.id), now_ms * 1000, role, content, hash],
         )?;
         conn.execute(
             "UPDATE sessions SET updated_at = ? WHERE id = ?",
-            rusqlite::params![now_ms, self.id.to_string()],
+            rusqlite::params![now_ms, DbUuid(self.id)],
         )?;
         self.cache.push(HistoryEntry {
             role,
@@ -163,7 +184,7 @@ impl Session {
              ORDER BY id",
         )?;
         let messages: Vec<HistoryEntry> = stmt
-            .query_map(rusqlite::params![self.id.to_string()], |row| {
+            .query_map(rusqlite::params![DbUuid(self.id)], |row| {
                 let role: Role = row.get(0)?;
                 let content: String = row.get(1)?;
                 Ok(HistoryEntry { role, content })
@@ -207,22 +228,22 @@ mod tests {
 
         // Insert sessions with explicit timestamps to guarantee ordering
         let conn = pool.get()?;
-        let id1 = Uuid::now_v7().to_string();
+        let id1 = Uuid::now_v7();
         conn.execute(
             "INSERT INTO sessions (id, cwd, created_at, updated_at) VALUES (?, ?, 1000, 1000)",
-            rusqlite::params![id1, cwd],
+            rusqlite::params![DbUuid(id1), cwd],
         )?;
 
-        let id2 = Uuid::now_v7().to_string();
+        let id2 = Uuid::now_v7();
         conn.execute(
             "INSERT INTO sessions (id, cwd, created_at, updated_at) VALUES (?, ?, 2000, 2000)",
-            rusqlite::params![id2, cwd],
+            rusqlite::params![DbUuid(id2), cwd],
         )?;
         drop(conn);
 
         let found = Session::find_latest_for_cwd(pool, cwd)?
             .ok_or_else(|| anyhow::anyhow!("no session found"))?;
-        assert_eq!(found.id, Uuid::parse_str(&id2)?);
+        assert_eq!(found.id, id2);
         Ok(())
     }
 

@@ -28,6 +28,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_stream::StreamExt;
 
 /// Environment shared across stream invocations — held by [`InputComponent`].
+#[derive(Clone)]
 pub struct StreamContext {
     pub model: Model,
     pub sandbox: Arc<SandboxConfig>,
@@ -35,7 +36,6 @@ pub struct StreamContext {
     pub pool: Arc<crate::db::DbPool>,
     pub max_steps: u32,
     pub registry: Arc<crate::registry::Registry>,
-    pub task_list: crate::tools::tasks::SharedTaskList,
 }
 
 impl From<&InputComponent> for StreamContext {
@@ -47,7 +47,6 @@ impl From<&InputComponent> for StreamContext {
             pool: input.session_pool.clone(),
             max_steps: input.max_steps,
             registry: input.registry.clone(),
-            task_list: input.task_list.clone(),
         }
     }
 }
@@ -59,7 +58,7 @@ pub async fn spawn_stream(
     mut abort_rx: UnboundedReceiver<()>,
 ) {
     let query = Instructions::new(query);
-    let mut session = match Session::load(ctx.pool, ctx.session_id) {
+    let mut session = match Session::load(ctx.pool.clone(), ctx.session_id) {
         Ok(s) => s,
         Err(e) => {
             tracing::error!("failed to load session: {e}");
@@ -67,85 +66,21 @@ pub async fn spawn_stream(
             return;
         }
     };
+
+    let pool = ctx.pool.clone();
     let history = session.history_entries().to_vec();
-    // Persist user message before streaming so tool calls land after it in DB order.
+    let session_id = ctx.session_id.to_string();
     let _ = session.add_user(&query.raw);
+
     let mut response = match execute_with_retry("stream_text", move || {
+        let pool = pool.clone();
+        let session_id = session_id.clone();
+        let ctx = ctx.clone();
         let history = history.clone();
         let query = query.clone();
-        let sandbox = ctx.sandbox.clone();
-        let model = ctx.model.clone();
-        let registry = ctx.registry.clone();
-        let task_list = ctx.task_list.clone();
 
         async move {
-            let mut req = if let Some(agent) = find_subsume_candidate(&query, &registry.agents) {
-                let subagent = Subagent::new(
-                    model.clone(),
-                    registry.clone(),
-                    sandbox.clone(),
-                    task_list.clone(),
-                );
-                subagent
-                    .build_request(&agent, &query.raw, 0, None)
-                    .map_err(|e| anyhow::anyhow!(e))?
-            } else {
-                history
-                    .iter()
-                    .filter(|e| e.role == Role::User)
-                    .for_each(|e| query.clone().merge_mentions(&e.content));
-
-                let sp = SystemPrompt::new(&registry.skills, &registry.agents)
-                    .resolve(&query)
-                    .with_mode(crate::prompt::RunMode::Tui);
-                let loaded_skills = Arc::new(Mutex::new(
-                    sp.loaded_skills
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<HashSet<String>>(),
-                ));
-
-                let system = sp.render();
-                let messages = history
-                    .iter()
-                    .filter_map(|entry| match entry.role {
-                        Role::User => Some(Message::User(UserMessage::new(&entry.content))),
-                        Role::Assistant => Some(Message::Assistant(AssistantMessage::from(
-                            entry.content.clone(),
-                        ))),
-                        _ => None,
-                    })
-                    .chain(std::iter::once(Message::User(UserMessage::new(&query.raw))))
-                    .collect();
-
-                let loaded_refs = Arc::new(Mutex::new(HashSet::new()));
-                let mut builder = LanguageModelRequest::builder()
-                    .model(model.clone())
-                    .system(&system)
-                    .messages(messages)
-                    .with_tool(shell(sandbox.clone(), task_list.clone()))
-                    .with_tool(read_file_tool())
-                    .with_tool(write_file_tool(task_list.clone()))
-                    .with_tool(replace_tool(task_list.clone()))
-                    .with_tool(load_skills_tool(
-                        registry.clone(),
-                        Some(loaded_skills.clone()),
-                    ))
-                    .with_tool(load_references_tool(loaded_refs))
-                    .with_tool(execute_skill_script_tool(sandbox.clone()))
-                    .with_tool(subagent_tool(
-                        model.clone(),
-                        registry.clone(),
-                        sandbox.clone(),
-                        task_list.clone(),
-                    ))
-                    .stop_when(step_count_is(ctx.max_steps as usize));
-
-                for tool in task_tools(&task_list).context("failed to build task tools")? {
-                    builder = builder.with_tool(tool);
-                }
-                builder.build()
-            };
+            let mut req = build_stream_request(&ctx, &history, &query, pool, session_id)?;
             req.stream_text().await.map_err(|e| anyhow::anyhow!(e))
         }
     })
@@ -160,6 +95,83 @@ pub async fn spawn_stream(
 
     let mut processor = StreamProcessor::new(&mut session, event_tx);
     processor.handle(&mut response, &mut abort_rx).await;
+}
+
+fn build_stream_request(
+    ctx: &StreamContext,
+    history: &[crate::session::HistoryEntry],
+    query: &Instructions,
+    pool: Arc<crate::db::DbPool>,
+    session_id: String,
+) -> anyhow::Result<LanguageModelRequest<Model>> {
+    if let Some(agent) = find_subsume_candidate(query, &ctx.registry.agents) {
+        let subagent = Subagent::new(
+            ctx.model.clone(),
+            ctx.registry.clone(),
+            ctx.sandbox.clone(),
+            pool,
+            session_id,
+        );
+        return subagent
+            .build_request(&agent, &query.raw, 0)
+            .map_err(|e| anyhow::anyhow!(e));
+    }
+
+    let mut query = query.clone();
+    history
+        .iter()
+        .filter(|e| e.role == Role::User)
+        .for_each(|e| query.merge_mentions(&e.content));
+
+    let sp = SystemPrompt::new(&ctx.registry.skills, &ctx.registry.agents)
+        .with_tasks(pool.clone(), session_id.clone())
+        .resolve(&query)
+        .with_mode(crate::prompt::RunMode::Tui);
+
+    let loaded_skills = Arc::new(Mutex::new(
+        sp.loaded_skills
+            .iter()
+            .map(ToString::to_string)
+            .collect::<HashSet<String>>(),
+    ));
+    let loaded_refs = Arc::new(Mutex::new(HashSet::new()));
+
+    let messages = history
+        .iter()
+        .filter_map(|entry| match entry.role {
+            Role::User => Some(Message::User(UserMessage::new(&entry.content))),
+            Role::Assistant => Some(Message::Assistant(AssistantMessage::from(
+                entry.content.clone(),
+            ))),
+            _ => None,
+        })
+        .chain(std::iter::once(Message::User(UserMessage::new(&query.raw))))
+        .collect();
+
+    let mut builder = LanguageModelRequest::builder()
+        .model(ctx.model.clone())
+        .system(sp.render())
+        .messages(messages)
+        .with_tool(shell(ctx.sandbox.clone(), pool.clone(), session_id.clone()))
+        .with_tool(read_file_tool())
+        .with_tool(write_file_tool(pool.clone(), session_id.clone()))
+        .with_tool(replace_tool(pool.clone(), session_id.clone()))
+        .with_tool(load_skills_tool(ctx.registry.clone(), Some(loaded_skills)))
+        .with_tool(load_references_tool(loaded_refs))
+        .with_tool(execute_skill_script_tool(ctx.sandbox.clone()))
+        .with_tool(subagent_tool(
+            ctx.model.clone(),
+            ctx.registry.clone(),
+            ctx.sandbox.clone(),
+            pool.clone(),
+        ))
+        .stop_when(step_count_is(ctx.max_steps as usize));
+
+    for tool in task_tools(pool, session_id).context("failed to build task tools")? {
+        builder = builder.with_tool(tool);
+    }
+
+    Ok(builder.build())
 }
 
 struct StreamProcessor<'a> {

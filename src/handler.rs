@@ -95,7 +95,7 @@ fn output_response(
 }
 
 /// Handle a query delegated to a subagent (subsumption path).
-async fn subsume_agent(
+async fn handle_subsume(
     model: &Model,
     query: &Instructions,
     session: &mut Session,
@@ -104,14 +104,19 @@ async fn subsume_agent(
     registry: Arc<crate::registry::Registry>,
     agent_name: String,
 ) -> Result<()> {
-    let task_list = session.task_state.clone();
-    let subagent = Subagent::new(model.clone(), registry, sandbox_settings, task_list);
+    let subagent = Subagent::new(
+        model.clone(),
+        registry,
+        sandbox_settings,
+        session.pool.clone(),
+        session.id.to_string(),
+    );
 
     tracing::debug!(agent = %agent_name, "subsuming subagent role");
     tracing::debug!("TOOL: subsume {}", serde_json::json!({"agent": agent_name}));
 
     let output = subagent
-        .execute(&agent_name, &query.raw, 0, None)
+        .execute(&agent_name, &query.raw, 0)
         .await
         .map_err(|e| anyhow::anyhow!("Subagent subsumption failed: {e}"))?;
 
@@ -132,15 +137,15 @@ async fn handle_direct(
     registry: Arc<crate::registry::Registry>,
 ) -> Result<()> {
     let history = session.history_entries().to_vec();
-    let task_list = session.task_state.clone();
     let session_id = session.id.to_string();
+    let pool = session.pool.clone();
 
     let response = crate::utils::execute_with_retry("generate_text", {
         let model = model.clone();
         let query = query.clone();
         let sandbox = sandbox_settings;
-        let task_list = task_list.clone();
         let session_id = session_id.clone();
+        let pool = pool.clone();
 
         move || {
             let model = model.clone();
@@ -148,19 +153,20 @@ async fn handle_direct(
             let history = history.clone();
             let sandbox = sandbox.clone();
             let registry = registry.clone();
-            let task_list = task_list.clone();
             let session_id = session_id.clone();
+            let pool = pool.clone();
 
             async move {
                 let (system, loaded_skills) =
-                    prepare_system_prompt(&registry, &history, &query, &session_id).await?;
+                    prepare_system_prompt(&registry, &history, &query, pool.clone(), &session_id)
+                        .await?;
 
                 let messages = build_messages(&history, &query);
                 let tools = build_tools(
                     model.clone(),
                     registry.clone(),
                     sandbox,
-                    &task_list,
+                    pool.clone(),
                     &session_id,
                     loaded_skills,
                 )?;
@@ -213,22 +219,22 @@ fn build_tools(
     model: Model,
     registry: Arc<crate::registry::Registry>,
     sandbox: Arc<SandboxConfig>,
-    task_list: &crate::tools::tasks::SharedTaskList,
+    pool: Arc<crate::db::DbPool>,
     session_id: &str,
     loaded_skills: Arc<Mutex<HashSet<String>>>,
 ) -> Result<Vec<agentsdk::core::tools::Tool>> {
     let mut tools = vec![
-        shell(sandbox.clone(), task_list.clone()),
+        shell(sandbox.clone(), pool.clone(), session_id.to_string()),
         read_file_tool(),
-        write_file_tool(task_list.clone()),
-        replace_tool(task_list.clone()),
+        write_file_tool(pool.clone(), session_id.to_string()),
+        replace_tool(pool.clone(), session_id.to_string()),
         load_skills_tool(registry.clone(), Some(loaded_skills)),
         load_references_tool(Arc::new(Mutex::new(HashSet::new()))),
         execute_skill_script_tool(sandbox.clone()),
-        subagent_tool(model, registry, sandbox, task_list.clone()),
+        subagent_tool(model, registry, sandbox, pool.clone()),
     ];
 
-    for tool in task_tools(task_list).context("failed to build task tools")? {
+    for tool in task_tools(pool, session_id.to_string()).context("failed to build task tools")? {
         tools.push(tool);
     }
 
@@ -239,6 +245,7 @@ async fn prepare_system_prompt(
     registry: &crate::registry::Registry,
     history: &[crate::session::HistoryEntry],
     query: &Instructions,
+    pool: Arc<crate::db::DbPool>,
     session_id: &str,
 ) -> Result<(String, Arc<Mutex<HashSet<String>>>)> {
     let mut query = query.clone();
@@ -248,6 +255,7 @@ async fn prepare_system_prompt(
         .for_each(|e| query.merge_mentions(&e.content));
 
     let sp = prompt::SystemPrompt::new(&registry.skills, &registry.agents)
+        .with_tasks(pool, session_id.to_string())
         .resolve(&query)
         .with_json(false)
         .with_mode(prompt::RunMode::Cli);
@@ -339,7 +347,7 @@ pub async fn handle_query(
     registry: Arc<crate::registry::Registry>,
 ) -> Result<()> {
     if let Some(agent_name) = find_subsume_candidate(query, &registry.agents) {
-        subsume_agent(
+        handle_subsume(
             model,
             query,
             session,

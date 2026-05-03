@@ -2,8 +2,8 @@
 //!
 //! Owns the message list, render cache, scroll state, and streaming response tracking.
 
+use crate::db::DbPool;
 use crate::registry::Registry;
-use crate::tools::tasks::SharedTaskList;
 use crate::ui::tui::realm::{Msg, StreamEvent};
 use crate::ui::tui::state::ChatMessage;
 use crate::ui::tui::widgets::chat::{self, ChatState, ChatView};
@@ -46,7 +46,8 @@ pub struct ChatComponent {
     pub cached_lines: Vec<tuirealm::ratatui::text::Line<'static>>,
     pub last_width: usize,
     pub registry: Arc<Registry>,
-    pub task_list: SharedTaskList,
+    pub pool: Arc<DbPool>,
+    pub session_id: String,
     pub show_tasks: bool,
 }
 
@@ -55,7 +56,8 @@ impl ChatComponent {
         messages: Vec<ChatMessage>,
         current_model: String,
         registry: Arc<Registry>,
-        task_list: SharedTaskList,
+        pool: Arc<DbPool>,
+        session_id: String,
     ) -> Self {
         Self {
             messages,
@@ -68,7 +70,8 @@ impl ChatComponent {
             cached_lines: Vec::new(),
             last_width: 0,
             registry,
-            task_list,
+            pool,
+            session_id,
             show_tasks: true,
         }
     }
@@ -586,8 +589,6 @@ impl ChatComponent {
 mod tests {
     use super::*;
     use crate::session::Role;
-    use crate::tools::tasks::TaskList;
-    use std::sync::Mutex;
 
     fn test_registry() -> Arc<Registry> {
         Arc::new(Registry {
@@ -597,15 +598,19 @@ mod tests {
         })
     }
 
+    fn test_pool() -> Arc<DbPool> {
+        Arc::new(crate::db::create_test_pool().unwrap())
+    }
+
     #[test]
     fn new_chat_has_welcome_message_first() {
         let messages = vec![ChatMessage::system("Welcome to pie! Type ? for help.")];
-        let task_list: SharedTaskList = Arc::new(Mutex::new(TaskList::default()));
         let chat = ChatComponent::new(
             messages,
             "test-model".to_string(),
             test_registry(),
-            task_list,
+            test_pool(),
+            "test-session".to_string(),
         );
         assert_eq!(chat.messages.len(), 1);
         assert_eq!(chat.messages[0].role, Role::System);
@@ -615,12 +620,12 @@ mod tests {
 
     #[test]
     fn add_message_auto_scrolls() {
-        let task_list: SharedTaskList = Arc::new(Mutex::new(TaskList::default()));
         let mut chat = ChatComponent::new(
             vec![ChatMessage::system("Welcome")],
             "test-model".to_string(),
             test_registry(),
-            task_list,
+            test_pool(),
+            "test-session".to_string(),
         );
         chat.chat_state.auto_scroll = false;
         chat.add_message(ChatMessage::user("test"));
@@ -632,9 +637,13 @@ mod tests {
 
     #[test]
     fn toggle_tasks_state() {
-        let task_list: SharedTaskList = Arc::new(Mutex::new(TaskList::default()));
-        let mut chat =
-            ChatComponent::new(vec![], "test-model".to_string(), test_registry(), task_list);
+        let mut chat = ChatComponent::new(
+            vec![],
+            "test-model".to_string(),
+            test_registry(),
+            test_pool(),
+            "test-session".to_string(),
+        );
         assert!(chat.show_tasks);
         chat.toggle_tasks();
         assert!(!chat.show_tasks);
@@ -644,9 +653,13 @@ mod tests {
 
     #[test]
     fn start_and_finish_stream() {
-        let task_list: SharedTaskList = Arc::new(Mutex::new(TaskList::default()));
-        let mut chat =
-            ChatComponent::new(vec![], "test-model".to_string(), test_registry(), task_list);
+        let mut chat = ChatComponent::new(
+            vec![],
+            "test-model".to_string(),
+            test_registry(),
+            test_pool(),
+            "test-session".to_string(),
+        );
         chat.start_response();
         assert!(chat.is_streaming());
         assert_eq!(chat.response_idx, Some(0));

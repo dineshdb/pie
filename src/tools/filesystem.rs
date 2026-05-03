@@ -2,6 +2,7 @@ use agentsdk::core::tools::{Tool, ToolExecute};
 use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 struct ReadFileInput {
@@ -105,7 +106,7 @@ pub fn read_file_tool() -> Tool {
 
 #[allow(clippy::unwrap_used)]
 #[must_use]
-pub fn write_file_tool(state: crate::tools::tasks::SharedTaskList) -> Tool {
+pub fn write_file_tool(pool: Arc<crate::db::DbPool>, session_id: String) -> Tool {
     Tool::builder()
         .name("write_file")
         .description("Write content to a file. Overwrites if it exists. Requires task plan.")
@@ -113,10 +114,7 @@ pub fn write_file_tool(state: crate::tools::tasks::SharedTaskList) -> Tool {
         .execute(ToolExecute::from_sync(move |_ctx, params| {
             super::emit_tool_input("write_file", &params);
 
-            {
-                let guard = super::safe_lock(&state);
-                guard.enforce_planning("write_file")?;
-            }
+            crate::tools::tasks::enforce_planning(&pool, &session_id, "write_file")?;
 
             let path_str = params
                 .get("path")
@@ -146,7 +144,7 @@ pub fn write_file_tool(state: crate::tools::tasks::SharedTaskList) -> Tool {
 
 #[allow(clippy::unwrap_used)]
 #[must_use]
-pub fn replace_tool(state: crate::tools::tasks::SharedTaskList) -> Tool {
+pub fn replace_tool(pool: Arc<crate::db::DbPool>, session_id: String) -> Tool {
     Tool::builder()
         .name("replace")
         .description("Search and replace a specific string in a file. Fails if old_string is not found or is ambiguous. Requires task plan.")
@@ -154,10 +152,7 @@ pub fn replace_tool(state: crate::tools::tasks::SharedTaskList) -> Tool {
         .execute(ToolExecute::from_sync(move |_ctx, params| {
             super::emit_tool_input("replace", &params);
 
-            {
-                let guard = super::safe_lock(&state);
-                guard.enforce_planning("replace")?;
-            }
+            crate::tools::tasks::enforce_planning(&pool, &session_id, "replace")?;
 
             let path_str = params
                 .get("path")

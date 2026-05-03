@@ -1,4 +1,3 @@
-use crate::tools::tasks::SharedTaskList;
 use agentsdk::core::tools::{Tool, ToolExecute};
 use p1e_sandbox::{SandboxConfig, build_command};
 use serde_json::json;
@@ -11,7 +10,11 @@ struct ShellInput {
 
 /// Execute a shell command inside the sandbox and return its stdout, stderr, and exit code.
 #[allow(clippy::unwrap_used)]
-pub fn shell(sandbox_settings: Arc<SandboxConfig>, state: SharedTaskList) -> Tool {
+pub fn shell(
+    sandbox_settings: Arc<SandboxConfig>,
+    pool: Arc<crate::db::DbPool>,
+    session_id: String,
+) -> Tool {
     Tool::builder()
         .name("shell")
         .description("Execute a system command, bash tools, clis, etc. Requires task plan.")
@@ -19,10 +22,7 @@ pub fn shell(sandbox_settings: Arc<SandboxConfig>, state: SharedTaskList) -> Too
         .execute(ToolExecute::from_sync(move |_ctx, params| {
             super::emit_tool_input("shell", &params);
 
-            {
-                let guard = super::safe_lock(&state);
-                guard.enforce_planning("shell")?;
-            }
+            crate::tools::tasks::enforce_planning(&pool, &session_id, "shell")?;
 
             let Some(cmd) = params.get("cmd").and_then(|v| v.as_str()) else {
                 return Err("cmd parameter is required".to_string());

@@ -7,7 +7,6 @@ use crate::config::{ProviderConfig, ResolvedProvider, pie_home};
 use crate::providers::Model;
 use crate::registry::Registry;
 use crate::session::Session;
-use crate::tools::tasks::SharedTaskList;
 use crate::ui::tui::realm::{Msg, StreamEvent};
 use crate::ui::tui::stream::{StreamContext, spawn_stream};
 use crate::ui::tui::widgets::completion::{CompletionPopup, CompletionState, Direction};
@@ -46,7 +45,6 @@ pub struct InputComponent {
     pub max_steps: u32,
     pub stream_abort: Option<mpsc::UnboundedSender<()>>,
     pub registry: Arc<Registry>,
-    pub task_list: SharedTaskList,
 }
 
 impl InputComponent {
@@ -92,7 +90,6 @@ impl InputComponent {
             max_steps,
             stream_abort: None,
             registry,
-            task_list: SharedTaskList::default(),
         }
     }
 
@@ -376,41 +373,41 @@ impl InputComponent {
     }
 
     pub fn active_tasks(&self, is_streaming: bool) -> Vec<String> {
-        let guard = crate::tools::safe_lock(&self.task_list);
+        use crate::tools::tasks::{TaskRepo, TaskStatus};
 
         if !is_streaming {
             return vec![];
         }
 
-        // 1. If we have active tasks, return them all
-        let active = guard.active_tasks();
+        let tasks = self
+            .session_pool
+            .load_tasks(&self.session_id.to_string())
+            .unwrap_or_default();
+
+        let active: Vec<String> = tasks
+            .iter()
+            .filter(|t| t.status == TaskStatus::InProgress)
+            .map(|t| t.name.clone())
+            .collect();
         if !active.is_empty() {
             return active;
         }
 
-        if guard.tasks.is_empty() {
-            // 2. If no tasks yet but we're streaming, it's Planning phase
+        if tasks.is_empty() {
             return vec!["Planning".to_string()];
         }
 
-        // 3. If we're here, we're streaming but no tasks are InProgress.
-        // Show the last finished task as breadcrumb.
-        guard
-            .tasks
+        tasks
             .iter()
             .rfind(|t| {
                 matches!(
                     t.status,
-                    crate::tools::tasks::TaskStatus::Completed
-                        | crate::tools::tasks::TaskStatus::Failed
-                        | crate::tools::tasks::TaskStatus::Skipped
+                    TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Skipped
                 )
             })
             .map(|t| vec![t.name.clone()])
             .unwrap_or_default()
     }
-
-    // ...
 
     /// Reset to a new session: update `session_id`, create fresh history, clear input.
     pub fn reset_session(&mut self, session_id: uuid::Uuid) {
@@ -424,8 +421,10 @@ impl InputComponent {
         apply_textarea_style(&mut empty);
         self.textarea = empty;
 
-        let mut guard = crate::tools::safe_lock(&self.task_list);
-        guard.tasks.clear();
+        let _ = crate::tools::tasks::TaskRepo::delete_tasks(
+            &*self.session_pool,
+            &session_id.to_string(),
+        );
     }
 
     // ── Rendering ────────────────────────────────────────────────────
