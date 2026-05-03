@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn resolve_session_restores_when_resuming() {
-        let pool = Arc::new(db::create_persistent_pool().unwrap());
+        let pool = Arc::new(db::create_memory_pool().unwrap());
         let mut original = Session::create(pool.clone()).unwrap();
         original.add_user("hello").unwrap();
         original.add_assistant("world").unwrap();

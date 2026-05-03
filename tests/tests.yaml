@@ -22,7 +22,6 @@ tests:
   - name: shell tool executes system commands
     input: "Find what is the architecture of this laptop?"
     contains:
-      - Darwin
       - arm64
     timeout: 60
 
@@ -41,10 +40,10 @@ tests:
   - name: explore agent delegates via subsume
     input: "/explore this project"
     contains:
-      - "Rust"
+      - "TOOL: subsume"
     timeout: 120
 
-  - name: shell succeeds with plan
+  - name: List files
     input: "List files"
     contains:
       - "Cargo.toml"

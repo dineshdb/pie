@@ -145,10 +145,7 @@ def _input_matches(expected, actual):
     - Otherwise: equality check
     """
     if isinstance(expected, dict) and isinstance(actual, dict):
-        return all(
-            _input_matches(expected[k], actual.get(k))
-            for k in expected
-        )
+        return all(_input_matches(expected[k], actual.get(k)) for k in expected)
     if isinstance(expected, dict) and isinstance(actual, str):
         # Rust Debug format: Object {"key": String("value")}
         # Check each expected key and value appear in the string
@@ -177,7 +174,9 @@ def validate_structured(stderr, test):
     for call in ensure_list(test.get("tool_calls")):
         name = call["name"]
         if name not in tool_inputs:
-            failures.append(f"tool {name!r} was never called (found: {sorted(tool_inputs)})")
+            failures.append(
+                f"tool {name!r} was never called (found: {sorted(tool_inputs)})"
+            )
             continue
         if "input" in call:
             expected = call["input"]
@@ -195,16 +194,12 @@ def validate_structured(stderr, test):
     for substr in ensure_list(test.get("steps")):
         found = any(substr.lower() in t.lower() for t in step_names)
         if not found:
-            failures.append(
-                f"missing step with {substr!r} (steps: {step_names})"
-            )
+            failures.append(f"missing step with {substr!r} (steps: {step_names})")
 
     # Check minimum step count
     min_count = test.get("step_count")
     if min_count is not None and len(step_names) < min_count:
-        failures.append(
-            f"expected >= {min_count} steps, got {len(step_names)}"
-        )
+        failures.append(f"expected >= {min_count} steps, got {len(step_names)}")
 
     return failures
 
@@ -297,10 +292,9 @@ def analyze_traces(traces):
         combined.append(f"=== TEST: {name} ===\n{trace}\n")
     full_log = "\n".join(combined)
 
-    base_url = (
-        os.environ.get("OPENAI_BASE_URL")
-        or "http://127.0.0.1:8000/v1"
-    ).rstrip("/")
+    base_url = (os.environ.get("OPENAI_BASE_URL") or "http://127.0.0.1:8000/v1").rstrip(
+        "/"
+    )
     model = os.environ.get("OPENAI_MODEL", "")
     api_key = os.environ.get("OPENAI_API_KEY", "ollama")
 
@@ -353,6 +347,7 @@ def main():
                 continue
             try:
                 import tomllib
+
                 with open(config_path, "rb") as f:
                     pie_cfg = tomllib.load(f)
                 for name, cfg in pie_cfg.get("provider", {}).items():
