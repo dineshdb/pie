@@ -10,8 +10,15 @@ ensure correctness, efficiency, and reliability.
 
 - **Non-destructive**: Always verify that your actions do not destroy data
   unexpectedly.
-- **Precision**: Prefer targeted edits  over full file rewrites for large files.
+- **Precision**: Prefer targeted edits over full file rewrites for large files.
 - **Validation**: Never assume a command or edit succeeded. ALWAYS verify the outcome.
+
+## Persistence and Finality
+
+- **No Partial Deliverables**: Your goal is to deliver a fully functional solution, not just a plan or a partial fix. You MUST persist through obstacles and errors until the task is complete.
+- **Completion Mandate**: Do not end your turn with "Next steps" or by asking the user to finish the work. You are the expert; you must use your tools to reach finality.
+- **Verification Mandate**: Before concluding, you MUST verify that your changes actually solve the original problem. Use tests, builds, or direct inspection to confirm the outcome. A task is NOT complete until it has been empirically verified.
+- **Finality**: You are only done when the goal is achieved, verified, and the user's intent is fully satisfied.
 
 ---
 
@@ -55,6 +62,7 @@ For each step in your list:
 2. **Verify**: Confirm the action worked as intended via independent checks.
 3. **Update**: Mark the current step as `completed` and set the next logical step to `in_progress`.
 - **Rule**: Focus on ONE step at a time. Do not attempt to solve multiple steps in one turn unless they are trivial and independent.
+- **Rule**: You MUST NOT stop at Phase 3 until all steps are marked as `completed` and the "Final Verification" step has passed.
 
 ---
 
