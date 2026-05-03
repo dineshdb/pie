@@ -7,6 +7,7 @@ use crate::config::{ProviderConfig, ResolvedProvider, pie_home};
 use crate::providers::Model;
 use crate::registry::Registry;
 use crate::session::Session;
+use crate::tools::plan::{PlanRepo, StepStatus};
 use crate::ui::tui::realm::{Msg, StreamEvent};
 use crate::ui::tui::stream::{StreamContext, spawn_stream};
 use crate::ui::tui::widgets::completion::{CompletionPopup, CompletionState, Direction};
@@ -372,40 +373,38 @@ impl InputComponent {
         }
     }
 
-    pub fn active_tasks(&self, is_streaming: bool) -> Vec<String> {
-        use crate::tools::tasks::{TaskRepo, TaskStatus};
-
+    pub fn active_steps(&self, is_streaming: bool) -> Vec<String> {
         if !is_streaming {
             return vec![];
         }
 
-        let tasks = self
+        let steps = self
             .session_pool
-            .load_tasks(&self.session_id.to_string())
+            .load_steps(&self.session_id.to_string())
             .unwrap_or_default();
 
-        let active: Vec<String> = tasks
+        let active: Vec<String> = steps
             .iter()
-            .filter(|t| t.status == TaskStatus::InProgress)
-            .map(|t| t.name.clone())
+            .filter(|p| p.status == StepStatus::InProgress)
+            .map(|p| p.name.clone())
             .collect();
         if !active.is_empty() {
             return active;
         }
 
-        if tasks.is_empty() {
+        if steps.is_empty() {
             return vec!["Planning".to_string()];
         }
 
-        tasks
+        steps
             .iter()
-            .rfind(|t| {
+            .rfind(|p| {
                 matches!(
-                    t.status,
-                    TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Skipped
+                    p.status,
+                    StepStatus::Completed | StepStatus::Failed | StepStatus::Skipped
                 )
             })
-            .map(|t| vec![t.name.clone()])
+            .map(|p| vec![p.name.clone()])
             .unwrap_or_default()
     }
 
@@ -421,10 +420,7 @@ impl InputComponent {
         apply_textarea_style(&mut empty);
         self.textarea = empty;
 
-        let _ = crate::tools::tasks::TaskRepo::delete_tasks(
-            &*self.session_pool,
-            &session_id.to_string(),
-        );
+        let _ = PlanRepo::delete_steps(&*self.session_pool, &session_id.to_string());
     }
 
     // ── Rendering ────────────────────────────────────────────────────
@@ -467,10 +463,10 @@ impl InputComponent {
             frame.set_cursor_position((cx, cy));
         }
 
-        // Streaming status bar effects (task title only, border removed)
+        // Streaming status bar effects (plan title only, border removed)
         match (is_streaming, self.stream_effect_active) {
             (true, false) => {
-                // Task title animation - smooth full spectrum cycling
+                // Plan title animation - smooth full spectrum cycling
                 let title_fx = fx::repeating(fx::hsl_shift_fg(
                     [360.0, 0.0, 0.0],
                     (3000, tachyonfx::Interpolation::Linear),

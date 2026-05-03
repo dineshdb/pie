@@ -1,3 +1,4 @@
+use crate::tools::plan::enforce_planning;
 use agentsdk::core::tools::{Tool, ToolExecute};
 use serde_json::json;
 use std::fs;
@@ -109,12 +110,11 @@ pub fn read_file_tool() -> Tool {
 pub fn write_file_tool(pool: Arc<crate::db::DbPool>, session_id: String) -> Tool {
     Tool::builder()
         .name("write_file")
-        .description("Write content to a file. Overwrites if it exists. Requires task plan.")
+        .description("Write content to a file. Overwrites if it exists. Requires plan.")
         .input_schema(schemars::schema_for!(WriteFileInput))
         .execute(ToolExecute::from_sync(move |_ctx, params| {
             super::emit_tool_input("write_file", &params);
-
-            crate::tools::tasks::enforce_planning(&pool, &session_id, "write_file")?;
+            enforce_planning(&pool, &session_id, "write_file")?;
 
             let path_str = params
                 .get("path")
@@ -147,12 +147,11 @@ pub fn write_file_tool(pool: Arc<crate::db::DbPool>, session_id: String) -> Tool
 pub fn replace_tool(pool: Arc<crate::db::DbPool>, session_id: String) -> Tool {
     Tool::builder()
         .name("replace")
-        .description("Search and replace a specific string in a file. Fails if old_string is not found or is ambiguous. Requires task plan.")
+        .description("Search and replace a specific string in a file. Fails if old_string is not found or is ambiguous. Requires plan.")
         .input_schema(schemars::schema_for!(ReplaceInput))
         .execute(ToolExecute::from_sync(move |_ctx, params| {
             super::emit_tool_input("replace", &params);
-
-            crate::tools::tasks::enforce_planning(&pool, &session_id, "replace")?;
+            enforce_planning(&pool, &session_id, "replace")?;
 
             let path_str = params
                 .get("path")

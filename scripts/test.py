@@ -6,7 +6,7 @@
 """YAML-driven integration tests for pie.
 
 Runs all tests with debug tracing, parses structured JSON events from
-stderr, and validates tool calls, tasks, and response content.
+stderr, and validates tool calls, steps, and response content.
 
 Usage: uv run scripts/test.py
 """
@@ -90,14 +90,14 @@ def _strip_ansi(s):
 def parse_events(stderr):
     """Parse TOOL:/PROGRESS: lines from pie stderr.
 
-    Returns (tool_names, task_titles, progress, tool_inputs).
+    Returns (tool_names, step_names, progress, tool_inputs).
     - tool_names: set of tool names that were called
-    - task_titles: list of all task titles from task_add events
+    - step_names: list of all step names from plan_set events
     - progress: list of progress summary strings
     - tool_inputs: dict mapping tool name -> list of parsed JSON data
     """
     tool_names = set()
-    task_titles = []
+    step_names = []
     progress = []
     tool_inputs = {}
 
@@ -118,22 +118,21 @@ def parse_events(stderr):
                     data = None
                 tool_inputs.setdefault(name, []).append(data)
 
-                if name == "task_add" and isinstance(data, dict):
-                    # Input format: {"tasks": [{"title": "...", "status": "..."}]}
-                    # Also accepts "name" as alias for "title"
-                    for task in data.get("tasks", []):
-                        if isinstance(task, dict):
-                            title = task.get("title", "") or task.get("name", "")
+                if name == "plan_set" and isinstance(data, dict):
+                    # Input format: {"steps": [{"name": "...", "status": "..."}]}
+                    for step in data.get("steps", []):
+                        if isinstance(step, dict):
+                            title = step.get("name", "")
                             if title:
-                                task_titles.append(title)
-                        elif isinstance(task, str):
-                            task_titles.append(task)
+                                step_names.append(title)
+                        elif isinstance(step, str):
+                            step_names.append(step)
 
         # PROGRESS: <summary>
         elif raw.startswith("PROGRESS: "):
             progress.append(raw[10:])
 
-    return tool_names, task_titles, progress, tool_inputs
+    return tool_names, step_names, progress, tool_inputs
 
 
 def _input_matches(expected, actual):
@@ -165,9 +164,9 @@ def _input_matches(expected, actual):
 
 
 def validate_structured(stderr, test):
-    """Validate structured assertions (tools, tasks, task_count, tool_calls) against stderr."""
+    """Validate structured assertions (tools, steps, step_count, tool_calls) against stderr."""
     failures = []
-    tool_names, task_titles, _progress, tool_inputs = parse_events(stderr)
+    tool_names, step_names, _progress, tool_inputs = parse_events(stderr)
 
     # Check required tool names
     for required in ensure_list(test.get("tools")):
@@ -192,19 +191,19 @@ def validate_structured(stderr, test):
                     f"tool {name!r} input not matched: expected {expected!r}"
                 )
 
-    # Check required task title substrings
-    for substr in ensure_list(test.get("tasks")):
-        found = any(substr.lower() in t.lower() for t in task_titles)
+    # Check required step name substrings
+    for substr in ensure_list(test.get("steps")):
+        found = any(substr.lower() in t.lower() for t in step_names)
         if not found:
             failures.append(
-                f"missing task with {substr!r} (tasks: {task_titles})"
+                f"missing step with {substr!r} (steps: {step_names})"
             )
 
-    # Check minimum task count
-    min_count = test.get("task_count")
-    if min_count is not None and len(task_titles) < min_count:
+    # Check minimum step count
+    min_count = test.get("step_count")
+    if min_count is not None and len(step_names) < min_count:
         failures.append(
-            f"expected >= {min_count} tasks, got {len(task_titles)}"
+            f"expected >= {min_count} steps, got {len(step_names)}"
         )
 
     return failures

@@ -1,4 +1,4 @@
-CREATE TABLE tasks (
+CREATE TABLE steps (
     id          INTEGER PRIMARY KEY,
     session_id  TEXT    NOT NULL REFERENCES sessions(id),
     name        TEXT    NOT NULL,
@@ -7,7 +7,7 @@ CREATE TABLE tasks (
     updated_at  INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000),
     UNIQUE(session_id, name)
 );
-CREATE INDEX idx_tasks_session_id ON tasks(session_id);
+CREATE INDEX idx_steps_session_id ON steps(session_id);
 
 ALTER TABLE messages ADD COLUMN hash TEXT;
 ALTER TABLE messages ADD COLUMN fail_hash TEXT;

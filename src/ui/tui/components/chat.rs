@@ -48,7 +48,7 @@ pub struct ChatComponent {
     pub registry: Arc<Registry>,
     pub pool: Arc<DbPool>,
     pub session_id: String,
-    pub show_tasks: bool,
+    pub show_plan: bool,
 }
 
 impl ChatComponent {
@@ -72,12 +72,12 @@ impl ChatComponent {
             registry,
             pool,
             session_id,
-            show_tasks: true,
+            show_plan: true,
         }
     }
 
-    pub fn toggle_tasks(&mut self) {
-        self.show_tasks = !self.show_tasks;
+    pub fn toggle_plan(&mut self) {
+        self.show_plan = !self.show_plan;
         self.cached_lines.clear();
     }
 
@@ -373,7 +373,7 @@ impl ChatComponent {
                 self.add_message(ChatMessage::tool(&content));
                 Msg::Redraw
             }
-            StreamEvent::TaskUpdate => {
+            StreamEvent::PlanUpdate => {
                 self.cached_lines.clear();
                 Msg::Redraw
             }
@@ -470,7 +470,7 @@ impl ChatComponent {
                 Msg::Redraw
             }
             (KeyModifiers::CONTROL, Key::Char('t')) => {
-                self.toggle_tasks();
+                self.toggle_plan();
                 Msg::Redraw
             }
             _ => Msg::KeyboardToInput(*key),
@@ -615,7 +615,7 @@ mod tests {
         assert_eq!(chat.messages.len(), 1);
         assert_eq!(chat.messages[0].role, Role::System);
         assert!(chat.messages[0].content.contains("Welcome"));
-        assert!(chat.show_tasks);
+        assert!(chat.show_plan);
     }
 
     #[test]
@@ -636,7 +636,7 @@ mod tests {
     }
 
     #[test]
-    fn toggle_tasks_state() {
+    fn toggle_plan_state() {
         let mut chat = ChatComponent::new(
             vec![],
             "test-model".to_string(),
@@ -644,11 +644,11 @@ mod tests {
             test_pool(),
             "test-session".to_string(),
         );
-        assert!(chat.show_tasks);
-        chat.toggle_tasks();
-        assert!(!chat.show_tasks);
-        chat.toggle_tasks();
-        assert!(chat.show_tasks);
+        assert!(chat.show_plan);
+        chat.toggle_plan();
+        assert!(!chat.show_plan);
+        chat.toggle_plan();
+        assert!(chat.show_plan);
     }
 
     #[test]

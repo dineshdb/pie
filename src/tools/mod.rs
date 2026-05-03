@@ -6,10 +6,10 @@ pub use subagent::subagent_tool;
 
 mod filesystem;
 mod hooks;
+pub mod plan;
 mod shell;
 mod skills;
 pub(crate) mod subagent;
-pub mod tasks;
 
 /// Lock a mutex, recovering from poison instead of panicking.
 pub(crate) fn safe_lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {

@@ -6,7 +6,7 @@ needs: [git, filesystem, context7, verification]
 
 # Development Lifecycle Orchestration
 
-Follow this rigorous loop for any non-trivial task.
+Follow this rigorous loop for any non-trivial step.
 
 ## Phase 1: Research & Discovery
 Gather context before proposing changes.

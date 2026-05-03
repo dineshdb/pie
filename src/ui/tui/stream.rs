@@ -4,8 +4,8 @@ use crate::instructions::Instructions;
 use crate::prompt::SystemPrompt;
 use crate::providers::Model;
 use crate::session::{Role, Session};
+use crate::tools::plan::plan_tools;
 use crate::tools::subagent::Subagent;
-use crate::tools::tasks::task_tools;
 use crate::tools::{
     execute_skill_script_tool, load_references_tool, load_skills_tool, read_file_tool,
     replace_tool, shell, subagent_tool, write_file_tool,
@@ -124,7 +124,7 @@ fn build_stream_request(
         .for_each(|e| query.merge_mentions(&e.content));
 
     let sp = SystemPrompt::new(&ctx.registry.skills, &ctx.registry.agents)
-        .with_tasks(pool.clone(), session_id.clone())
+        .with_plan(pool.clone(), session_id.clone())
         .resolve(&query)
         .with_mode(crate::prompt::RunMode::Tui);
 
@@ -167,7 +167,7 @@ fn build_stream_request(
         ))
         .stop_when(step_count_is(ctx.max_steps as usize));
 
-    for tool in task_tools(pool, session_id).context("failed to build task tools")? {
+    for tool in plan_tools(pool, session_id).context("failed to build plan tools")? {
         builder = builder.with_tool(tool);
     }
 
@@ -251,16 +251,16 @@ impl<'a> StreamProcessor<'a> {
                     format!("{}: {}", event.name, event.params)
                 };
 
-                // For task tools, also trigger a TaskUpdate event to refresh task UI
-                if name == "task_add" || name == "task_update" {
-                    let _ = self.event_tx.send(StreamEvent::TaskUpdate);
+                // For plan tools, also trigger a PlanUpdate event to refresh plan UI
+                if name == "plan_set" || name == "plan_step_update" {
+                    let _ = self.event_tx.send(StreamEvent::PlanUpdate);
                 }
 
                 persist_tool_call(self.session, &event.name, &display, &event.output);
 
-                let is_task_tool = name == "task_add" || name == "task_update";
+                let is_plan_tool = name == "plan_set" || name == "plan_step_update";
                 let show_tool =
-                    !is_task_tool || crate::config::CONFIG.get().is_some_and(|c| c.debug);
+                    !is_plan_tool || crate::config::CONFIG.get().is_some_and(|c| c.debug);
 
                 if show_tool {
                     let _ = self.event_tx.send(event.into());

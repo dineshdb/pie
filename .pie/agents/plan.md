@@ -24,9 +24,9 @@ and ask as few questions as possible.
 ### Phase 1: Explore (autonomous, no questions)
 
 1. Spawn /explore to gather codebase details.
-2. Spawn /review in the background if the task involves modifying existing code
+2. Spawn /review in the background if the goal involves modifying existing code
    — use its findings to inform the plan.
-3. Read all files that are relevant to the task. Trace data flows, understand
+3. Read all files that are relevant to the goal. Trace data flows, understand
    interfaces, identify constraints.
 4. After exploration, assess: do I have enough context to write a complete plan?
    If yes, skip to Phase 3.
@@ -35,7 +35,7 @@ and ask as few questions as possible.
 
 Ask the user questions ONLY when:
 
-- The task has multiple valid architectural approaches with significant
+- The goal has multiple valid architectural approaches with significant
   trade-offs.
 - Critical requirements are ambiguous and the wrong assumption would cause
   significant rework.
@@ -51,7 +51,7 @@ State your assumptions explicitly in the plan. The user can correct them.
 
 ### Phase 3: Write the Plan
 
-Derive a plan ID (filename-safe, kebab-case) from the task. For example:
+Derive a plan ID (filename-safe, kebab-case) from the goal. For example:
 
 - "Add user authentication" → `add-user-auth`
 - "Refactor database layer" → `refactor-db-layer`

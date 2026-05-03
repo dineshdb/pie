@@ -11,14 +11,14 @@
 use crate::config::{PieConfig, ResolvedProvider};
 use crate::providers::{Model, fetch_models};
 use crate::session::{Role, Session};
-use crate::tools::tasks::TaskRepo;
+use crate::tools::plan::PlanRepo;
 use crate::ui::tui::command::{Command, CommandAction};
 use crate::ui::tui::components::chat::{ActiveDialog, ChatComponent};
 use crate::ui::tui::components::input::InputComponent;
 use crate::ui::tui::realm::{App, Id, Msg, StreamEvent, StreamPort};
 use crate::ui::tui::state::ChatMessage;
+use crate::ui::tui::widgets::plan_list::PlanView;
 use crate::ui::tui::widgets::status_bar::StatusBar;
-use crate::ui::tui::widgets::task_list::TaskView;
 use anyhow::{Context, Result};
 use arboard::Clipboard;
 use p1e_sandbox::SandboxConfig;
@@ -434,9 +434,9 @@ fn render(app: &mut App, input: &mut InputComponent, terminal: &mut Terminal) ->
         let input_lines = input.input_line_count().clamp(1, 8) as u16;
         let input_height = input_lines;
 
-        let (show_tasks, task_count) = if let Some(chat) = chat_ref!(app) {
-            let tasks = chat.pool.load_tasks(&chat.session_id).unwrap_or_default();
-            (chat.show_tasks && !tasks.is_empty(), tasks.len())
+        let (show_plan, step_count) = if let Some(chat) = chat_ref!(app) {
+            let steps = chat.pool.load_steps(&chat.session_id).unwrap_or_default();
+            (chat.show_plan && !steps.is_empty(), steps.len())
         } else {
             (false, 0)
         };
@@ -446,10 +446,10 @@ fn render(app: &mut App, input: &mut InputComponent, terminal: &mut Terminal) ->
             Constraint::Length(1), // Status Bar
         ];
 
-        if show_tasks {
+        if show_plan {
             #[allow(clippy::cast_possible_truncation)]
-            let tasks_height = (task_count as u16 + 1).min(10); // +1 for top border
-            constraints.push(Constraint::Length(tasks_height));
+            let plan_height = (step_count as u16 + 1).min(10); // +1 for top border
+            constraints.push(Constraint::Length(plan_height));
         }
 
         constraints.push(Constraint::Length(input_height)); // Input
@@ -462,7 +462,7 @@ fn render(app: &mut App, input: &mut InputComponent, terminal: &mut Terminal) ->
         let messages_area = chunks.first().copied().unwrap_or(area);
         let status_bar_area = chunks.get(1).copied().unwrap_or(area);
 
-        let (tasks_area, input_area) = if show_tasks {
+        let (plan_area, input_area) = if show_plan {
             (
                 chunks.get(2).copied(),
                 chunks.get(3).copied().unwrap_or(area),
@@ -475,21 +475,21 @@ fn render(app: &mut App, input: &mut InputComponent, terminal: &mut Terminal) ->
 
         // Status Bar rendering
         let is_streaming = chat_ref!(app).is_some_and(ChatComponent::is_streaming);
-        let active_tasks = input.active_tasks(is_streaming);
-        let status_bar = StatusBar::new(active_tasks, is_streaming, input.spinner_frame);
+        let active_steps = input.active_steps(is_streaming);
+        let status_bar = StatusBar::new(active_steps, is_streaming, input.spinner_frame);
         f.render_widget(status_bar, status_bar_area);
 
-        if let Some(t_area) = tasks_area
+        if let Some(p_area) = plan_area
             && let Some(chat) = chat_ref!(app)
         {
-            let task_view = TaskView::new(chat.pool.clone(), &chat.session_id).block(
+            let plan_view = PlanView::new(chat.pool.clone(), &chat.session_id).block(
                 Block::default()
                     .borders(Borders::TOP)
                     .border_style(Style::default().fg(Color::DarkGray))
                     .border_type(BorderType::Plain)
-                    .title(" Tasks "),
+                    .title(" Plan "),
             );
-            f.render_widget(task_view, t_area);
+            f.render_widget(plan_view, p_area);
         }
 
         input.render(f, input_area, is_streaming);

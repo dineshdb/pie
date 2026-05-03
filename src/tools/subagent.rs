@@ -3,7 +3,7 @@ use crate::instructions::Instructions;
 use crate::prompt::SystemPrompt;
 use crate::providers::Model;
 use crate::registry::Registry;
-use crate::tools::tasks::task_tools;
+use crate::tools::plan::plan_tools;
 use crate::tools::{
     execute_skill_script_tool, load_references_tool, load_skills_tool, read_file_tool,
     replace_tool, shell, write_file_tool,
@@ -71,7 +71,7 @@ impl Subagent {
             execute_skill_script_tool(self.sandbox_settings.clone()),
         ];
 
-        tools.extend(task_tools(self.pool.clone(), self.session_id.clone())?);
+        tools.extend(plan_tools(self.pool.clone(), self.session_id.clone())?);
 
         if depth < MAX_DEPTH {
             tools.push(make_subagent_tool(
@@ -107,7 +107,7 @@ impl Subagent {
         let agent_name = if is_agent { Some(name) } else { None };
 
         let sp = SystemPrompt::new(&self.registry.skills, &self.registry.agents)
-            .with_tasks(self.pool.clone(), self.session_id.clone())
+            .with_plan(self.pool.clone(), self.session_id.clone())
             .with_agent(agent_name)
             .resolve(&query_instr);
 
@@ -165,7 +165,7 @@ fn make_subagent_tool(
 ) -> Tool {
     Tool::builder()
         .name("subagent")
-        .description("Delegate a task to an subagent with detailed instructions.")
+        .description("Delegate a goal to an subagent with detailed instructions.")
         .input_schema(schemars::schema_for!(SubagentInput))
         .execute(ToolExecute::from_async(move |_ctx, params| {
             crate::tools::emit_tool_input("subagent", &params);

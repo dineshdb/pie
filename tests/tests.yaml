@@ -6,8 +6,8 @@
 #   tools         - tool name(s) that must appear in structured stderr events
 #   tool_calls    - list of {name, input}; input is a JSON subset match:
 #                   dict keys must exist, string values are substring-matched
-#   tasks         - task name substring(s) that must appear in task_add events
-#   task_count    - minimum number of tasks created
+#   steps         - step name substring(s) that must appear in plan_set events
+#   step_count    - minimum number of steps created
 #
 # Other fields:
 #   name          - test description (required)
@@ -44,7 +44,7 @@ tests:
       - "Rust"
     timeout: 120
 
-  - name: shell succeeds with task plan
+  - name: shell succeeds with plan
     input: "List files"
     contains:
       - "Cargo.toml"

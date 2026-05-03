@@ -23,7 +23,7 @@ use strum::{AsRefStr, Display, EnumString};
 )]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
-pub enum TaskStatus {
+pub enum StepStatus {
     #[default]
     Pending,
     InProgress,
@@ -33,77 +33,77 @@ pub enum TaskStatus {
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema, Deserialize, PartialEq, Eq)]
-pub struct Task {
+pub struct Step {
     pub id: Option<i64>,
     pub name: String,
     #[serde(default)]
-    pub status: TaskStatus,
+    pub status: StepStatus,
 }
 
-pub trait TaskRepo {
-    fn load_tasks(&self, session_id: &str) -> anyhow::Result<Vec<Task>>;
-    fn save_task(&self, session_id: &str, task: &Task) -> anyhow::Result<i64>;
-    fn update_task_status(
+pub trait PlanRepo {
+    fn load_steps(&self, session_id: &str) -> anyhow::Result<Vec<Step>>;
+    fn save_step(&self, session_id: &str, step: &Step) -> anyhow::Result<i64>;
+    fn update_step_status(
         &self,
         session_id: &str,
         name: &str,
-        status: TaskStatus,
+        status: StepStatus,
     ) -> anyhow::Result<()>;
-    fn delete_tasks(&self, session_id: &str) -> anyhow::Result<()>;
+    fn delete_steps(&self, session_id: &str) -> anyhow::Result<()>;
 }
 
-impl TaskRepo for DbPool {
-    fn load_tasks(&self, session_id: &str) -> anyhow::Result<Vec<Task>> {
+impl PlanRepo for DbPool {
+    fn load_steps(&self, session_id: &str) -> anyhow::Result<Vec<Step>> {
         let conn = self.get()?;
         let mut stmt = conn.prepare(
-            "SELECT id, name, status FROM tasks WHERE session_id = ? ORDER BY created_at ASC",
+            "SELECT id, name, status FROM steps WHERE session_id = ? ORDER BY created_at ASC",
         )?;
         let rows = stmt.query_map(params![session_id], |row| {
             let status_str: String = row.get(2)?;
-            Ok(Task {
+            Ok(Step {
                 id: Some(row.get(0)?),
                 name: row.get(1)?,
-                status: status_str.parse().unwrap_or(TaskStatus::Pending),
+                status: status_str.parse().unwrap_or(StepStatus::Pending),
             })
         })?;
 
         Ok(rows.flatten().collect())
     }
 
-    fn save_task(&self, session_id: &str, task: &Task) -> anyhow::Result<i64> {
+    fn save_step(&self, session_id: &str, step: &Step) -> anyhow::Result<i64> {
         let conn = self.get()?;
-        let status_ref: &str = task.status.as_ref();
+        let status_ref: &str = step.status.as_ref();
         conn.execute(
-            "INSERT INTO tasks (session_id, name, status, updated_at) 
+            "INSERT INTO steps (session_id, name, status, updated_at) 
              VALUES (?1, ?2, ?3, unixepoch('subsec') * 1000)
              ON CONFLICT(session_id, name) DO UPDATE SET 
              status = excluded.status, 
              updated_at = excluded.updated_at",
-            params![session_id, task.name, status_ref],
+            params![session_id, step.name, status_ref],
         )?;
         Ok(conn.last_insert_rowid())
     }
 
-    fn update_task_status(
+    fn update_step_status(
         &self,
         session_id: &str,
         name: &str,
-        status: TaskStatus,
+        status: StepStatus,
     ) -> anyhow::Result<()> {
         let conn = self.get()?;
         let status_ref: &str = status.as_ref();
         conn.execute(
-            "UPDATE tasks SET status = ?, updated_at = unixepoch('subsec') * 1000 
+            "UPDATE steps SET status = ?, updated_at = unixepoch('subsec') * 1000 
              WHERE session_id = ? AND name = ?",
             params![status_ref, session_id, name],
         )?;
         Ok(())
     }
 
-    fn delete_tasks(&self, session_id: &str) -> anyhow::Result<()> {
+    fn delete_steps(&self, session_id: &str) -> anyhow::Result<()> {
         let conn = self.get()?;
         conn.execute(
-            "DELETE FROM tasks WHERE session_id = ?",
+            "DELETE FROM steps WHERE session_id = ?",
             params![session_id],
         )?;
         Ok(())
@@ -111,11 +111,11 @@ impl TaskRepo for DbPool {
 }
 
 pub fn enforce_planning(pool: &Arc<DbPool>, session_id: &str, tool: &str) -> Result<(), String> {
-    let tasks = pool.load_tasks(session_id).unwrap_or_default();
-    if tasks.is_empty() {
+    let steps = pool.load_steps(session_id).unwrap_or_default();
+    if steps.is_empty() {
         return Err(format!(
-            "CRITICAL ERROR: You called '{tool}' without a task list. \
-             You MUST call 'task_add' with a full plan before taking any actions. \
+            "CRITICAL ERROR: You called '{tool}' without a plan. \
+             You MUST call 'plan_set' with a full plan before taking any actions. \
              This is your CORE MANDATE for reliability."
         ));
     }
@@ -123,85 +123,85 @@ pub fn enforce_planning(pool: &Arc<DbPool>, session_id: &str, tool: &str) -> Res
 }
 
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-struct TaskListInput {
-    pub tasks: Vec<Task>,
+struct StepListInput {
+    pub steps: Vec<Step>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-struct GetTasksInput {}
+struct GetStepsInput {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct TaskUpdate {
+pub struct StepUpdate {
     pub name: String,
-    pub status: TaskStatus,
+    pub status: StepStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct TaskUpdateList {
-    pub updates: Vec<TaskUpdate>,
+pub struct StepUpdateList {
+    pub updates: Vec<StepUpdate>,
 }
 
 // ── Tool builders ──────────────────────────────────────────────────
 
-fn build_task_add(pool: Arc<DbPool>, session_id: String) -> anyhow::Result<Tool> {
+fn build_plan_set(pool: Arc<DbPool>, session_id: String) -> anyhow::Result<Tool> {
     Tool::builder()
-        .name("task_add")
+        .name("plan_set")
         .description(
-            r#"CRITICAL: Planning phase. Call this FIRST. Input: {"tasks": [{"name": "..."}]}"#,
+            r#"CRITICAL: Planning phase. Call this FIRST to define the plan steps. Input: {"steps": [{"name": "..."}]}"#,
         )
-        .input_schema(schemars::schema_for!(TaskListInput))
+        .input_schema(schemars::schema_for!(StepListInput))
         .execute(ToolExecute::from_sync(move |_ctx, params| {
-            let input: TaskListInput = serde_json::from_value(params.clone())
+            let input: StepListInput = serde_json::from_value(params.clone())
                 .map_err(|e| format!("Invalid input: {e}"))?;
 
-            for t in input.tasks {
-                let _ = pool.save_task(&session_id, &t);
+            for t in input.steps {
+                let _ = pool.save_step(&session_id, &t);
             }
 
             Ok(json!({ "status": "ok" }).to_string())
         }))
         .build()
-        .context("failed to build task_add tool")
+        .context("failed to build plan_set tool")
 }
 
-fn build_task_update(pool: Arc<DbPool>, session_id: String) -> anyhow::Result<Tool> {
+fn build_plan_step_update(pool: Arc<DbPool>, session_id: String) -> anyhow::Result<Tool> {
     Tool::builder()
-        .name("task_update")
+        .name("plan_step_update")
         .description(
-            r#"MANDATORY: Update task status after a step. Input: {"updates": [{"name": "...", "status": "completed"}]}"#,
+            r#"MANDATORY: Update a plan step status. Input: {"updates": [{"name": "...", "status": "completed"}]}"#,
         )
-        .input_schema(schemars::schema_for!(TaskUpdateList))
+        .input_schema(schemars::schema_for!(StepUpdateList))
         .execute(ToolExecute::from_sync(move |_ctx, params| {
-            let input: TaskUpdateList = serde_json::from_value(params.clone())
+            let input: StepUpdateList = serde_json::from_value(params.clone())
                 .map_err(|e| format!("Invalid input: {e}"))?;
 
             for update in input.updates {
-                let _ = pool.update_task_status(&session_id, &update.name, update.status);
+                let _ = pool.update_step_status(&session_id, &update.name, update.status);
             }
 
             Ok(json!({ "status": "ok" }).to_string())
         }))
         .build()
-        .context("failed to build task_update tool")
+        .context("failed to build plan_step_update tool")
 }
 
-fn build_task_list(pool: Arc<DbPool>, session_id: String) -> anyhow::Result<Tool> {
+fn build_plan_show(pool: Arc<DbPool>, session_id: String) -> anyhow::Result<Tool> {
     Tool::builder()
-        .name("task_list")
-        .description("List all tasks and their current status for this session.")
-        .input_schema(schemars::schema_for!(GetTasksInput))
+        .name("plan_show")
+        .description("List the current plan steps and their status.")
+        .input_schema(schemars::schema_for!(GetStepsInput))
         .execute(ToolExecute::from_sync(move |_ctx, _params| {
-            let tasks = pool.load_tasks(&session_id).unwrap_or_default();
-            Ok(json!({ "tasks": tasks }).to_string())
+            let steps = pool.load_steps(&session_id).unwrap_or_default();
+            Ok(json!({ "steps": steps }).to_string())
         }))
         .build()
-        .context("failed to build task_list tool")
+        .context("failed to build plan_show tool")
 }
 
-pub fn task_tools(pool: Arc<DbPool>, session_id: String) -> anyhow::Result<Vec<Tool>> {
+pub fn plan_tools(pool: Arc<DbPool>, session_id: String) -> anyhow::Result<Vec<Tool>> {
     Ok(vec![
-        build_task_add(pool.clone(), session_id.clone())?,
-        build_task_update(pool.clone(), session_id.clone())?,
-        build_task_list(pool, session_id)?,
+        build_plan_set(pool.clone(), session_id.clone())?,
+        build_plan_step_update(pool.clone(), session_id.clone())?,
+        build_plan_show(pool, session_id)?,
     ])
 }

@@ -4,8 +4,8 @@ use crate::output::{JsonResponse, OutputFormat};
 use crate::prompt;
 use crate::providers::Model;
 use crate::session::{Role, Session};
+use crate::tools::plan::plan_tools;
 use crate::tools::subagent::Subagent;
-use crate::tools::tasks::task_tools;
 use crate::tools::{
     execute_skill_script_tool, load_references_tool, load_skills_tool, read_file_tool,
     replace_tool, shell, subagent_tool, write_file_tool,
@@ -234,7 +234,7 @@ fn build_tools(
         subagent_tool(model, registry, sandbox, pool.clone()),
     ];
 
-    for tool in task_tools(pool, session_id.to_string()).context("failed to build task tools")? {
+    for tool in plan_tools(pool, session_id.to_string()).context("failed to build plan tools")? {
         tools.push(tool);
     }
 
@@ -255,7 +255,7 @@ async fn prepare_system_prompt(
         .for_each(|e| query.merge_mentions(&e.content));
 
     let sp = prompt::SystemPrompt::new(&registry.skills, &registry.agents)
-        .with_tasks(pool, session_id.to_string())
+        .with_plan(pool, session_id.to_string())
         .resolve(&query)
         .with_json(false)
         .with_mode(prompt::RunMode::Cli);

@@ -3,7 +3,7 @@ use crate::config::pie_home;
 use crate::db::DbPool;
 use crate::instructions::Instructions;
 use crate::skill::Skill;
-use crate::tools::tasks::TaskRepo;
+use crate::tools::plan::PlanRepo;
 use crate::utils::{find_upward_in_repo, git_repo_root, load_file};
 use minijinja::Environment;
 use std::sync::Arc;
@@ -44,8 +44,8 @@ impl<'a> SystemPrompt<'a> {
         }
     }
 
-    /// Add task repository for context.
-    pub fn with_tasks(mut self, pool: Arc<DbPool>, session_id: String) -> Self {
+    /// Add plan repository for context.
+    pub fn with_plan(mut self, pool: Arc<DbPool>, session_id: String) -> Self {
         self.pool = Some(pool);
         self.session_id = Some(session_id);
         self
@@ -92,8 +92,8 @@ impl<'a> SystemPrompt<'a> {
         let agent_content = self.agent.map(|a| a.content.as_str());
         let interactivity = self.agent.map_or("none", |a| a.interactivity.as_ref());
 
-        let tasks = if let (Some(pool), Some(session_id)) = (&self.pool, &self.session_id) {
-            pool.load_tasks(session_id).unwrap_or_default()
+        let steps = if let (Some(pool), Some(session_id)) = (&self.pool, &self.session_id) {
+            pool.load_steps(session_id).unwrap_or_default()
         } else {
             Vec::new()
         };
@@ -116,7 +116,7 @@ impl<'a> SystemPrompt<'a> {
                 json_output => self.json_output,
                 run_mode => self.mode,
                 interactivity,
-                tasks,
+                steps,
             },
         )
     }

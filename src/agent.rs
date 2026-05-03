@@ -257,7 +257,7 @@ mod tests {
             },
             Agent {
                 name: "planner".into(),
-                description: "plans tasks".into(),
+                description: "manages plans".into(),
                 interactivity: Interactivity::Interactive,
                 model: None,
                 temperature: None,

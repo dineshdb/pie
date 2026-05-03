@@ -29,7 +29,7 @@ After each change, run following tests to verify if the change is valid.
 - use early return patterns and other patterns for simpler logic
 - try to use dry principle but not always.
 - use From impl instead of from_ to_ methods.
-- Try to reduce copies for simple tasks, use &'str and other references.
+- Try to reduce copies for simple steps, use &'str and other references.
   However, don't complicate structs with references. Instead, opt to rearchitect
   the problem in a way copies are unnecessary. Hexagonal architecture, MVU
   patterns, etc help with this.

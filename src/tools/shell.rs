@@ -17,12 +17,12 @@ pub fn shell(
 ) -> Tool {
     Tool::builder()
         .name("shell")
-        .description("Execute a system command, bash tools, clis, etc. Requires task plan.")
+        .description("Execute a system command, bash tools, clis, etc. Requires plan.")
         .input_schema(schemars::schema_for!(ShellInput))
         .execute(ToolExecute::from_sync(move |_ctx, params| {
             super::emit_tool_input("shell", &params);
 
-            crate::tools::tasks::enforce_planning(&pool, &session_id, "shell")?;
+            crate::tools::plan::enforce_planning(&pool, &session_id, "shell")?;
 
             let Some(cmd) = params.get("cmd").and_then(|v| v.as_str()) else {
                 return Err("cmd parameter is required".to_string());
