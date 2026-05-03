@@ -5,18 +5,13 @@ use std::sync::OnceLock;
 
 /// Sandbox configuration. Flat structure, deserialized from pie.toml `[sandbox]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SandboxConfig {
-    #[serde(default)]
     pub deny_read: Vec<String>,
-    #[serde(default)]
     pub allow_read: Vec<String>,
-    #[serde(default)]
     pub allow_write: Vec<String>,
-    #[serde(default)]
     pub deny_write: Vec<String>,
-    #[serde(default)]
     pub allowed_domains: Vec<String>,
-    #[serde(default)]
     pub denied_domains: Vec<String>,
 }
 
@@ -24,8 +19,23 @@ impl Default for SandboxConfig {
     fn default() -> Self {
         Self {
             deny_read: vec!["~/.ssh".into(), "~/.gnupg".into()],
-            allow_read: vec![],
-            allow_write: vec![".".into(), "/tmp".into()],
+            allow_read: vec![
+                "/".into(),
+                "/dev".into(),
+                "/proc".into(),
+                "/etc/resolv.conf".into(),
+                "/etc/hosts".into(),
+            ],
+            allow_write: vec![
+                ".".into(),
+                "/tmp".into(),
+                "/dev/null".into(),
+                "/dev/zero".into(),
+                "/dev/random".into(),
+                "/dev/urandom".into(),
+                "/private/tmp".into(),
+                "/private/var/folders".into(),
+            ],
             deny_write: vec![".env".into(), ".env.local".into()],
             allowed_domains: vec![
                 "github.com".into(),
@@ -157,6 +167,7 @@ pub(crate) mod platform {
         let mut lines = Vec::new();
         lines.push("(version 1)".to_string());
         lines.push("(allow default)".to_string());
+        lines.push("(allow file-read-metadata)".to_string());
 
         // Network: SBPL cannot filter by domain — only allow/deny all outbound.
         if cfg.allowed_domains.is_empty() && !cfg.denied_domains.is_empty() {
@@ -178,15 +189,6 @@ pub(crate) mod platform {
             for path in &cfg.allow_write {
                 let resolved = resolve_path(path);
                 lines.push(format!("(allow file-write* (subpath \"{resolved}\"))"));
-            }
-            lines.push("(allow file-write* (subpath \"/tmp\"))".to_string());
-            lines.push("(allow file-write* (subpath \"/private/tmp\"))".to_string());
-            lines.push("(allow file-write* (subpath \"/private/var/folders\"))".to_string());
-            if let Some(home) = dirs::home_dir() {
-                let h = home.to_string_lossy();
-                lines.push(format!(
-                    "(allow file-write* (subpath \"{h}/.config/.semgrep\"))"
-                ));
             }
         }
 
@@ -214,20 +216,22 @@ pub(crate) mod platform {
 
     pub(crate) fn build(cmd: &str, cfg: &SandboxConfig) -> Command {
         let mut c = Command::new(BINARY);
-
-        c.arg("--ro-bind").arg("/").arg("/");
-        c.arg("--dev").arg("/dev");
-        c.arg("--proc").arg("/proc");
         c.arg("--die-with-parent");
+
+        for path in &cfg.allow_read {
+            let resolved = resolve_path(path);
+            if resolved == "/dev" {
+                c.arg("--dev").arg("/dev");
+            } else if resolved == "/proc" {
+                c.arg("--proc").arg("/proc");
+            } else {
+                c.arg("--ro-bind").arg(&resolved).arg(&resolved);
+            }
+        }
 
         for path in &cfg.deny_read {
             let resolved = resolve_path(path);
             c.arg("--tmpfs").arg(&resolved);
-        }
-
-        for path in &cfg.allow_read {
-            let resolved = resolve_path(path);
-            c.arg("--ro-bind").arg(&resolved).arg(&resolved);
         }
 
         for path in &cfg.allow_write {
