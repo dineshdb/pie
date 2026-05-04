@@ -248,7 +248,8 @@ impl Hook {
         context: &HookContext,
         global_timeout_ms: u64,
     ) -> Result<HookOutcome> {
-        tracing::debug!(event = %context.event, scope = ?self.scope, hook = %self.name, "HOOK:");
+        let start = std::time::Instant::now();
+        tracing::debug!(event = %context.event, scope = ?self.scope, hook = %self.name, "HOOK STARTING");
 
         let timeout_ms = self.timeout_ms.unwrap_or(global_timeout_ms);
         let result = tokio::time::timeout(
@@ -257,18 +258,43 @@ impl Hook {
         )
         .await;
 
+        let duration = start.elapsed();
+
         match result {
-            Ok(Ok(outcome)) => Ok(outcome),
-            Ok(Err(e)) => Ok(HookOutcome::Warning {
-                name: self.name.clone(),
-                exit_code: None,
-                message: e.to_string(),
-            }),
-            Err(_) => Ok(HookOutcome::Warning {
-                name: self.name.clone(),
-                exit_code: None,
-                message: "hook timed out".to_string(),
-            }),
+            Ok(Ok(outcome)) => {
+                tracing::debug!(
+                    hook = %self.name,
+                    duration = ?duration,
+                    outcome = ?outcome,
+                    "HOOK COMPLETED"
+                );
+                Ok(outcome)
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    hook = %self.name,
+                    duration = ?duration,
+                    error = %e,
+                    "HOOK FAILED"
+                );
+                Ok(HookOutcome::Warning {
+                    name: self.name.clone(),
+                    exit_code: None,
+                    message: e.to_string(),
+                })
+            }
+            Err(_) => {
+                tracing::warn!(
+                    hook = %self.name,
+                    duration = ?duration,
+                    "HOOK TIMED OUT"
+                );
+                Ok(HookOutcome::Warning {
+                    name: self.name.clone(),
+                    exit_code: None,
+                    message: "hook timed out".to_string(),
+                })
+            }
         }
     }
 
