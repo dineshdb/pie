@@ -57,7 +57,8 @@ pub async fn spawn_stream(
     event_tx: UnboundedSender<StreamEvent>,
     mut abort_rx: UnboundedReceiver<()>,
 ) {
-    let query = Instructions::new(query);
+    const MAX_COMPLETION_RETRIES: u32 = 3;
+    let mut current_query_raw = query;
     let mut session = match Session::load(ctx.pool.clone(), ctx.session_id) {
         Ok(s) => s,
         Err(e) => {
@@ -67,34 +68,74 @@ pub async fn spawn_stream(
         }
     };
 
-    let pool = ctx.pool.clone();
-    let history = session.history_entries().to_vec();
-    let session_id = ctx.session_id.to_string();
-    let _ = session.add_user(&query.raw);
+    let mut loop_count = 0;
 
-    let mut response = match execute_with_retry("stream_text", move || {
-        let pool = pool.clone();
-        let session_id = session_id.clone();
-        let ctx = ctx.clone();
-        let history = history.clone();
-        let query = query.clone();
+    loop {
+        let query = Instructions::new(current_query_raw.clone());
+        let pool = ctx.pool.clone();
+        let history = session.history_entries().to_vec();
+        let session_id = ctx.session_id.to_string();
+        let _ = session.add_user(&query.raw);
 
-        async move {
-            let mut req = build_stream_request(&ctx, &history, &query, pool, session_id)?;
-            req.stream_text().await.map_err(|e| anyhow::anyhow!(e))
+        let mut response = match execute_with_retry("stream_text", {
+            let pool = pool.clone();
+            let session_id = session_id.clone();
+            let ctx = ctx.clone();
+            let history = history.clone();
+            let query = query.clone();
+
+            move || {
+                let pool = pool.clone();
+                let session_id = session_id.clone();
+                let ctx = ctx.clone();
+                let history = history.clone();
+                let query = query.clone();
+
+                async move {
+                    let mut req = build_stream_request(&ctx, &history, &query, pool, session_id)?;
+                    req.stream_text().await.map_err(|e| anyhow::anyhow!(e))
+                }
+            }
+        })
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = event_tx.send(StreamEvent::Error(e.to_string()));
+                return;
+            }
+        };
+
+        let mut processor = StreamProcessor::new(&mut session, event_tx.clone());
+        processor.handle(&mut response, &mut abort_rx).await;
+
+        let results = response.tool_results().await;
+        let output = extract_output_text(&processor.accumulated, results.as_deref());
+        let output = strip_control_tokens(&output);
+
+        if loop_count < MAX_COMPLETION_RETRIES {
+            match crate::handler::run_pre_completion_hooks(&session_id, &output).await {
+                Ok(Some(feedback)) => {
+                    tracing::info!("PreCompletion hook triggered, re-running LLM with feedback");
+                    let assistant_text = response.text().await.unwrap_or_default();
+                    let _ = session.add_assistant(&assistant_text);
+                    current_query_raw = feedback;
+                    loop_count += 1;
+                    continue;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!("PreCompletion hook failed: {e}");
+                }
+            }
         }
-    })
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = event_tx.send(StreamEvent::Error(e.to_string()));
-            return;
-        }
-    };
 
-    let mut processor = StreamProcessor::new(&mut session, event_tx);
-    processor.handle(&mut response, &mut abort_rx).await;
+        if !output.is_empty() {
+            let _ = session.add_assistant(&output);
+        }
+        let _ = event_tx.send(StreamEvent::Done(output));
+        break;
+    }
 }
 
 fn build_stream_request(
@@ -217,14 +258,6 @@ impl<'a> StreamProcessor<'a> {
 
         let results = response.tool_results().await;
         tracing::debug!(len = self.accumulated.len(), ?results, "stream finished");
-        let output = extract_output_text(&self.accumulated, results.as_deref());
-        let output = strip_control_tokens(&output);
-
-        if !output.is_empty() {
-            let _ = self.session.add_assistant(&output);
-        }
-
-        let _ = self.event_tx.send(StreamEvent::Done(output));
     }
 
     fn process_chunk(&mut self, chunk: LanguageModelStreamChunkType) -> bool {

@@ -136,69 +136,93 @@ async fn handle_direct(
     max_steps: u32,
     registry: Arc<crate::registry::Registry>,
 ) -> Result<()> {
-    let history = session.history_entries().to_vec();
-    let session_id = session.id.to_string();
-    let pool = session.pool.clone();
+    const MAX_COMPLETION_RETRIES: u32 = 3;
+    let mut current_query = query.clone();
+    let mut loop_count = 0;
 
-    let response = crate::utils::execute_with_retry("generate_text", {
-        let model = model.clone();
-        let query = query.clone();
-        let sandbox = sandbox_settings;
-        let session_id = session_id.clone();
-        let pool = pool.clone();
+    loop {
+        let history = session.history_entries().to_vec();
+        let session_id = session.id.to_string();
+        let pool = session.pool.clone();
 
-        move || {
+        let response = crate::utils::execute_with_retry("generate_text", {
             let model = model.clone();
-            let query = query.clone();
-            let history = history.clone();
-            let sandbox = sandbox.clone();
-            let registry = registry.clone();
+            let query = current_query.clone();
+            let sandbox = sandbox_settings.clone();
             let session_id = session_id.clone();
             let pool = pool.clone();
+            let registry = registry.clone();
 
-            async move {
-                let (system, loaded_skills) =
-                    prepare_system_prompt(&registry, &history, &query, pool.clone(), &session_id)
-                        .await?;
+            move || {
+                let model = model.clone();
+                let query = query.clone();
+                let history = history.clone();
+                let sandbox = sandbox.clone();
+                let registry = registry.clone();
+                let session_id = session_id.clone();
+                let pool = pool.clone();
 
-                let messages = build_messages(&history, &query);
+                async move {
+                    let (system, loaded_skills) = prepare_system_prompt(
+                        &registry,
+                        &history,
+                        &query,
+                        pool.clone(),
+                        &session_id,
+                    )
+                    .await?;
 
-                let tools = build_tools(
-                    model.clone(),
-                    registry.clone(),
-                    sandbox,
-                    pool.clone(),
-                    &session_id,
-                    loaded_skills,
-                )?;
+                    let messages = build_messages(&history, &query);
 
-                let mut builder = LanguageModelRequest::builder()
-                    .model(model)
-                    .system(&system)
-                    .messages(messages)
-                    .stop_when(step_count_is(max_steps as usize));
+                    let tools = build_tools(
+                        model.clone(),
+                        registry.clone(),
+                        sandbox,
+                        pool.clone(),
+                        &session_id,
+                        loaded_skills,
+                    )?;
 
-                for tool in tools {
-                    builder = builder.with_tool(tool);
+                    let mut builder = LanguageModelRequest::builder()
+                        .model(model)
+                        .system(&system)
+                        .messages(messages)
+                        .stop_when(step_count_is(max_steps as usize));
+
+                    for tool in tools {
+                        builder = builder.with_tool(tool);
+                    }
+
+                    builder
+                        .build()
+                        .generate_text()
+                        .await
+                        .map_err(|e| anyhow::anyhow!(e))
                 }
-
-                builder
-                    .build()
-                    .generate_text()
-                    .await
-                    .map_err(|e| anyhow::anyhow!(e))
             }
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!(e).context("generate_text failed"))?;
+
+        let assistant_text = response.text().unwrap_or_default();
+        let output = extract_output_text(&assistant_text, response.tool_results().as_deref());
+        let output = strip_control_tokens(&output);
+
+        if loop_count < MAX_COMPLETION_RETRIES
+            && let Some(feedback) = run_pre_completion_hooks(&session_id, &output).await?
+        {
+            tracing::info!("PreCompletion hook triggered, re-running LLM with feedback");
+            session.add_user(&current_query.raw)?;
+            session.add_assistant(&assistant_text)?;
+            current_query = Instructions::new(feedback);
+            loop_count += 1;
+            continue;
         }
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!(e).context("generate_text failed"))?;
 
-    let assistant_text = response.text().unwrap_or_default();
-    let output = extract_output_text(&assistant_text, response.tool_results().as_deref());
-    let output = strip_control_tokens(&output);
-
-    session.add_user(&query.raw)?;
-    output_response(&output, session, format, model)?;
+        session.add_user(&current_query.raw)?;
+        output_response(&output, session, format, model)?;
+        break;
+    }
     Ok(())
 }
 
@@ -341,6 +365,45 @@ async fn run_pre_prompt_hooks(
     }
 
     Ok((system, warnings))
+}
+
+pub async fn run_pre_completion_hooks(session_id: &str, output: &str) -> Result<Option<String>> {
+    let Some(cfg) = crate::config::CONFIG.get() else {
+        return Ok(None);
+    };
+
+    let ctx = crate::hook::HookContext::new(
+        crate::hook::HookEvent::PreCompletion,
+        std::env::current_dir()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string(),
+        session_id.to_string(),
+        crate::hook::HookContextData::Prompt(crate::hook::PromptData {
+            system: None,
+            query: Some(output.to_string()),
+        }),
+    );
+
+    match cfg
+        .hooks
+        .run(crate::hook::HookEvent::PreCompletion, &ctx)
+        .await
+    {
+        Ok((_, transformed_data)) => {
+            if let crate::hook::HookContextData::Prompt(p) = transformed_data
+                && let Some(feedback) = p.query
+                && feedback != output
+            {
+                return Ok(Some(feedback));
+            }
+            Ok(None)
+        }
+        Err(e) => {
+            tracing::warn!("completion.pre infrastructure failure: {}", e);
+            Ok(None)
+        }
+    }
 }
 
 pub async fn handle_query(

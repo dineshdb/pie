@@ -21,6 +21,9 @@ pub enum HookEvent {
     #[serde(rename = "tool.post")]
     #[strum(serialize = "tool.post")]
     PostToolUse,
+    #[serde(rename = "completion.pre")]
+    #[strum(serialize = "completion.pre")]
+    PreCompletion,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default, Display)]

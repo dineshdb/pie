@@ -515,6 +515,48 @@ def cmd_diagnostic(args, data):
     sys.exit(0)
 
 
+def cmd_verify(args, data):
+    output_feedback = ""
+
+    def run_check(cmd, label):
+        nonlocal output_feedback
+        try:
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if p.returncode != 0:
+                output_feedback += f"\n\n### [Auto-Verification Failure] {label}\n```\n{p.stdout}\n{p.stderr}\n```"
+                return False
+            return True
+        except Exception as e:
+            output_feedback += f"\n\n### [Auto-Verification Error] {label}: {e}"
+            return False
+
+    all_passed = True
+    if os.path.exists("Justfile"):
+        try:
+            just_tasks = subprocess.check_output(["just", "--summary"]).decode()
+            if "lint" in just_tasks:
+                if not run_check(["just", "lint"], "Linting"):
+                    all_passed = False
+            if "test" in just_tasks:
+                if not run_check(["just", "test"], "Testing"):
+                    all_passed = False
+        except Exception as e:
+            output_feedback += f"\n\n### [Auto-Verification Error] Just: {e}"
+            all_passed = False
+    elif os.path.exists("Cargo.toml"):
+        if not run_check(["cargo", "check"], "Cargo Check"):
+            all_passed = False
+
+    if not all_passed:
+        # data["query"] contains the LLM's last response
+        original_response = data.get("query", "")
+        feedback = f"{original_response}\n\n## Auto-Verification Feedback\nThe following errors were found during final verification. Please fix them before completing the task:\n{output_feedback}"
+        print(json.dumps({"query": feedback}))
+    else:
+        # Return empty object to indicate no transformation
+        print(json.dumps({}))
+
+
 # --- Main ---
 
 
@@ -537,6 +579,7 @@ def main():
         "diff-sentinel": cmd_diff_sentinel,
         "doom-loop": cmd_doom_loop,
         "diagnostic": cmd_diagnostic,
+        "verify": cmd_verify,
     }
 
     if cmd in handlers:

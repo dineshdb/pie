@@ -53,20 +53,10 @@ on_failure = "warn"
 matcher = { tools = ["write_file", "replace"] }
 
 [[hooks]]
-name = "incremental-build-check"
-event = "tool.post"
-type = "cmd"
-handler = "developer.py build-check"
-scope = "validation"
-on_failure = "warn"
-matcher = { tools = ["write_file", "replace"] }
-
-[[hooks]]
 name = "diff-sentinel"
 event = "tool.post"
 type = "cmd"
 handler = "developer.py diff-sentinel"
-scope = "transform"
 matcher = { tools = ["write_file", "replace"] }
 
 [[hooks]]
@@ -84,3 +74,10 @@ type = "cmd"
 handler = "developer.py diagnostic"
 scope = "transform"
 matcher = { tools = ["shell"] }
+
+[[hooks]]
+name = "final-verification"
+event = "completion.pre"
+type = "cmd"
+handler = "developer.py verify"
+scope = "transform"
