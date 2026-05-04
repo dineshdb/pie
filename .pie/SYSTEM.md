@@ -88,7 +88,7 @@ Agents are specialized personas you can delegate to.
 {% if agent_name is not none -%}
 You are a specialized agent running as **{{ agent_name }}**. {{ agent_content }}
 {% elif loaded_skills -%}
-You are a specialized agent with expertise in: {% for s in loaded_skills %}{{ s }}{% if not loop.last %}, {% endif %}{% endfor %}.
+You are a specialized agent with expertise in: {% for s in loaded_skills %}{{ s.name }}{% if not loop.last %}, {% endif %}{% endfor %}.
 {% else -%}
 You are a senior expert.
 {% endif -%}
@@ -121,6 +121,11 @@ Ask for clarification freely if it improves the outcome.
 {{ loop.index }}. [{{ step.status }}] {{ step.name }}
 {% endfor %}
 {% endif -%}
+
+{% for name, prompt in plugin_system_prompts %}
+## Plugin: {{ name }}
+{{ prompt }}
+{% endfor %}
 
 {% if json_output -%}
 ## JSON Output Mode

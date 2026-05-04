@@ -24,7 +24,7 @@ pub struct SystemPrompt<'a> {
     skills: &'a [Skill],
     agents: &'a [Agent],
     plugins: &'a [Plugin],
-    pub loaded_skills: Vec<&'a str>,
+    pub loaded_skills: Vec<&'a Skill>,
     agent: Option<&'a Agent>,
     json_output: bool,
     mode: RunMode,
@@ -76,10 +76,7 @@ impl<'a> SystemPrompt<'a> {
     /// Resolve all requirements (skills and their dependencies) from instructions.
     pub fn resolve(mut self, instructions: &Instructions) -> Self {
         let mentions: Vec<String> = instructions.mentions.iter().cloned().collect();
-        self.loaded_skills = Skill::resolve(self.skills, &mentions)
-            .into_iter()
-            .map(|s| s.name.as_str())
-            .collect();
+        self.loaded_skills = Skill::resolve(self.skills, &mentions);
         self
     }
 

@@ -115,7 +115,12 @@ impl Subagent {
         .with_agent(agent_name)
         .resolve(&query_instr);
 
-        self.load_skills(&sp.loaded_skills);
+        self.load_skills(
+            &sp.loaded_skills
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+        );
         let sys = sp.render();
         let user_content = format!("Query: {query}");
         let messages = vec![Message::User(UserMessage::new(user_content))];

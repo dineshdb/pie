@@ -264,7 +264,7 @@ async fn prepare_system_prompt(
     let loaded_skills = Arc::new(Mutex::new(
         sp.loaded_skills
             .iter()
-            .map(ToString::to_string)
+            .map(|s| s.name.clone())
             .collect::<HashSet<String>>(),
     ));
 

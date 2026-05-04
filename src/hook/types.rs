@@ -248,7 +248,7 @@ impl Hook {
         context: &HookContext,
         global_timeout_ms: u64,
     ) -> Result<HookOutcome> {
-        tracing::debug!(hook = %self.name, event = %context.event, scope = ?self.scope, "executing hook");
+        tracing::debug!(event = %context.event, scope = ?self.scope, hook = %self.name, "HOOK:");
 
         let timeout_ms = self.timeout_ms.unwrap_or(global_timeout_ms);
         let result = tokio::time::timeout(

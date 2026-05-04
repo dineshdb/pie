@@ -135,7 +135,7 @@ fn build_stream_request(
     let loaded_skills = Arc::new(Mutex::new(
         sp.loaded_skills
             .iter()
-            .map(ToString::to_string)
+            .map(|s| s.name.clone())
             .collect::<HashSet<String>>(),
     ));
     let loaded_refs = Arc::new(Mutex::new(HashSet::new()));
