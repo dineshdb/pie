@@ -1,0 +1,13 @@
+name = "rtk"
+version = "0.1.0"
+description = "Plugin to wrap all shell commands with rtk"
+
+[[hooks]]
+name = "rtk-wrap"
+event = "tool.pre"
+type = "cmd"
+# Robust: Uses jq for structural JSON manipulation.
+# Prefixes with 'rtk ' only if not already present.
+handler = "echo \"$PIE_INPUT\" | jq -c '.input.cmd |= if startswith(\"rtk \") then . else \"rtk \" + . end'"
+scope = "transform"
+matcher = { tools = ["shell"] }
