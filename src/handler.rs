@@ -297,10 +297,10 @@ async fn run_pre_prompt_hooks(
             .to_string_lossy()
             .to_string(),
         session_id.to_string(),
-        crate::hook::HookContextData::Prompt {
-            system: system.clone(),
-            query: query.raw.clone(),
-        },
+        crate::hook::HookContextData::Prompt(crate::hook::PromptData {
+            system: Some(system.clone()),
+            query: Some(query.raw.clone()),
+        }),
     );
 
     match cfg.hooks.run(crate::hook::HookEvent::PrePrompt, &ctx).await {
@@ -319,8 +319,10 @@ async fn run_pre_prompt_hooks(
                 ));
             }
 
-            if let Some(new_system) = transformed_data.get("system").and_then(|v| v.as_str()) {
-                system = new_system.to_string();
+            if let crate::hook::HookContextData::Prompt(p) = transformed_data
+                && let Some(s) = p.system
+            {
+                system = s;
             }
 
             for outcome in outcomes {

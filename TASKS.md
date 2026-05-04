@@ -8,3 +8,7 @@
 - [x] Plugin system for defining capability.
 - [ ] LLM router for cost based request routing
 - [ ] Persistent subagents
+- [ ] Highlight the skill and agent names in the input box.
+- [ ] Add hook for after conversation completion
+  - [ ] Use it to run completion checks and nudge the system to get to back to work.
+  - [ ] System Notifications

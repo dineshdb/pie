@@ -51,6 +51,15 @@ pub enum HookScope {
     Transform,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default, Display)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum ExecutionStrategy {
+    #[default]
+    Sequential,
+    Parallel,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct HookMatcher {
     pub tools: Option<Vec<String>>,
@@ -73,6 +82,8 @@ pub struct HookDef {
     pub timeout_ms: Option<u64>,
     #[serde(default)]
     pub scope: HookScope,
+    #[serde(default)]
+    pub strategy: ExecutionStrategy,
     #[serde(skip)]
     pub plugin_dir: Option<String>,
 }
@@ -95,6 +106,7 @@ pub struct Hook {
     pub on_failure: OnFailure,
     pub timeout_ms: Option<u64>,
     pub scope: HookScope,
+    pub strategy: ExecutionStrategy,
     pub kind: HookType,
     cmd_env: CmdEnv,
 }
@@ -108,6 +120,7 @@ impl Clone for Hook {
             on_failure: self.on_failure,
             timeout_ms: self.timeout_ms,
             scope: self.scope,
+            strategy: self.strategy,
             kind: self.kind,
             cmd_env: self.cmd_env.clone(),
         }
@@ -124,6 +137,7 @@ impl std::fmt::Debug for Hook {
             .field("on_failure", &self.on_failure)
             .field("timeout_ms", &self.timeout_ms)
             .field("scope", &self.scope)
+            .field("strategy", &self.strategy)
             .field("kind", &self.kind)
             .finish_non_exhaustive()
     }
@@ -141,6 +155,7 @@ impl From<HookDef> for Hook {
             on_failure: def.on_failure,
             timeout_ms: def.timeout_ms,
             scope: def.scope,
+            strategy: def.strategy,
             kind: def.kind,
             cmd_env,
         }
@@ -148,7 +163,6 @@ impl From<HookDef> for Hook {
 }
 
 impl Hook {
-    /// Pre-compute the command environment (PATH, env vars) once.
     fn build_cmd_env(def: &HookDef, plugin_dir: Option<&str>) -> CmdEnv {
         let mut env_vars = vec![(
             "PIE_DATABASE_PATH".to_string(),
@@ -187,7 +201,7 @@ impl Hook {
 
     async fn execute_cmd(&self, context: &HookContext) -> Result<HookOutcome> {
         let hook_name = self.name.clone();
-        let input_json = serde_json::to_string(context.standardized_data())?;
+        let input_json = serde_json::to_string(&context.data_json())?;
 
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
@@ -209,9 +223,11 @@ impl Hook {
 
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-        if let HookContextData::Tool { tool, output, .. } = &context.data {
-            cmd.env("PIE_TOOL", tool);
-            if let Some(out) = output {
+        if let HookContextData::Tool(d) = &context.data {
+            if let Some(t) = &d.tool {
+                cmd.env("PIE_TOOL", t);
+            }
+            if let Some(out) = &d.output {
                 cmd.env("PIE_OUTPUT", serde_json::to_string(out)?);
             }
         }
@@ -235,11 +251,7 @@ impl Hook {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
 
         Ok(HookOutcome::from_cmd(
-            &hook_name,
-            exit_code,
-            stdout,
-            stderr,
-            context.data.is_tool(),
+            &hook_name, exit_code, stdout, stderr, context,
         ))
     }
 
@@ -313,7 +325,7 @@ impl Hook {
         }
 
         if let Some(pattern) = &matcher.file_pattern {
-            let data = context.standardized_data();
+            let data = context.data_json();
             let path = data
                 .get("path")
                 .or_else(|| data.get("input").and_then(|i| i.get("path")))
@@ -340,26 +352,86 @@ pub struct HookContext {
     pub cwd: Arc<str>,
     pub session_id: Arc<str>,
     pub data: HookContextData,
-    /// Cached JSON representation to avoid repeated serialization.
-    cached_json: Arc<std::sync::OnceLock<serde_json::Value>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PromptData {
+    pub system: Option<String>,
+    pub query: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolData {
+    pub tool: Option<String>,
+    pub input: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<serde_json::Value>,
+}
+
+impl PromptData {
+    pub fn merge(&mut self, delta: Self) {
+        if let Some(delta_sys) = delta.system {
+            let mut current_sys = self.system.take().unwrap_or_default();
+            if !current_sys.is_empty()
+                && !current_sys.ends_with('\n')
+                && !delta_sys.starts_with('\n')
+            {
+                current_sys.push('\n');
+            }
+            current_sys.push_str(&delta_sys);
+            self.system = Some(current_sys);
+        }
+        if let Some(delta_query) = delta.query {
+            self.query = Some(delta_query);
+        }
+    }
+}
+
+impl ToolData {
+    pub fn merge(&mut self, delta: Self) {
+        if let Some(t) = delta.tool {
+            self.tool = Some(t);
+        }
+        if let Some(i) = delta.input {
+            self.input = Some(i);
+        }
+        if let Some(o) = delta.output {
+            self.output = Some(o);
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum HookContextData {
-    Prompt {
-        system: String,
-        query: String,
-    },
-    Tool {
-        tool: String,
-        input: serde_json::Value,
-        output: Option<serde_json::Value>,
-    },
+    Prompt(PromptData),
+    Tool(ToolData),
 }
 
 impl HookContextData {
     fn is_tool(&self) -> bool {
-        matches!(self, HookContextData::Tool { .. })
+        matches!(self, HookContextData::Tool(_))
+    }
+
+    fn merge(&mut self, delta_val: serde_json::Value) {
+        match self {
+            HookContextData::Prompt(p) => {
+                if let Ok(delta) = serde_json::from_value::<PromptData>(delta_val) {
+                    p.merge(delta);
+                }
+            }
+            HookContextData::Tool(t) => {
+                if let Ok(delta) = serde_json::from_value::<ToolData>(delta_val) {
+                    t.merge(delta);
+                }
+            }
+        }
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        match self {
+            HookContextData::Prompt(d) => serde_json::to_value(d).unwrap_or_default(),
+            HookContextData::Tool(d) => serde_json::to_value(d).unwrap_or_default(),
+        }
     }
 }
 
@@ -370,33 +442,17 @@ impl HookContext {
             cwd: cwd.into(),
             session_id: session_id.into(),
             data,
-            cached_json: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
-    pub fn standardized_data(&self) -> &serde_json::Value {
-        self.cached_json.get_or_init(|| match &self.data {
-            HookContextData::Prompt { system, query } => {
-                serde_json::json!({ "system": system, "query": query })
-            }
-            HookContextData::Tool {
-                tool,
-                input,
-                output,
-            } => {
-                if let Some(out) = output {
-                    serde_json::json!({ "tool": tool, "input": input, "output": out })
-                } else {
-                    serde_json::json!({ "tool": tool, "input": input })
-                }
-            }
-        })
+    pub fn data_json(&self) -> serde_json::Value {
+        self.data.to_json()
     }
 
     pub fn tool_name(&self) -> Option<&str> {
         match &self.data {
-            HookContextData::Tool { tool, .. } => Some(tool),
-            HookContextData::Prompt { .. } => None,
+            HookContextData::Tool(d) => d.tool.as_deref(),
+            HookContextData::Prompt(_) => None,
         }
     }
 }
@@ -439,54 +495,55 @@ pub struct ActionOutput {
 }
 
 impl HookOutcome {
-    /// Parse CLI command output into a hook outcome.
     fn from_cmd(
         name: &str,
         exit_code: Option<i32>,
         stdout: String,
         stderr: String,
-        is_tool: bool,
+        context: &HookContext,
     ) -> Self {
         if !stdout.is_empty()
             && let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&stdout)
-            && let Ok(action) = serde_json::from_value::<ActionOutput>(json_val.clone())
         {
-            if let Some(decision) = &action.decision {
-                match decision {
-                    ActionDecision::Block | ActionDecision::Deny => {
-                        return HookOutcome::Error {
-                            name: name.to_string(),
-                            exit_code,
-                            message: format!(
-                                "Operation blocked by decision:\n{}",
-                                action.message.unwrap_or(stdout)
-                            ),
-                        };
+            let action_res = serde_json::from_value::<ActionOutput>(json_val.clone());
+            if let Ok(action) = action_res {
+                if let Some(decision) = &action.decision {
+                    match decision {
+                        ActionDecision::Block | ActionDecision::Deny => {
+                            return HookOutcome::Error {
+                                name: name.to_string(),
+                                exit_code,
+                                message: format!(
+                                    "Operation blocked by decision:\n{}",
+                                    action.message.unwrap_or(stdout)
+                                ),
+                            };
+                        }
+                        ActionDecision::Allow if action.updated_input.is_none() => {
+                            return HookOutcome::Success;
+                        }
+                        _ => {}
                     }
-                    ActionDecision::Allow if action.updated_input.is_none() => {
-                        return HookOutcome::Success;
-                    }
-                    _ => {}
                 }
-            }
 
-            if let Some(data) = action.updated_input {
-                return HookOutcome::Transformed {
-                    name: name.to_string(),
-                    data,
-                };
-            }
+                if let Some(data) = action.updated_input {
+                    return HookOutcome::Transformed {
+                        name: name.to_string(),
+                        data,
+                    };
+                }
 
-            // Direct JSON object as transform
-            if is_tool {
-                return HookOutcome::Transformed {
-                    name: name.to_string(),
-                    data: json_val,
-                };
-            }
+                // Return raw JSON as delta — the pipeline handles merging.
+                if context.data.is_tool() || action.decision.is_none() {
+                    return HookOutcome::Transformed {
+                        name: name.to_string(),
+                        data: json_val,
+                    };
+                }
 
-            if matches!(action.decision, Some(ActionDecision::Allow)) {
-                return HookOutcome::Success;
+                if matches!(action.decision, Some(ActionDecision::Allow)) {
+                    return HookOutcome::Success;
+                }
             }
         }
 
@@ -574,7 +631,7 @@ impl HooksManager {
         &self,
         event: HookEvent,
         context: &HookContext,
-    ) -> Result<(Vec<HookOutcome>, serde_json::Value)> {
+    ) -> Result<(Vec<HookOutcome>, HookContextData)> {
         let applicable: Vec<&Hook> = self
             .hooks
             .iter()
@@ -582,24 +639,17 @@ impl HooksManager {
             .collect();
 
         if applicable.is_empty() {
-            return Ok((Vec::new(), context.standardized_data().clone()));
+            return Ok((Vec::new(), context.data.clone()));
         }
 
         let mut all_outcomes = Vec::new();
-        let mut current_data = context.standardized_data().clone();
+        let mut current_data = context.data.clone();
 
-        let validations: Vec<&Hook> = applicable
-            .iter()
-            .filter(|h| h.scope == HookScope::Validation)
-            .copied()
-            .collect();
-        let transforms: Vec<&Hook> = applicable
-            .iter()
-            .filter(|h| h.scope == HookScope::Transform)
-            .copied()
-            .collect();
+        let (validations, transforms): (Vec<_>, Vec<_>) = applicable
+            .into_iter()
+            .partition(|h| h.scope == HookScope::Validation);
 
-        // 1. Validation hooks in parallel
+        // Validation hooks run in parallel — any error stops the pipeline.
         if !validations.is_empty() {
             let futures: Vec<_> = validations
                 .iter()
@@ -618,42 +668,50 @@ impl HooksManager {
             }
         }
 
-        // 2. Transform hooks sequentially
-        for hook in transforms {
-            let transform_context = HookContext {
-                event: context.event,
-                cwd: context.cwd.clone(),
-                session_id: context.session_id.clone(),
-                data: match &context.data {
-                    HookContextData::Prompt { query, .. } => HookContextData::Prompt {
-                        system: current_data
-                            .get("system")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string(),
-                        query: query.clone(),
-                    },
-                    HookContextData::Tool { tool, .. } => HookContextData::Tool {
-                        tool: current_data
-                            .get("tool")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or(tool)
-                            .to_string(),
-                        input: current_data
-                            .get("input")
-                            .cloned()
-                            .unwrap_or_else(|| current_data.clone()),
-                        output: current_data.get("output").cloned(),
-                    },
-                },
-                cached_json: Arc::new(std::sync::OnceLock::new()),
-            };
+        // Transform hooks: sequential or parallel batches.
+        let mut i = 0;
+        while i < transforms.len() {
+            let strategy = transforms.get(i).map(|h| h.strategy).unwrap_or_default();
 
-            let outcome = hook.execute(&transform_context, self.timeout_ms).await?;
-            if let HookOutcome::Transformed { data, .. } = &outcome {
-                current_data = data.clone();
+            if strategy == ExecutionStrategy::Sequential {
+                if let Some(hook) = transforms.get(i) {
+                    let transform_context =
+                        Self::build_transform_context(event, context, &current_data);
+                    let outcome = hook.execute(&transform_context, self.timeout_ms).await?;
+                    if let HookOutcome::Transformed { data, .. } = &outcome {
+                        current_data.merge(data.clone());
+                    }
+                    all_outcomes.push(outcome);
+                }
+                i += 1;
+            } else {
+                let mut batch = Vec::new();
+                while i < transforms.len()
+                    && transforms.get(i).map(|h| h.strategy) == Some(ExecutionStrategy::Parallel)
+                {
+                    if let Some(hook) = transforms.get(i) {
+                        batch.push(*hook);
+                    }
+                    i += 1;
+                }
+
+                let transform_context =
+                    Self::build_transform_context(event, context, &current_data);
+
+                let futures: Vec<_> = batch
+                    .iter()
+                    .map(|h| h.execute(&transform_context, self.timeout_ms))
+                    .collect();
+                let results = join_all(futures).await;
+
+                for outcome_res in results {
+                    let outcome = outcome_res?;
+                    if let HookOutcome::Transformed { data, .. } = &outcome {
+                        current_data.merge(data.clone());
+                    }
+                    all_outcomes.push(outcome);
+                }
             }
-            all_outcomes.push(outcome);
 
             if all_outcomes
                 .iter()
@@ -664,5 +722,18 @@ impl HooksManager {
         }
 
         Ok((all_outcomes, current_data))
+    }
+
+    fn build_transform_context(
+        event: HookEvent,
+        base_ctx: &HookContext,
+        current_data: &HookContextData,
+    ) -> HookContext {
+        HookContext {
+            event,
+            cwd: base_ctx.cwd.clone(),
+            session_id: base_ctx.session_id.clone(),
+            data: current_data.clone(),
+        }
     }
 }

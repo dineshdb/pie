@@ -27,6 +27,7 @@ mod tests {
             on_failure: OnFailure::Warn,
             timeout_ms: None,
             scope: HookScope::Validation,
+            strategy: ExecutionStrategy::Sequential,
             plugin_dir: None,
         });
 
@@ -34,11 +35,11 @@ mod tests {
             HookEvent::PreToolUse,
             "/".into(),
             "123".into(),
-            HookContextData::Tool {
-                tool: "shell".into(),
-                input: json!({}),
+            HookContextData::Tool(ToolData {
+                tool: Some("shell".into()),
+                input: Some(json!({})),
                 output: None,
-            },
+            }),
         );
 
         assert!(hook.matches(&ctx));
@@ -47,11 +48,11 @@ mod tests {
             HookEvent::PreToolUse,
             "/".into(),
             "123".into(),
-            HookContextData::Tool {
-                tool: "write_file".into(),
-                input: json!({}),
+            HookContextData::Tool(ToolData {
+                tool: Some("write_file".into()),
+                input: Some(json!({})),
                 output: None,
-            },
+            }),
         );
         assert!(!hook.matches(&ctx_wrong));
     }
@@ -67,6 +68,7 @@ mod tests {
             on_failure: OnFailure::Abort,
             timeout_ms: None,
             scope: HookScope::Validation,
+            strategy: ExecutionStrategy::Sequential,
             plugin_dir: None,
         });
         let hook2 = Hook::from(HookDef {
@@ -78,6 +80,7 @@ mod tests {
             on_failure: OnFailure::Abort,
             timeout_ms: None,
             scope: HookScope::Validation,
+            strategy: ExecutionStrategy::Sequential,
             plugin_dir: None,
         });
 
@@ -85,11 +88,11 @@ mod tests {
             HookEvent::PreToolUse,
             "/".into(),
             "123".into(),
-            HookContextData::Tool {
-                tool: "shell".into(),
-                input: json!({}),
+            HookContextData::Tool(ToolData {
+                tool: Some("shell".into()),
+                input: Some(json!({})),
                 output: None,
-            },
+            }),
         );
 
         let manager = HooksManager::new(vec![hook1, hook2], None);
@@ -113,6 +116,7 @@ mod tests {
             on_failure: OnFailure::Abort,
             timeout_ms: None,
             scope: HookScope::Transform,
+            strategy: ExecutionStrategy::Sequential,
             plugin_dir: None,
         });
         let hook2 = Hook::from(HookDef {
@@ -124,6 +128,7 @@ mod tests {
             on_failure: OnFailure::Abort,
             timeout_ms: None,
             scope: HookScope::Transform,
+            strategy: ExecutionStrategy::Sequential,
             plugin_dir: None,
         });
 
@@ -131,11 +136,11 @@ mod tests {
             HookEvent::PreToolUse,
             "/".into(),
             "123".into(),
-            HookContextData::Tool {
-                tool: "shell".into(),
-                input: json!({}),
+            HookContextData::Tool(ToolData {
+                tool: Some("shell".into()),
+                input: Some(json!({})),
                 output: None,
-            },
+            }),
         );
 
         let manager = HooksManager::new(vec![hook1, hook2], None);
@@ -143,33 +148,67 @@ mod tests {
 
         match result {
             Ok((outcomes, data)) => {
-                if outcomes.len() != 2 {
-                    eprintln!("TEST FAILURE DIAGNOSTICS:");
-                    eprintln!("Expected 2 outcomes, got {}", outcomes.len());
-                    for (i, outcome) in outcomes.iter().enumerate() {
-                        eprintln!("Outcome {i}: {outcome:?}");
-                        if let HookOutcome::Error { message, .. } = outcome {
-                            eprintln!("Error Message: {message}");
-                        }
+                assert_eq!(outcomes.len(), 2);
+                match data {
+                    HookContextData::Tool(t) => {
+                        assert_eq!(t.input.and_then(|i| i.get("a").cloned()), Some(json!(2)));
                     }
+                    _ => panic!("Expected Tool data"),
                 }
-                assert_eq!(
-                    outcomes.len(),
-                    2,
-                    "Sequential transform should produce 2 outcomes"
-                );
+            }
+            Err(e) => panic!("Hook execution infrastructure failed: {e}"),
+        }
+    }
 
-                let second_outcome = outcomes.get(1).expect("Should have a second outcome");
-                assert!(
-                    matches!(second_outcome, HookOutcome::Transformed { .. }),
-                    "Second outcome should be Transformed, got: {second_outcome:?}",
-                );
+    #[tokio::test]
+    async fn test_run_hooks_parallel_pre_prompt_concatenation() {
+        let hook1 = Hook::from(HookDef {
+            name: "p1".into(),
+            event: HookEvent::PrePrompt,
+            kind: HookType::Cmd,
+            handler: r#"printf '{"system": "P1"}'"#.into(),
+            matcher: None,
+            on_failure: OnFailure::Abort,
+            timeout_ms: None,
+            scope: HookScope::Transform,
+            strategy: ExecutionStrategy::Parallel,
+            plugin_dir: None,
+        });
+        let hook2 = Hook::from(HookDef {
+            name: "p2".into(),
+            event: HookEvent::PrePrompt,
+            kind: HookType::Cmd,
+            handler: r#"printf '{"system": "P2"}'"#.into(),
+            matcher: None,
+            on_failure: OnFailure::Abort,
+            timeout_ms: None,
+            scope: HookScope::Transform,
+            strategy: ExecutionStrategy::Parallel,
+            plugin_dir: None,
+        });
 
-                assert_eq!(
-                    data.get("input").and_then(|i| i.get("a")),
-                    Some(&json!(2)),
-                    "Final data should reflect the second transformation. Full data: {data:?}",
-                );
+        let ctx = HookContext::new(
+            HookEvent::PrePrompt,
+            "/".into(),
+            "123".into(),
+            HookContextData::Prompt(PromptData {
+                system: Some("S0".into()),
+                query: Some("Q".into()),
+            }),
+        );
+
+        let manager = HooksManager::new(vec![hook1, hook2], None);
+        let result = manager.run(HookEvent::PrePrompt, &ctx).await;
+
+        match result {
+            Ok((outcomes, data)) => {
+                assert_eq!(outcomes.len(), 2);
+                match data {
+                    HookContextData::Prompt(p) => {
+                        assert_eq!(p.system.unwrap(), "S0\nP1\nP2");
+                    }
+                    _ => panic!("Expected Prompt data"),
+                }
             }
             Err(e) => panic!("Hook execution infrastructure failed: {e}"),
         }

@@ -8,6 +8,7 @@ event = "prompt.pre"
 type = "cmd"
 handler = "developer.py ground"
 scope = "transform"
+strategy = "parallel"
 
 [[hooks]]
 name = "memory-grounding"
@@ -15,6 +16,7 @@ event = "prompt.pre"
 type = "cmd"
 handler = "developer.py memory-ground"
 scope = "transform"
+strategy = "parallel"
 
 [[hooks]]
 name = "safety-guard"
@@ -30,6 +32,7 @@ event = "prompt.pre"
 type = "cmd"
 handler = "developer.py step-alignment"
 scope = "transform"
+strategy = "parallel"
 
 [[hooks]]
 name = "step-integrity"

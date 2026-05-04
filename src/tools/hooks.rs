@@ -1,5 +1,5 @@
 use crate::config::CONFIG;
-use crate::hook::{HookContext, HookContextData, HookEvent, HookOutcome};
+use crate::hook::{HookContext, HookContextData, HookEvent, HookOutcome, ToolData};
 use agentsdk::core::tools::{Tool, ToolExecute};
 use serde_json::Value;
 use std::sync::Arc;
@@ -85,11 +85,11 @@ async fn run_pre_tool_hooks(
         HookEvent::PreToolUse,
         cwd.to_string(),
         session_id.to_string(),
-        HookContextData::Tool {
-            tool: current_tool_name.clone(),
-            input: current_params.clone(),
+        HookContextData::Tool(ToolData {
+            tool: Some(current_tool_name.clone()),
+            input: Some(current_params.clone()),
             output: None,
-        },
+        }),
     );
 
     let (outcomes, transformed_data) = cfg
@@ -98,11 +98,13 @@ async fn run_pre_tool_hooks(
         .await
         .map_err(|e| e.to_string())?;
 
-    if let Some(new_tool) = transformed_data.get("tool").and_then(|v| v.as_str()) {
-        current_tool_name = new_tool.to_string();
-    }
-    if let Some(new_input) = transformed_data.get("input").cloned() {
-        current_params = new_input;
+    if let HookContextData::Tool(t) = transformed_data {
+        if let Some(new_tool) = t.tool {
+            current_tool_name = new_tool;
+        }
+        if let Some(new_input) = t.input {
+            current_params = new_input;
+        }
     }
 
     let mut errors = Vec::new();
@@ -142,18 +144,20 @@ async fn run_post_tool_hooks(
         HookEvent::PostToolUse,
         cwd.to_string(),
         session_id.to_string(),
-        HookContextData::Tool {
-            tool: tool_name.to_string(),
-            input: params,
+        HookContextData::Tool(ToolData {
+            tool: Some(tool_name.to_string()),
+            input: Some(params),
             output: Some(output_json),
-        },
+        }),
     );
 
     match cfg.hooks.run(HookEvent::PostToolUse, &hook_ctx).await {
         Ok((outcomes, transformed_data)) => {
-            if let Some(transformed_output) = transformed_data.get("output") {
+            if let HookContextData::Tool(t) = transformed_data
+                && let Some(transformed_output) = t.output
+            {
                 new_output = Some(match transformed_output {
-                    Value::String(s) => s.clone(),
+                    Value::String(s) => s,
                     other => serde_json::to_string(&other).unwrap_or_else(|_| output.to_string()),
                 });
             }

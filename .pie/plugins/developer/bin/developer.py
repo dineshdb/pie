@@ -239,7 +239,7 @@ def get_repo_development_prompts():
 
 
 def cmd_ground(args, data):
-    system_prompt = data.get("system", "")
+    new_content = ""
     sections = [
         ("Git Context", get_git_status()),
         ("Recently Modified", get_recent_files()),
@@ -250,36 +250,36 @@ def cmd_ground(args, data):
     ]
     for title, content in sections:
         if content.strip():
-            system_prompt += f"\n\n### {title}\n{content.strip()}"
-    print(json.dumps({"system": system_prompt}))
+            new_content += f"\n\n### {title}\n{content.strip()}"
+    print(json.dumps({"system": new_content}))
 
 
 def cmd_memory_ground(args, data):
-    system_prompt = data.get("system", "")
+    new_content = ""
     cwd = os.environ.get("PIE_CWD", os.getcwd())
 
     # Global Personal Memory
     global_gemini = os.path.expanduser("~/.gemini/GEMINI.md")
     if os.path.exists(global_gemini):
         with open(global_gemini, "r") as f:
-            system_prompt += f"\n\n### Global Personal Memory\n{f.read()}"
+            new_content += f"\n\n### Global Personal Memory\n{f.read()}"
 
     # Private Project Memory
     private_memory = os.path.expanduser("~/.gemini/tmp/pie/memory/MEMORY.md")
     if os.path.exists(private_memory):
         with open(private_memory, "r") as f:
-            system_prompt += f"\n\n### Private Project Memory\n{f.read()}"
+            new_content += f"\n\n### Private Project Memory\n{f.read()}"
 
     # Project & Subdirectory Instructions
     instructions = find_upward("GEMINI.md", cwd)
     if instructions:
-        system_prompt += "\n\n## Project Instructions (GEMINI.md)"
+        new_content += "\n\n## Project Instructions (GEMINI.md)"
         for path in reversed(instructions):
             with open(path, "r") as f:
                 rel_path = os.path.relpath(path, cwd)
-                system_prompt += f"\n\n### From {rel_path}:\n{f.read()}"
+                new_content += f"\n\n### From {rel_path}:\n{f.read()}"
 
-    print(json.dumps({"system": system_prompt}))
+    print(json.dumps({"system": new_content}))
 
 
 def cmd_guard(args, data):
@@ -360,7 +360,7 @@ def cmd_guard(args, data):
 
 
 def cmd_step_alignment(args, data):
-    system_prompt = data.get("system", "")
+    new_content = ""
     session_id = os.environ.get("PIE_SESSION_ID", "default")
     db = get_db()
     if db:
@@ -371,9 +371,9 @@ def cmd_step_alignment(args, data):
         )
         turns = cursor.fetchone()[0]
         if turns >= 3:
-            system_prompt += f"\n\n### [Task Alignment Alert]\nYou have taken **{turns} turns** without updating your task list. \n**Mandate**: Ensure your plan is still accurate."
+            new_content = f"\n\n### [Task Alignment Alert]\nYou have taken **{turns} turns** without updating your task list. \n**Mandate**: Ensure your plan is still accurate."
         db.close()
-    print(json.dumps({"system": system_prompt}))
+    print(json.dumps({"system": new_content}))
 
 
 def cmd_step_integrity(args, data):

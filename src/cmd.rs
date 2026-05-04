@@ -15,8 +15,8 @@ pub fn handle_status(config: &ResolvedConfig, registry: &Arc<crate::registry::Re
     println!("Total Hooks: {}", config.hooks.hooks.len());
     for hook in &config.hooks.hooks {
         println!(
-            " - {}: event={}, scope={:?}, kind={:?}",
-            hook.name, hook.event, hook.scope, hook.kind
+            " - {}: event={}, scope={:?}, strategy={:?}, kind={:?}",
+            hook.name, hook.event, hook.scope, hook.strategy, hook.kind
         );
     }
 
