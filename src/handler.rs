@@ -8,7 +8,7 @@ use crate::tools::plan::plan_tools;
 use crate::tools::subagent::Subagent;
 use crate::tools::{
     execute_skill_script_tool, load_references_tool, load_skills_tool, read_file_tool,
-    replace_tool, shell, subagent_tool, write_file_tool,
+    replace_tool, shell, subagent_tool, websearch, write_file_tool,
 };
 use agentsdk::core::LanguageModel;
 use agentsdk::core::utils::step_count_is;
@@ -232,6 +232,7 @@ fn build_tools(
         load_skills_tool(registry.clone(), Some(loaded_skills)),
         load_references_tool(Arc::new(Mutex::new(HashSet::new()))),
         execute_skill_script_tool(sandbox.clone()),
+        websearch(sandbox.clone(), pool.clone(), session_id.to_string()),
         subagent_tool(model, registry, sandbox, pool.clone()),
     ];
 

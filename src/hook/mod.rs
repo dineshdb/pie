@@ -153,7 +153,7 @@ mod tests {
                     HookContextData::Tool(t) => {
                         assert_eq!(t.input.and_then(|i| i.get("a").cloned()), Some(json!(2)));
                     }
-                    _ => panic!("Expected Tool data"),
+                    HookContextData::Prompt(_) => panic!("Expected Tool data"),
                 }
             }
             Err(e) => panic!("Hook execution infrastructure failed: {e}"),
@@ -207,7 +207,7 @@ mod tests {
                     HookContextData::Prompt(p) => {
                         assert_eq!(p.system.unwrap(), "S0\nP1\nP2");
                     }
-                    _ => panic!("Expected Prompt data"),
+                    HookContextData::Tool(_) => panic!("Expected Prompt data"),
                 }
             }
             Err(e) => panic!("Hook execution infrastructure failed: {e}"),

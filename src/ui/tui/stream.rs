@@ -8,7 +8,7 @@ use crate::tools::plan::plan_tools;
 use crate::tools::subagent::Subagent;
 use crate::tools::{
     execute_skill_script_tool, load_references_tool, load_skills_tool, read_file_tool,
-    replace_tool, shell, subagent_tool, write_file_tool,
+    replace_tool, shell, subagent_tool, websearch, write_file_tool,
 };
 use crate::ui::tui::components::input::InputComponent;
 use crate::ui::tui::realm::StreamEvent;
@@ -163,6 +163,11 @@ fn build_stream_request(
         .with_tool(load_skills_tool(ctx.registry.clone(), Some(loaded_skills)))
         .with_tool(load_references_tool(loaded_refs))
         .with_tool(execute_skill_script_tool(ctx.sandbox.clone()))
+        .with_tool(websearch(
+            ctx.sandbox.clone(),
+            pool.clone(),
+            session_id.clone(),
+        ))
         .with_tool(subagent_tool(
             ctx.model.clone(),
             ctx.registry.clone(),
