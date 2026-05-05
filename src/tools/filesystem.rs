@@ -33,6 +33,18 @@ struct ReplaceInput {
     new_string: String,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct ListDirectoryInput {
+    /// Path to the directory to list.
+    path: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct GlobInput {
+    /// The glob pattern to match against (e.g., '**/*.rs', 'src/*.ts').
+    pattern: String,
+}
+
 fn validate_path(path: &str) -> Result<PathBuf, String> {
     let p = Path::new(path);
     if p.is_absolute() {
@@ -58,33 +70,22 @@ pub fn read_file_tool() -> Tool {
         .description("Read the content of a file, optionally within a line range.")
         .input_schema(schemars::schema_for!(ReadFileInput))
         .execute(ToolExecute::from_sync(|_ctx, params| {
-            super::emit_tool_input("read_file", &params);
-            let path_str = params
-                .get("path")
-                .and_then(serde_json::Value::as_str)
-                .ok_or("path is required")?;
-            let path = validate_path(path_str)?;
+            let input: ReadFileInput =
+                serde_json::from_value(params).map_err(|e| format!("Invalid input: {e}"))?;
+            super::emit_tool_input(
+                "read_file",
+                &serde_json::to_value(&input).unwrap_or_default(),
+            );
 
+            let path = validate_path(&input.path)?;
             let content =
                 fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))?;
             let lines: Vec<&str> = content.lines().collect();
-
-            let start = params
-                .get("start_line")
-                .and_then(serde_json::Value::as_u64)
-                .map_or(1, |v| usize::try_from(v).unwrap_or(usize::MAX))
-                .max(1);
-            let end = params
-                .get("end_line")
-                .and_then(serde_json::Value::as_u64)
-                .map_or(lines.len(), |v| usize::try_from(v).unwrap_or(usize::MAX))
-                .min(lines.len());
+            let start = input.start_line.unwrap_or(1).max(1);
+            let end = input.end_line.unwrap_or(lines.len()).min(lines.len());
 
             if start > end {
-                return Ok(
-                    json!({ "path": path_str, "content": "", "total_lines": lines.len() })
-                        .to_string(),
-                );
+                return Err(json!({ "error": "reached beyond the end of file"}).to_string());
             }
 
             let slice = lines
@@ -93,7 +94,7 @@ pub fn read_file_tool() -> Tool {
             let result_content = slice.join("\n");
 
             Ok(json!({
-                "path": path_str,
+                "path": input.path,
                 "content": result_content,
                 "start_line": start,
                 "end_line": end,
@@ -114,27 +115,20 @@ pub fn write_file_tool(pool: Arc<crate::db::DbPool>, session_id: String) -> Tool
         .input_schema(schemars::schema_for!(WriteFileInput))
         .execute(ToolExecute::from_sync(move |_ctx, params| {
             super::emit_tool_input("write_file", &params);
-            enforce_planning(&pool, &session_id, "write_file")?;
+            let input: WriteFileInput =
+                serde_json::from_value(params).map_err(|e| format!("Invalid input: {e}"))?;
 
-            let path_str = params
-                .get("path")
-                .and_then(serde_json::Value::as_str)
-                .ok_or("path is required")?;
-            let content = params
-                .get("content")
-                .and_then(serde_json::Value::as_str)
-                .ok_or("content is required")?;
-            let path = validate_path(path_str)?;
+            enforce_planning(&pool, &session_id, "write_file")?;
+            let path = validate_path(&input.path)?;
 
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)
                     .map_err(|e| format!("Failed to create directories: {e}"))?;
             }
 
-            fs::write(&path, content).map_err(|e| format!("Failed to write file: {e}"))?;
-
+            fs::write(&path, &input.content).map_err(|e| format!("Failed to write file: {e}"))?;
             Ok(
-                json!({ "status": "success", "path": path_str, "bytes": content.len() })
+                json!({ "status": "success", "path": input.path, "bytes": input.content.len() })
                     .to_string(),
             )
         }))
@@ -153,34 +147,94 @@ pub fn replace_tool(pool: Arc<crate::db::DbPool>, session_id: String) -> Tool {
             super::emit_tool_input("replace", &params);
             enforce_planning(&pool, &session_id, "replace")?;
 
-            let path_str = params
-                .get("path")
-                .and_then(serde_json::Value::as_str)
-                .ok_or("path is required")?;
-            let old_string = params
-                .get("old_string")
-                .and_then(serde_json::Value::as_str)
-                .ok_or("old_string is required")?;
-            let new_string = params
-                .get("new_string")
-                .and_then(serde_json::Value::as_str)
-                .ok_or("new_string is required")?;
-            let path = validate_path(path_str)?;
+            let input: ReplaceInput =
+                serde_json::from_value(params).map_err(|e| format!("Invalid input: {e}"))?;
 
-            let content = fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))?;
-
-            let occurrences = content.matches(old_string).count();
+            let path = validate_path(&input.path)?;
+            let content =
+                fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))?;
+            let occurrences = content.matches(&input.old_string).count();
             if occurrences == 0 {
-                return Err(format!("String not found in {path_str}"));
+                return Err(format!("String not found in {}", input.path));
             }
             if occurrences > 1 {
-                return Err(format!("String found {occurrences} times in {path_str}. Please provide more context to make it unique."));
+                return Err(format!(
+                    "String found {occurrences} times in {}. Please provide more context to make it unique.",
+                    input.path
+                ));
             }
 
-            let new_content = content.replace(old_string, new_string);
+            let new_content = content.replace(&input.old_string, &input.new_string);
             fs::write(&path, new_content).map_err(|e| format!("Failed to write file: {e}"))?;
 
-            Ok(json!({ "status": "success", "path": path_str }).to_string())
+            Ok(json!({ "status": "success", "path": input.path }).to_string())
+        }))
+        .build()
+        .unwrap()
+}
+
+#[allow(clippy::unwrap_used)]
+#[must_use]
+pub fn list_directory_tool() -> Tool {
+    Tool::builder()
+        .name("list_directory")
+        .description(
+            "List the names of files and subdirectories within a specified directory path.",
+        )
+        .input_schema(schemars::schema_for!(ListDirectoryInput))
+        .execute(ToolExecute::from_sync(|_ctx, params| {
+            let input: ListDirectoryInput =
+                serde_json::from_value(params).map_err(|e| format!("Invalid input: {e}"))?;
+            super::emit_tool_input(
+                "list_directory",
+                &serde_json::to_value(&input).unwrap_or_default(),
+            );
+
+            let path = validate_path(&input.path)?;
+
+            let entries =
+                fs::read_dir(&path).map_err(|e| format!("Failed to read directory: {e}"))?;
+            let mut result = Vec::new();
+            for entry in entries {
+                let entry = entry.map_err(|e| format!("Error reading directory entry: {e}"))?;
+                let file_name = entry.file_name().to_string_lossy().to_string();
+                let file_type = entry
+                    .file_type()
+                    .map_err(|e| format!("Error reading file type: {e}"))?;
+                let is_dir = file_type.is_dir();
+                result.push(json!({
+                    "name": file_name,
+                    "is_directory": is_dir,
+                }));
+            }
+
+            Ok(json!({ "path": input.path, "entries": result }).to_string())
+        }))
+        .build()
+        .unwrap()
+}
+
+#[allow(clippy::unwrap_used)]
+#[must_use]
+pub fn glob_tool() -> Tool {
+    Tool::builder()
+        .name("glob")
+        .description("Find files matching a specific glob pattern.")
+        .input_schema(schemars::schema_for!(GlobInput))
+        .execute(ToolExecute::from_sync(|_ctx, params| {
+            super::emit_tool_input("glob", &params);
+            let input: GlobInput =
+                serde_json::from_value(params).map_err(|e| format!("Invalid input: {e}"))?;
+
+            let mut matches = Vec::new();
+            for entry in
+                glob::glob(&input.pattern).map_err(|e| format!("Invalid glob pattern: {e}"))?
+            {
+                let path = entry.map_err(|e| format!("Glob error: {e}"))?;
+                matches.push(path.to_string_lossy().to_string());
+            }
+
+            Ok(json!({ "pattern": input.pattern, "matches": matches }).to_string())
         }))
         .build()
         .unwrap()

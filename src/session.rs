@@ -72,6 +72,7 @@ impl rusqlite::types::FromSql for DbUuid {
 
 // ── Session ────────────────────────────────────────────────────────
 
+#[derive(Clone)]
 pub struct Session {
     pub id: Uuid,
     pub pool: Arc<DbPool>,

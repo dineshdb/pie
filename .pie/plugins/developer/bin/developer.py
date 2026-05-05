@@ -10,7 +10,6 @@ import re
 import sqlite3
 import subprocess
 import sys
-from datetime import datetime
 
 # --- Utilities ---
 
@@ -386,11 +385,16 @@ def cmd_step_integrity(args, data):
             if db:
                 cursor = db.cursor()
                 cursor.execute(
-                    "SELECT tool FROM tool_calls WHERE session_id = ? ORDER BY ts DESC LIMIT 3",
+                    "SELECT content FROM messages WHERE session_id = ? AND role = 'tool' ORDER BY ts DESC LIMIT 3",
                     (session_id,),
                 )
                 recent = [r[0] for r in cursor.fetchall()]
-                if not any(t in ["write_file", "replace", "shell"] for t in recent):
+                # content format is "name: params → result" or "name: params"
+                productive_tools = ["write_file", "replace", "shell"]
+                if not any(
+                    any(t in content.split(":")[0] for t in productive_tools)
+                    for content in recent
+                ):
                     print(
                         f"### [Step Integrity Warning]\nYou are marking steps as `completed`, but your recent actions were purely explorative.",
                         file=sys.stderr,
@@ -475,19 +479,19 @@ def cmd_doom_loop(args, data):
             cursor = db.cursor()
             curr_hash = hashlib.md5(str(output).encode()).hexdigest()
             cursor.execute(
-                "SELECT turn_id FROM tool_calls WHERE session_id = ? ORDER BY ts DESC LIMIT 1",
+                "SELECT id FROM messages WHERE session_id = ? AND role = 'tool' ORDER BY ts DESC LIMIT 1",
                 (session_id,),
             )
             row = cursor.fetchone()
             if row:
-                turn_id = row[0]
+                msg_id = row[0]
                 cursor.execute(
-                    "UPDATE tool_calls SET fail_hash = ? WHERE session_id = ? AND turn_id = ?",
-                    (curr_hash, session_id, turn_id),
+                    "UPDATE messages SET fail_hash = ? WHERE id = ?",
+                    (curr_hash, msg_id),
                 )
                 cursor.execute(
-                    "SELECT count(*) FROM tool_calls WHERE session_id = ? AND turn_id < ? AND fail_hash = ?",
-                    (session_id, turn_id, curr_hash),
+                    "SELECT count(*) FROM messages WHERE session_id = ? AND id < ? AND fail_hash = ?",
+                    (session_id, msg_id, curr_hash),
                 )
                 if cursor.fetchone()[0] > 0:
                     print(
@@ -544,7 +548,10 @@ def cmd_verify(args, data):
             output_feedback += f"\n\n### [Auto-Verification Error] Just: {e}"
             all_passed = False
     elif os.path.exists("Cargo.toml"):
-        if not run_check(["cargo", "check"], "Cargo Check"):
+        if not run_check(["cargo", "check", "--color", "never"], "Rust Check"):
+            all_passed = False
+    elif os.path.exists("package.json"):
+        if not run_check(["npm", "run", "lint"], "Node.js Lint"):
             all_passed = False
 
     if not all_passed:

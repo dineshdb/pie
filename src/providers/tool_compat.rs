@@ -1,9 +1,19 @@
 use agentsdk::core::language_model::{LanguageModelResponse, LanguageModelResponseContentType};
 use agentsdk::core::tools::ToolCallInfo;
 
+pub const CONTROL_TOKENS: &[&str] = &["<eos>", "<|end|>", "</think_end>", "<|end_of_turn|>"];
+
+/// Strip provider control tokens that leak as text.
+pub fn strip_control_tokens(text: &str) -> String {
+    if !text.contains('<') {
+        return text.to_string();
+    }
+    CONTROL_TOKENS
+        .iter()
+        .fold(text.to_string(), |acc, tok| acc.replace(tok, ""))
+}
+
 /// Pass through tool calls as-is. If the tool name doesn't match a registered
-/// tool, `ToolList::execute` returns "Tool not found" and the model self-corrects
-/// to use `shell` directly (since skill content is already in the system prompt).
 fn normalize_tool_call(name: &str, input: serde_json::Value) -> LanguageModelResponseContentType {
     let mut info = ToolCallInfo::new(name);
     info.input(input);

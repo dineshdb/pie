@@ -35,15 +35,6 @@ scope = "transform"
 strategy = "parallel"
 
 [[hooks]]
-name = "step-integrity"
-event = "tool.pre"
-type = "cmd"
-handler = "developer.py step-integrity"
-scope = "validation"
-on_failure = "warn"
-matcher = { tools = ["plan_step_update"] }
-
-[[hooks]]
 name = "test-first-check"
 event = "tool.pre"
 type = "cmd"
@@ -65,7 +56,7 @@ event = "tool.post"
 type = "cmd"
 handler = "developer.py doom-loop"
 scope = "transform"
-matcher = { tools = ["shell", "build_check"] }
+matcher = { tools = ["shell"] }
 
 [[hooks]]
 name = "error-enrichment"
@@ -81,3 +72,4 @@ event = "completion.pre"
 type = "cmd"
 handler = "developer.py verify"
 scope = "transform"
+timeout_ms = 300000

@@ -37,7 +37,7 @@ futures = "0.3"
 glob = "0.3"
 include_dir = "0.7"
 md5 = "0.7"
-minijinja = "2"
+minijinja = { version = "2", features = ["json"] }
 p1e-sandbox = { path = "crates/p1e-sandbox", version = "0.2.0" }
 pulldown-cmark = "0.13"
 r2d2 = "0.8"

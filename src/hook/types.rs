@@ -626,7 +626,7 @@ impl HooksManager {
     pub fn new(hooks: Vec<Hook>, timeout_ms: Option<u64>) -> Self {
         Self {
             hooks,
-            timeout_ms: timeout_ms.unwrap_or(1000),
+            timeout_ms: timeout_ms.unwrap_or(30000),
         }
     }
 

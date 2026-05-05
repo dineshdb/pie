@@ -22,20 +22,6 @@ pub struct Model {
     inner: OpenAICompatible<DynamicModel>,
 }
 
-#[cfg(test)]
-impl Model {
-    pub fn test_dummy() -> Result<Self> {
-        Ok(Self {
-            inner: OpenAICompatible::<DynamicModel>::builder()
-                .model_name("test")
-                .base_url("http://localhost:1")
-                .api_key("test")
-                .build()
-                .map_err(|e| anyhow::anyhow!("failed to build test model: {e}"))?,
-        })
-    }
-}
-
 // Delegate capability marker traits
 macro_rules! impl_capability {
     ($($trait:ident),* $(,)?) => { $( impl $trait for Model {} )* }

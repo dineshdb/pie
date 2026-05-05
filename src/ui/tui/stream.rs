@@ -1,31 +1,11 @@
-use crate::agent::find_subsume_candidate;
-use crate::handler::{extract_output_text, strip_control_tokens};
-use crate::instructions::Instructions;
-use crate::prompt::SystemPrompt;
+use crate::agent::{AgentConfig, AgentEvent, Interactivity, PieAgent};
 use crate::providers::Model;
-use crate::session::{Role, Session};
-use crate::tools::plan::plan_tools;
-use crate::tools::subagent::Subagent;
-use crate::tools::{
-    execute_skill_script_tool, load_references_tool, load_skills_tool, read_file_tool,
-    replace_tool, shell, subagent_tool, websearch, write_file_tool,
-};
+use crate::session::Session;
 use crate::ui::tui::components::input::InputComponent;
 use crate::ui::tui::realm::StreamEvent;
-use crate::ui::tui::widgets::tool_display::ToolCallResult;
-use crate::utils::execute_with_retry;
-use agentsdk::core::utils::step_count_is;
-use agentsdk::core::{
-    AssistantMessage, LanguageModelRequest, LanguageModelStreamChunkType, Message,
-    StreamTextResponse, UserMessage,
-};
-use anyhow::Context;
-use itertools::Itertools;
 use p1e_sandbox::SandboxConfig;
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio_stream::StreamExt;
+use std::sync::Arc;
+use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 /// Environment shared across stream invocations — held by [`InputComponent`].
 #[derive(Clone)]
@@ -57,9 +37,7 @@ pub async fn spawn_stream(
     event_tx: UnboundedSender<StreamEvent>,
     mut abort_rx: UnboundedReceiver<()>,
 ) {
-    const MAX_COMPLETION_RETRIES: u32 = 3;
-    let mut current_query_raw = query;
-    let mut session = match Session::load(ctx.pool.clone(), ctx.session_id) {
+    let session = match Session::load(ctx.pool.clone(), ctx.session_id) {
         Ok(s) => s,
         Err(e) => {
             tracing::error!("failed to load session: {e}");
@@ -68,325 +46,57 @@ pub async fn spawn_stream(
         }
     };
 
-    let mut loop_count = 0;
-
-    loop {
-        let query = Instructions::new(current_query_raw.clone());
-        let pool = ctx.pool.clone();
-        let history = session.history_entries().to_vec();
-        let session_id = ctx.session_id.to_string();
-        let _ = session.add_user(&query.raw);
-
-        let mut response = match execute_with_retry("stream_text", {
-            let pool = pool.clone();
-            let session_id = session_id.clone();
-            let ctx = ctx.clone();
-            let history = history.clone();
-            let query = query.clone();
-
-            move || {
-                let pool = pool.clone();
-                let session_id = session_id.clone();
-                let ctx = ctx.clone();
-                let history = history.clone();
-                let query = query.clone();
-
-                async move {
-                    let mut req = build_stream_request(&ctx, &history, &query, pool, session_id)?;
-                    req.stream_text().await.map_err(|e| anyhow::anyhow!(e))
-                }
-            }
-        })
-        .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                let _ = event_tx.send(StreamEvent::Error(e.to_string()));
-                return;
-            }
-        };
-
-        let mut processor = StreamProcessor::new(&mut session, event_tx.clone());
-        processor.handle(&mut response, &mut abort_rx).await;
-
-        let results = response.tool_results().await;
-        let output = extract_output_text(&processor.accumulated, results.as_deref());
-        let output = strip_control_tokens(&output);
-
-        if loop_count < MAX_COMPLETION_RETRIES {
-            match crate::handler::run_pre_completion_hooks(&session_id, &output).await {
-                Ok(Some(feedback)) => {
-                    tracing::info!("PreCompletion hook triggered, re-running LLM with feedback");
-                    let assistant_text = response.text().await.unwrap_or_default();
-                    let _ = session.add_assistant(&assistant_text);
-                    current_query_raw = feedback;
-                    loop_count += 1;
-                    continue;
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    tracing::warn!("PreCompletion hook failed: {e}");
-                }
-            }
-        }
-
-        if !output.is_empty() {
-            let _ = session.add_assistant(&output);
-        }
-        let _ = event_tx.send(StreamEvent::Done(output));
-        break;
-    }
-}
-
-fn build_stream_request(
-    ctx: &StreamContext,
-    history: &[crate::session::HistoryEntry],
-    query: &Instructions,
-    pool: Arc<crate::db::DbPool>,
-    session_id: String,
-) -> anyhow::Result<LanguageModelRequest<Model>> {
-    if let Some(agent) = find_subsume_candidate(query, &ctx.registry.agents) {
-        let subagent = Subagent::new(
-            ctx.model.clone(),
-            ctx.registry.clone(),
-            ctx.sandbox.clone(),
-            pool,
-            session_id,
-        );
-        return subagent
-            .build_request(&agent, &query.raw, 0)
-            .map_err(|e| anyhow::anyhow!(e));
-    }
-
-    let mut query = query.clone();
-    history
-        .iter()
-        .filter(|e| e.role == Role::User)
-        .for_each(|e| query.merge_mentions(&e.content));
-
-    let sp = SystemPrompt::new(
-        &ctx.registry.skills,
-        &ctx.registry.agents,
-        &ctx.registry.plugins,
-    )
-    .with_plan(pool.clone(), session_id.clone())
-    .resolve(&query)
-    .with_mode(crate::prompt::RunMode::Tui);
-
-    let loaded_skills = Arc::new(Mutex::new(
-        sp.loaded_skills
-            .iter()
-            .map(|s| s.name.clone())
-            .collect::<HashSet<String>>(),
-    ));
-    let loaded_refs = Arc::new(Mutex::new(HashSet::new()));
-
-    let messages = history
-        .iter()
-        .filter_map(|entry| match entry.role {
-            Role::User => Some(Message::User(UserMessage::new(&entry.content))),
-            Role::Assistant => Some(Message::Assistant(AssistantMessage::from(
-                entry.content.clone(),
-            ))),
-            _ => None,
-        })
-        .chain(std::iter::once(Message::User(UserMessage::new(&query.raw))))
-        .collect();
-
-    let mut builder = LanguageModelRequest::builder()
-        .model(ctx.model.clone())
-        .system(sp.render())
-        .messages(messages)
-        .with_tool(shell(ctx.sandbox.clone(), pool.clone(), session_id.clone()))
-        .with_tool(read_file_tool())
-        .with_tool(write_file_tool(pool.clone(), session_id.clone()))
-        .with_tool(replace_tool(pool.clone(), session_id.clone()))
-        .with_tool(load_skills_tool(ctx.registry.clone(), Some(loaded_skills)))
-        .with_tool(load_references_tool(loaded_refs))
-        .with_tool(execute_skill_script_tool(ctx.sandbox.clone()))
-        .with_tool(websearch(
-            ctx.sandbox.clone(),
-            pool.clone(),
-            session_id.clone(),
-        ))
-        .with_tool(subagent_tool(
-            ctx.model.clone(),
-            ctx.registry.clone(),
-            ctx.sandbox.clone(),
-            pool.clone(),
-        ))
-        .stop_when(step_count_is(ctx.max_steps as usize));
-
-    for tool in plan_tools(pool, session_id).context("failed to build plan tools")? {
-        builder = builder.with_tool(tool);
-    }
-
-    Ok(builder.build())
-}
-
-struct StreamProcessor<'a> {
-    session: &'a mut Session,
-    event_tx: UnboundedSender<StreamEvent>,
-    accumulated: String,
-    pending_tool: PendingToolCall,
-}
-
-impl<'a> StreamProcessor<'a> {
-    fn new(session: &'a mut Session, event_tx: UnboundedSender<StreamEvent>) -> Self {
-        Self {
-            session,
-            event_tx,
-            accumulated: String::new(),
-            pending_tool: PendingToolCall::default(),
-        }
-    }
-
-    async fn handle(
-        &mut self,
-        response: &mut StreamTextResponse,
-        abort_rx: &mut UnboundedReceiver<()>,
-    ) {
-        loop {
-            tokio::select! {
-                chunk = response.stream.next() => {
-                    let Some(chunk) = chunk else { break; };
-                    if !self.process_chunk(chunk) { break; }
-                }
-                _ = abort_rx.recv() => break,
-            }
-        }
-
-        let results = response.tool_results().await;
-        tracing::debug!(len = self.accumulated.len(), ?results, "stream finished");
-    }
-
-    fn process_chunk(&mut self, chunk: LanguageModelStreamChunkType) -> bool {
-        match chunk {
-            LanguageModelStreamChunkType::TextDelta(delta) => {
-                let cleaned = strip_control_tokens(&delta);
-                if !cleaned.is_empty() {
-                    self.accumulated.push_str(&cleaned);
-                    let _ = self
-                        .event_tx
-                        .send(StreamEvent::Delta(self.accumulated.clone()));
-                }
-            }
-            LanguageModelStreamChunkType::ToolCallStart(details) => {
-                self.pending_tool.name.clone_from(&details.name);
-            }
-            LanguageModelStreamChunkType::ToolCallAvailable(info) => {
-                self.pending_tool.params = format_tool_params(&info.input);
-            }
-            LanguageModelStreamChunkType::ToolCallEnd(result) => {
-                let output = tool_output_text(&result);
-                let name = std::mem::take(&mut self.pending_tool.name);
-                let params = std::mem::take(&mut self.pending_tool.params);
-
-                let event = CompletedToolCall {
-                    name: name.clone(),
-                    params,
-                    output,
-                };
-                let display = if event.params.is_empty() {
-                    event.name.clone()
-                } else {
-                    format!("{}: {}", event.name, event.params)
-                };
-
-                // For plan tools, also trigger a PlanUpdate event to refresh plan UI
-                if name == "plan_set" || name == "plan_step_update" {
-                    let _ = self.event_tx.send(StreamEvent::PlanUpdate);
-                }
-
-                persist_tool_call(self.session, &event.name, &display, &event.output);
-
-                let is_plan_tool = name == "plan_set" || name == "plan_step_update";
-                let show_tool =
-                    !is_plan_tool || crate::config::CONFIG.get().is_some_and(|c| c.debug);
-
-                if show_tool {
-                    let _ = self.event_tx.send(event.into());
-                }
-            }
-            LanguageModelStreamChunkType::Failed(err) => {
-                let _ = self.event_tx.send(StreamEvent::Error(err));
-                return false;
-            }
-            other => {
-                tracing::trace!(?other, "stream chunk skipped");
-            }
-        }
-        true
-    }
-}
-
-/// Format and persist a tool call to the session DB.
-fn persist_tool_call(session: &mut Session, name: &str, display: &str, output: &str) {
-    let tool = ToolCallResult::new(name, output);
-    let result_line = tool.to_string();
-    let content = if result_line.is_empty() {
-        display.to_string()
-    } else {
-        format!("{display} → {result_line}")
+    let config = AgentConfig {
+        max_steps: ctx.max_steps,
+        ..Default::default()
     };
-    let _ = session.add_tool(&content);
-}
 
-/// Accumulates tool call state across Start/Available/End chunks.
-#[derive(Default)]
-struct PendingToolCall {
-    name: String,
-    params: String,
-}
+    let mut agent = PieAgent::new(
+        ctx.model,
+        ctx.registry,
+        ctx.sandbox,
+        ctx.pool,
+        session,
+        config,
+    );
 
-struct CompletedToolCall {
-    name: String,
-    params: String,
-    output: String,
-}
+    let (agent_tx, mut agent_rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let event_tx_clone = event_tx.clone();
 
-impl From<CompletedToolCall> for StreamEvent {
-    fn from(call: CompletedToolCall) -> StreamEvent {
-        let display = if call.params.is_empty() {
-            call.name.clone()
-        } else {
-            format!("{}: {}", call.name, call.params)
-        };
-        StreamEvent::ToolCall {
-            name: call.name,
-            display,
-            output: call.output,
+    tokio::spawn(async move {
+        while let Some(event) = agent_rx.recv().await {
+            match event {
+                AgentEvent::Delta(d) => {
+                    let _ = event_tx_clone.send(StreamEvent::Delta(d));
+                }
+                AgentEvent::Done(d) => {
+                    let _ = event_tx_clone.send(StreamEvent::Done(d));
+                }
+                AgentEvent::Error(e) => {
+                    let _ = event_tx_clone.send(StreamEvent::Error(e));
+                }
+                AgentEvent::ToolCall {
+                    name,
+                    display,
+                    output,
+                } => {
+                    let _ = event_tx_clone.send(StreamEvent::ToolCall {
+                        name,
+                        display,
+                        output,
+                    });
+                }
+                AgentEvent::PlanUpdate => {
+                    let _ = event_tx_clone.send(StreamEvent::PlanUpdate);
+                }
+            }
         }
+    });
+
+    if let Err(e) = agent
+        .stream(&query, Interactivity::Interactive, agent_tx, &mut abort_rx)
+        .await
+    {
+        let _ = event_tx.send(StreamEvent::Error(e.to_string()));
     }
-}
-
-fn tool_output_text(result: &agentsdk::core::ToolResultInfo) -> String {
-    result
-        .output
-        .as_ref()
-        .ok()
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string()
-}
-
-/// Format tool input params as a compact single-line summary.
-fn format_tool_params(input: &serde_json::Value) -> String {
-    input
-        .as_object()
-        .map(|obj| {
-            obj.iter()
-                .map(|(k, v)| {
-                    let val = match v {
-                        serde_json::Value::String(s) => s.clone(),
-                        serde_json::Value::Array(arr) => {
-                            arr.iter().filter_map(|v| v.as_str()).join(", ")
-                        }
-                        other => other.to_string(),
-                    };
-                    format!("{k}={val}")
-                })
-                .join(", ")
-        })
-        .unwrap_or_default()
 }

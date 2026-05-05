@@ -171,8 +171,7 @@ async fn main() -> anyhow::Result<()> {
     let sandbox_settings = build_sandbox(&pie_config);
 
     debug!(config = ?config, "config");
-    let mut model = providers::build_from_resolved(&config.provider)?;
-
+    let model = providers::build_from_resolved(&config.provider)?;
     let piped_stdin = read_piped_stdin();
     let format = if cli.json {
         OutputFormat::Json
@@ -206,12 +205,12 @@ async fn main() -> anyhow::Result<()> {
             }
         };
 
-        let mut session = Session::create(pool)?;
+        let session = Session::create(pool.clone())?;
         let query = Instructions::new(full_query);
         return handler::handle_query(
-            &mut model,
+            model,
             &query,
-            &mut session,
+            session,
             format,
             sandbox_settings,
             config.max_steps,

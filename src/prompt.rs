@@ -1,22 +1,144 @@
-use crate::agent::Agent;
+use crate::agent::{Agent, Interactivity};
 use crate::config::pie_home;
 use crate::db::DbPool;
 use crate::instructions::Instructions;
 use crate::registry::Plugin;
 use crate::skill::Skill;
-use crate::tools::plan::PlanRepo;
+use crate::tools::plan::{PlanRepo, Step};
 use crate::utils::{find_upward_in_repo, git_repo_root, load_file};
+use anyhow::{Context, Result};
 use minijinja::Environment;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../.pie/SYSTEM.md");
 
-#[derive(Debug, Clone, Copy, serde::Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum RunMode {
-    Cli,
-    Tui,
+/// Context for static project and environment metadata.
+#[derive(Debug, Serialize)]
+pub struct ExtraContext {
+    pub os: String,
+    pub arch: String,
+    pub hostname: String,
+    pub pwd: String,
+    pub repo_root: Option<String>,
+    pub project_files: Vec<String>,
+    pub date: String,
+    pub environment: HashMap<String, String>,
+}
+
+/// Context for rendering the system prompt.
+#[derive(Debug, Serialize)]
+pub struct SystemPromptCtx<'a> {
+    pub agent_name: Option<&'a str>,
+    pub agent_content: Option<&'a str>,
+    pub interactivity: Interactivity,
+    pub skills: &'a [Skill],
+    pub agents: &'a [Agent],
+    pub loaded_skills: Vec<&'a Skill>,
+    pub global_agents_md: String,
+    pub local_agents_md: String,
+    pub json_output: bool,
+    pub steps: Vec<Step>,
+    pub plugin_system_prompts: HashMap<String, String>,
+    pub extra_context: ExtraContext,
+}
+
+impl<'a> From<&SystemPrompt<'a>> for SystemPromptCtx<'a> {
+    fn from(sp: &SystemPrompt<'a>) -> Self {
+        let (global_agents_md, local_agents_md) = {
+            (
+                load_file(pie_home().join("AGENTS.md")).unwrap_or_default(),
+                find_upward_in_repo("AGENTS.md").unwrap_or_default(),
+            )
+        };
+
+        let agent_name = sp.agent.map(|a| a.name.as_str());
+        let agent_content = sp.agent.map(|a| a.content.as_str());
+
+        let interactivity = sp
+            .interactivity
+            .unwrap_or_else(|| sp.agent.map_or(Interactivity::None, |a| a.interactivity));
+
+        let steps = if let (Some(pool), Some(session_id)) = (&sp.pool, &sp.session_id) {
+            pool.load_steps(session_id).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        let plugin_system_prompts: HashMap<String, String> = sp
+            .plugins
+            .iter()
+            .filter_map(|p| {
+                p.system_prompt
+                    .as_ref()
+                    .map(|sp_text| (p.name.clone(), sp_text.clone()))
+            })
+            .collect();
+
+        let (date, pwd, os, arch, hostname) = SystemPrompt::env_vars();
+
+        let repo_root = git_repo_root();
+        let project_files = if let Some(ref root) = repo_root {
+            discover_project_files(root)
+        } else {
+            Vec::new()
+        };
+
+        let mut environment = HashMap::new();
+        for (k, v) in std::env::vars() {
+            if k == "PATH" || k == "USER" || k == "SHELL" || k == "TERM" || k.starts_with("PIE_") {
+                environment.insert(k, v);
+            }
+        }
+
+        let extra_context = ExtraContext {
+            os,
+            arch,
+            hostname,
+            pwd,
+            repo_root,
+            project_files,
+            date,
+            environment,
+        };
+
+        Self {
+            agent_name,
+            agent_content,
+            interactivity,
+            skills: sp.skills,
+            agents: sp.agents,
+            loaded_skills: sp.loaded_skills.clone(),
+            global_agents_md,
+            local_agents_md,
+            json_output: sp.json_output,
+            steps,
+            plugin_system_prompts,
+            extra_context,
+        }
+    }
+}
+
+fn discover_project_files(root: &str) -> Vec<String> {
+    let important = [
+        "README.md",
+        "Justfile",
+        "Cargo.toml",
+        "package.json",
+        "Makefile",
+        "pyproject.toml",
+        "go.mod",
+        "TASKS.md",
+        "MEMORY.md",
+        "GEMINI.md",
+    ];
+    let root_path = std::path::Path::new(root);
+    important
+        .iter()
+        .filter(|f| root_path.join(f).exists())
+        .map(ToString::to_string)
+        .collect()
 }
 
 /// A structured builder for rendering the system prompt with its full context.
@@ -27,7 +149,7 @@ pub struct SystemPrompt<'a> {
     pub loaded_skills: Vec<&'a Skill>,
     agent: Option<&'a Agent>,
     json_output: bool,
-    mode: RunMode,
+    interactivity: Option<Interactivity>,
     pool: Option<Arc<DbPool>>,
     session_id: Option<String>,
 }
@@ -42,7 +164,7 @@ impl<'a> SystemPrompt<'a> {
             loaded_skills: Vec::new(),
             agent: None,
             json_output: false,
-            mode: RunMode::Tui,
+            interactivity: None,
             pool: None,
             session_id: None,
         }
@@ -62,14 +184,15 @@ impl<'a> SystemPrompt<'a> {
     }
 
     /// Set whether JSON output mode is enabled.
+    #[cfg(test)]
     pub fn with_json(mut self, json_output: bool) -> Self {
         self.json_output = json_output;
         self
     }
 
-    /// Set the run mode (CLI or TUI).
-    pub fn with_mode(mut self, mode: RunMode) -> Self {
-        self.mode = mode;
+    /// Set the interactivity level.
+    pub fn with_interactivity(mut self, interactivity: Interactivity) -> Self {
+        self.interactivity = Some(interactivity);
         self
     }
 
@@ -81,62 +204,12 @@ impl<'a> SystemPrompt<'a> {
     }
 
     /// Render the final system prompt string.
-    pub fn render(&self) -> String {
-        let (global_agents_md, local_agents_md) = {
-            (
-                load_file(pie_home().join("AGENTS.md")).unwrap_or_default(),
-                find_upward_in_repo("AGENTS.md").unwrap_or_default(),
-            )
-        };
-
-        let agent_name = self.agent.map(|a| a.name.as_str());
-        let agent_content = self.agent.map(|a| a.content.as_str());
-        let interactivity = self.agent.map_or("none", |a| a.interactivity.as_ref());
-
-        let steps = if let (Some(pool), Some(session_id)) = (&self.pool, &self.session_id) {
-            pool.load_steps(session_id).unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-
-        let plugin_system_prompts: HashMap<String, String> = self
-            .plugins
-            .iter()
-            .filter_map(|p| {
-                p.system_prompt
-                    .as_ref()
-                    .map(|sp| (p.name.clone(), sp.clone()))
-            })
-            .collect();
-
-        let (date, pwd, os, arch, hostname) = Self::context_vars();
-        render_template(
-            "system_prompt",
-            SYSTEM_PROMPT_TEMPLATE,
-            minijinja::context! {
-                agent_name,
-                agent_content,
-                skills => self.skills,
-                agents => self.agents,
-                loaded_skills => self.loaded_skills,
-                global_agents_md,
-                local_agents_md,
-                date,
-                pwd,
-                os,
-                arch,
-                hostname,
-                repo_root => git_repo_root(),
-                json_output => self.json_output,
-                run_mode => self.mode,
-                interactivity,
-                steps,
-                plugin_system_prompts,
-            },
-        )
+    pub fn render(&self) -> Result<String> {
+        let ctx = SystemPromptCtx::from(self);
+        render_template("system_prompt", SYSTEM_PROMPT_TEMPLATE, &ctx)
     }
 
-    pub fn context_vars() -> (String, String, String, String, String) {
+    pub fn env_vars() -> (String, String, String, String, String) {
         let date = chrono::Local::now().format("%Y-%m-%d").to_string();
         let pwd = std::env::var("PWD").unwrap_or_else(|_| {
             std::env::current_dir()
@@ -155,19 +228,19 @@ impl<'a> SystemPrompt<'a> {
     }
 }
 
-/// Render a `MiniJinja` template with context, falling back to raw template on error.
+/// Render a `MiniJinja` template with context.
 #[allow(clippy::expect_used)]
-fn render_template(template_name: &str, template: &str, ctx: minijinja::Value) -> String {
+fn render_template<T: Serialize>(template_name: &str, template: &str, ctx: &T) -> Result<String> {
     let mut env = Environment::new();
     env.add_template(template_name, template)
-        .expect("invalid template");
-    env.get_template(template_name)
-        .expect("template just added")
+        .context("invalid template")?;
+    let template_obj = env
+        .get_template(template_name)
+        .context("template just added")?;
+
+    template_obj
         .render(ctx)
-        .unwrap_or_else(|e| {
-            tracing::warn!("{template_name} template render error: {e}, using raw template");
-            template.to_string()
-        })
+        .map_err(|e| anyhow::anyhow!("Template render error: {e}"))
 }
 
 #[cfg(test)]
@@ -186,18 +259,21 @@ mod test_helpers {
     }
 
     /// Render the main agent prompt with deterministic values.
+    #[allow(clippy::expect_used)]
     pub fn render_main(skills: &[Skill], json_output: bool) -> String {
         SystemPrompt::new(skills, &[], &[])
             .with_json(json_output)
             .render()
+            .expect("test render main")
     }
 
     /// Render the subagent prompt with deterministic values.
+    #[allow(clippy::expect_used)]
     pub fn render_sub() -> String {
         let agent = Agent {
             name: "test-agent".to_string(),
             description: "test".to_string(),
-            interactivity: crate::agent::Interactivity::None,
+            interactivity: Interactivity::None,
             model: None,
             temperature: None,
             content: "You are a test agent.".to_string(),
@@ -207,6 +283,7 @@ mod test_helpers {
         SystemPrompt::new(&[], &agents, &[])
             .with_agent(Some("test-agent"))
             .render()
+            .expect("test render sub")
     }
 }
 

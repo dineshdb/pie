@@ -12,8 +12,6 @@ pub fn embedded_agents_dir() -> Option<&'static Dir<'static>> {
     EMBEDDED_PIE_DIR.get_dir("agents")
 }
 
-// ── Interactivity ─────────────────────────────────────────────────
-
 /// Controls whether and how an agent may ask the user questions.
 #[derive(
     Debug,
@@ -35,8 +33,6 @@ pub enum Interactivity {
     Minimal,
     Interactive,
 }
-
-// ── Agent Definition ──────────────────────────────────────────────
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Agent {
