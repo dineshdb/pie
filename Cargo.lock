@@ -1595,6 +1595,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
+name = "lexiclean"
+version = "0.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "441225017b106b9f902e97947a6d31e44ebcf274b91bdbfb51e5c477fcd468e5"
+
+[[package]]
 name = "libc"
 version = "0.2.185"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1938,12 +1944,14 @@ dependencies = [
  "hostname",
  "include_dir",
  "itertools",
+ "lexiclean",
  "md5",
  "minijinja",
  "p1e-sandbox",
  "pulldown-cmark",
  "r2d2",
  "r2d2_sqlite",
+ "redact",
  "refinery",
  "reqwest 0.13.3",
  "retry",
@@ -2336,6 +2344,15 @@ dependencies = [
  "time",
  "unicode-segmentation",
  "unicode-width",
+]
+
+[[package]]
+name = "redact"
+version = "0.1.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dcecefd225c2fb69914585a7a6f8878929feb316a7ecb61c07d79e361d46d8ac"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

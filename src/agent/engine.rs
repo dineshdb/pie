@@ -12,6 +12,7 @@ use crate::tools::{
     write_file_tool,
 };
 
+use crate::utils::anonymize_path;
 use agentsdk::core::utils::step_count_is;
 use agentsdk::core::{
     AssistantMessage, LanguageModelRequest, LanguageModelStreamChunkType, Message,
@@ -516,8 +517,10 @@ impl<'a> StreamProcessor<'a> {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+                let output = anonymize_path(&output);
                 let name = std::mem::take(&mut self.pending_tool.name);
                 let params = std::mem::take(&mut self.pending_tool.params);
+                let params = anonymize_path(&params);
 
                 let display = if params.is_empty() {
                     name.clone()

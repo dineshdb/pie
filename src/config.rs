@@ -7,6 +7,7 @@ use figment::{
 };
 use include_dir::{Dir, include_dir};
 use p1e_sandbox::SandboxConfig;
+use redact::Secret;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -40,7 +41,7 @@ pub struct ProviderConfig {
 
     /// API key for OpenAI-compatible providers
     #[arg(long)]
-    pub api_key: Option<String>,
+    pub api_key: Option<Secret<String>>,
 
     /// Sampling temperature (config file only)
     #[arg(skip)]
@@ -121,7 +122,7 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
             None => ProviderConfig {
                 model: std::env::var("OPENAI_MODEL").ok(),
                 base_url: std::env::var("OPENAI_BASE_URL").ok(),
-                api_key: std::env::var("OPENAI_API_KEY").ok(),
+                api_key: std::env::var("OPENAI_API_KEY").ok().map(Secret::new),
                 temperature: None,
             },
         };
@@ -161,7 +162,7 @@ pub struct ResolvedProvider {
     pub name: String,
     pub model: String,
     pub base_url: String,
-    pub api_key: String,
+    pub api_key: Secret<String>,
     #[allow(dead_code)]
     pub temperature: Option<f32>,
 }

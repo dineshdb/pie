@@ -30,6 +30,13 @@ def read_input():
     return json.loads(input_json)
 
 
+def anonymize_path(path):
+    home = os.path.expanduser("~")
+    if path.startswith(home):
+        return path.replace(home, "~/")
+    return path
+
+
 def find_upward(filename, start_dir):
     current = os.path.abspath(start_dir)
     found_paths = []
@@ -250,7 +257,7 @@ def cmd_ground(args, data):
     for title, content in sections:
         if content.strip():
             new_content += f"\n\n### {title}\n{content.strip()}"
-    print(json.dumps({"system": new_content}))
+    print(json.dumps({"system": anonymize_path(new_content)}))
 
 
 def cmd_memory_ground(args, data):
@@ -278,7 +285,7 @@ def cmd_memory_ground(args, data):
                 rel_path = os.path.relpath(path, cwd)
                 new_content += f"\n\n### From {rel_path}:\n{f.read()}"
 
-    print(json.dumps({"system": new_content}))
+    print(json.dumps({"system": anonymize_path(new_content)}))
 
 
 def cmd_guard(args, data):
@@ -372,7 +379,7 @@ def cmd_step_alignment(args, data):
         if turns >= 3:
             new_content = f"\n\n### [Task Alignment Alert]\nYou have taken **{turns} turns** without updating your task list. \n**Mandate**: Ensure your plan is still accurate."
         db.close()
-    print(json.dumps({"system": new_content}))
+    print(json.dumps({"system": anonymize_path(new_content)}))
 
 
 def cmd_step_integrity(args, data):

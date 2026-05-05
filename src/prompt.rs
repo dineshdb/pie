@@ -5,7 +5,7 @@ use crate::instructions::Instructions;
 use crate::registry::Plugin;
 use crate::skill::Skill;
 use crate::tools::plan::{PlanRepo, Step};
-use crate::utils::{find_upward_in_repo, git_repo_root, load_file};
+use crate::utils::{AnonymizedPath, find_upward_in_repo, git_repo_root, load_file};
 use anyhow::{Context, Result};
 use minijinja::Environment;
 use serde::Serialize;
@@ -20,8 +20,8 @@ pub struct ExtraContext {
     pub os: String,
     pub arch: String,
     pub hostname: String,
-    pub pwd: String,
-    pub repo_root: Option<String>,
+    pub pwd: AnonymizedPath,
+    pub repo_root: Option<AnonymizedPath>,
     pub project_files: Vec<String>,
     pub date: String,
     pub environment: HashMap<String, String>,
@@ -77,10 +77,11 @@ impl<'a> From<&SystemPrompt<'a>> for SystemPromptCtx<'a> {
             .collect();
 
         let (date, pwd, os, arch, hostname) = SystemPrompt::env_vars();
+        let pwd = AnonymizedPath::from(pwd);
 
-        let repo_root = git_repo_root();
+        let repo_root = git_repo_root().map(AnonymizedPath::from);
         let project_files = if let Some(ref root) = repo_root {
-            discover_project_files(root)
+            discover_project_files(root.as_str())
         } else {
             Vec::new()
         };

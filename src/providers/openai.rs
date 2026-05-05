@@ -80,7 +80,7 @@ pub fn build_from_resolved(provider: &ResolvedProvider) -> Result<Model> {
     let inner = OpenAICompatible::<DynamicModel>::builder()
         .model_name(&provider.model)
         .base_url(&provider.base_url)
-        .api_key(&provider.api_key)
+        .api_key(provider.api_key.expose_secret())
         .build()
         .context("failed to build OpenAI-compatible provider")?;
     Ok(Model { inner })
@@ -105,8 +105,9 @@ pub async fn fetch_models(provider: &ResolvedProvider) -> Result<Vec<String>> {
 
         async move {
             let mut request = client.get(&url);
-            if !api_key.is_empty() {
-                request = request.header("Authorization", format!("Bearer {api_key}"));
+            let secret = api_key.expose_secret();
+            if !secret.is_empty() {
+                request = request.header("Authorization", format!("Bearer {secret}"));
             }
 
             let res = request.send().await;

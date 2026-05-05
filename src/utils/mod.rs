@@ -1,5 +1,9 @@
+pub mod path;
+pub use path::*;
+
 use retry::delay::Fibonacci;
 use retry::{OperationResult, retry};
+use std::future::Future;
 use std::ops::ControlFlow;
 use std::time::{Duration, Instant};
 
@@ -90,7 +94,6 @@ where
     .await?
 }
 
-use std::future::Future;
 /// Walk from cwd upward, calling `check` on each directory.
 /// Stops at home directory, filesystem root, or after 32 levels.
 /// The closure returns `Break(Some(T))` when found, `Break(None)` to stop, `Continue(())` to keep going.
