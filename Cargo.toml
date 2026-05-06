@@ -25,7 +25,7 @@ name = "pie"
 path = "src/main.rs"
 
 [dependencies]
-agentsdk = { version = "0.6.2", features = ["openaicompatible", "openai"] }
+agentsdk = { version = "0.7.0", features = ["openaicompatible", "openai"] }
 anyhow = "1"
 arboard = "3"
 async-trait = "0.1"

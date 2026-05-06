@@ -13,3 +13,6 @@
   - [ ] Use it to run completion checks and nudge the system to get to back to work.
   - [ ] System Notifications
 - [ ] Define tools such that they can check and run automatically at different points.
+- [ ] Tool Call Serialization via json field.
+- [ ] While persisting tool calls, let's replace previous tool call entry in database with a one with content.
+- [ ] Let's reconstruct the history such that it is no different from it being constructed while running the agent. Making them identical. That way, don't need to inject history into the system prompt.

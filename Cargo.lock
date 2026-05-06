@@ -10,9 +10,9 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agentsdk"
-version = "0.6.2"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f7e163e8cb45ce2113d6603cf09c1e4ca82fa8a76918588cbee448c923b6297"
+checksum = "e4bbe0bced701d4fb8cc060efc658e85d00d86b8b08478317aa65a1a38bbc191"
 dependencies = [
  "agentsdk-macros",
  "async-trait",
@@ -4049,6 +4049,7 @@ checksum = "ddd74a9687298c6858e9b88ec8935ec45d22e8fd5e6394fa1bd4e99a87789c76"
 dependencies = [
  "getrandom 0.4.2",
  "js-sys",
+ "serde_core",
  "wasm-bindgen",
 ]
 
