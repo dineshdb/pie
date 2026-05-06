@@ -1,5 +1,7 @@
 use crate::db::DbPool;
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
+use std::str::FromStr;
 use std::sync::Arc;
 use strum::{AsRefStr, EnumString, IntoStaticStr};
 use uuid::Uuid;
@@ -26,10 +28,39 @@ pub enum Role {
     Tool,
 }
 
-#[derive(Clone)]
-pub struct HistoryEntry {
-    pub role: Role,
-    pub content: String,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolCallInfo {
+    pub call_id: Uuid,
+    pub tool_name: String,
+    pub params: serde_json::Value,
+    pub output: Option<Result<serde_json::Value, serde_json::Value>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "role", content = "content", rename_all = "lowercase")]
+pub enum HistoryEntry {
+    User(String),
+    Assistant(String),
+    System(String),
+    Tool(ToolCallInfo),
+}
+
+impl HistoryEntry {
+    pub fn role(&self) -> Role {
+        match self {
+            Self::User(_) => Role::User,
+            Self::Assistant(_) => Role::Assistant,
+            Self::System(_) => Role::System,
+            Self::Tool(_) => Role::Tool,
+        }
+    }
+
+    pub fn content(&self) -> String {
+        match self {
+            Self::User(c) | Self::Assistant(c) | Self::System(c) => c.clone(),
+            Self::Tool(info) => serde_json::to_string(info).unwrap_or_default(),
+        }
+    }
 }
 
 impl Role {
@@ -38,10 +69,21 @@ impl Role {
     }
 }
 
-#[derive(sqlx::FromRow)]
-struct MessageRow {
-    role: String,
-    content: String,
+impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for HistoryEntry {
+    fn from_row(row: &'r sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
+        let role_str: &str = row.try_get("role")?;
+        let role: Role = Role::from_str(role_str)
+            .map_err(|e| sqlx::Error::Decode(format!("unknown role: {e}").into()))?;
+        let content: String = row.try_get("content")?;
+        match role {
+            Role::User => Ok(Self::User(content)),
+            Role::Assistant => Ok(Self::Assistant(content)),
+            Role::System => Ok(Self::System(content)),
+            Role::Tool => serde_json::from_str(&content)
+                .map(Self::Tool)
+                .map_err(|e| sqlx::Error::Decode(Box::new(e))),
+        }
+    }
 }
 
 // ── Session ────────────────────────────────────────────────────────
@@ -110,11 +152,12 @@ impl Session {
         &self.pool
     }
 
-    async fn add_message(&mut self, role: Role, content: &str) -> anyhow::Result<()> {
+    async fn add_entry(&mut self, entry: HistoryEntry) -> anyhow::Result<()> {
         let now_ms = chrono::Utc::now().timestamp_millis();
         let sid = self.id.to_string();
         let ts = now_ms * 1000;
-        let role_str = role.as_str();
+        let role_str = entry.role().as_str();
+        let content = entry.content();
 
         sqlx::query!(
             "INSERT INTO messages (session_id, ts, role, content) VALUES (?, ?, ?, ?)",
@@ -126,44 +169,70 @@ impl Session {
         .execute(&*self.pool)
         .await?;
 
-        self.cache.push(HistoryEntry {
-            role,
-            content: content.to_string(),
-        });
+        self.cache.push(entry);
         Ok(())
     }
 
     pub async fn add_user(&mut self, content: &str) -> anyhow::Result<()> {
-        self.add_message(Role::User, content).await
+        self.add_entry(HistoryEntry::User(content.to_string()))
+            .await
     }
 
     pub async fn add_assistant(&mut self, content: &str) -> anyhow::Result<()> {
-        self.add_message(Role::Assistant, content).await
+        self.add_entry(HistoryEntry::Assistant(content.to_string()))
+            .await
     }
 
-    pub async fn add_tool(&mut self, content: &str) -> anyhow::Result<()> {
-        self.add_message(Role::Tool, content).await
+    async fn add_tool(&mut self, info: ToolCallInfo) -> anyhow::Result<()> {
+        self.add_entry(HistoryEntry::Tool(info)).await
+    }
+
+    pub async fn record_tool_call(&mut self, info: ToolCallInfo) -> anyhow::Result<ToolCallInfo> {
+        let existing = self.cache.iter_mut().rev().find_map(|e| match e {
+            HistoryEntry::Tool(t) if t.call_id == info.call_id => Some(t),
+            _ => None,
+        });
+
+        if let Some(existing) = existing {
+            if !info.params.is_null() {
+                existing.params = info.params;
+            }
+            if info.output.is_some() {
+                existing.output = info.output;
+            }
+
+            let sid = self.id.to_string();
+            let entry = HistoryEntry::Tool(existing.clone());
+            let content = entry.content();
+            let call_id_str = existing.call_id.to_string();
+
+            sqlx::query!(
+                "UPDATE messages SET content = ? WHERE session_id = ? AND role = 'tool' AND json_extract(content, '$.call_id') = ?",
+                content,
+                sid,
+                call_id_str
+            )
+            .execute(&*self.pool)
+            .await?;
+
+            Ok(existing.clone())
+        } else {
+            let merged = info.clone();
+            self.add_tool(info).await?;
+            Ok(merged)
+        }
     }
 
     async fn rebuild_cache(&mut self) -> anyhow::Result<()> {
         let sid = self.id.to_string();
-        let rows = sqlx::query_as!(
-            MessageRow,
+        let rows = sqlx::query_as::<_, HistoryEntry>(
             "SELECT role, content FROM messages WHERE session_id = ? AND compacted = 0 ORDER BY id",
-            sid,
         )
+        .bind(&sid)
         .fetch_all(&*self.pool)
         .await?;
 
-        self.cache = rows
-            .into_iter()
-            .filter_map(|r| {
-                Some(HistoryEntry {
-                    role: r.role.parse().ok()?,
-                    content: r.content,
-                })
-            })
-            .collect();
+        self.cache = rows;
         Ok(())
     }
 }
@@ -227,10 +296,10 @@ mod tests {
 
         let entries = session.history_entries();
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].role, Role::User);
-        assert_eq!(entries[0].content, "hello");
-        assert_eq!(entries[1].role, Role::Assistant);
-        assert_eq!(entries[1].content, "hi there");
+        assert_eq!(entries[0].role(), Role::User);
+        assert_eq!(entries[0].content(), "hello");
+        assert_eq!(entries[1].role(), Role::Assistant);
+        assert_eq!(entries[1].content(), "hi there");
         Ok(())
     }
 
@@ -247,8 +316,8 @@ mod tests {
         let loaded = Session::load(pool, id).await?;
         let entries = loaded.history_entries();
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].content, "first");
-        assert_eq!(entries[1].content, "second");
+        assert_eq!(entries[0].content(), "first");
+        assert_eq!(entries[1].content(), "second");
         Ok(())
     }
 }

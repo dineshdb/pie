@@ -314,11 +314,11 @@ pub async fn run_tui(
     // Build initial messages
     let mut messages = vec![ChatMessage::system("Welcome to pie! Type ? for help.")];
     for entry in session.history_entries() {
-        let msg = match entry.role {
-            Role::User => ChatMessage::user(&entry.content),
-            Role::Assistant => ChatMessage::assistant(&entry.content),
-            Role::System => ChatMessage::system(&entry.content),
-            Role::Tool => ChatMessage::tool(&entry.content),
+        let msg = match entry.role() {
+            Role::User => ChatMessage::user(&entry.content()),
+            Role::Assistant => ChatMessage::assistant(&entry.content()),
+            Role::System => ChatMessage::system(&entry.content()),
+            Role::Tool => ChatMessage::tool(&entry.content()),
         };
         messages.push(msg);
     }

@@ -306,6 +306,6 @@ mod tests {
         let session = resolve_session(pool, true).await.unwrap();
         let entries = session.history_entries();
         assert_eq!(entries.len(), 2, "restored session should have history");
-        assert_eq!(entries[0].content, "hello");
+        assert_eq!(entries[0].content(), "hello");
     }
 }

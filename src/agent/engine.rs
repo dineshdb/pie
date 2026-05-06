@@ -1,17 +1,17 @@
 use crate::agent::{Interactivity, find_subsume_candidate};
+use crate::config::CONFIG;
 use crate::db::DbPool;
 use crate::instructions::Instructions;
 use crate::prompt::SystemPrompt;
 use crate::providers::{Model, strip_control_tokens};
 use crate::registry::Registry;
-use crate::session::{Role, Session};
+use crate::session::{Role, Session, ToolCallInfo};
 use crate::tools::plan::plan_tools;
 use crate::tools::{
     execute_skill_script_tool, glob_tool, list_directory_tool, load_references_tool,
     load_skills_tool, read_file_tool, replace_tool, shell, subagent_tool, websearch,
     write_file_tool,
 };
-
 use crate::utils::anonymize_path;
 use agentsdk::core::utils::step_count_is;
 use agentsdk::core::{
@@ -40,44 +40,6 @@ pub enum AgentEvent {
     PlanUpdate,
 }
 
-#[derive(Debug, Clone)]
-pub struct AgentConfig {
-    /// Number of previous history entries to include (0 for none)
-    pub history_limit: u32,
-    pub use_hooks: bool,
-    /// Maximum number of completion retries for self-correction (0 to disable)
-    pub max_retries: u32,
-    pub max_steps: u32,
-    pub depth: u32,
-    pub agent_name: Option<String>,
-}
-
-impl Default for AgentConfig {
-    fn default() -> Self {
-        Self {
-            history_limit: 10,
-            use_hooks: true,
-            max_retries: 3,
-            max_steps: 20,
-            depth: 0,
-            agent_name: None,
-        }
-    }
-}
-
-impl AgentConfig {
-    pub fn subagent(depth: u32, agent_name: Option<String>) -> Self {
-        Self {
-            history_limit: 0,
-            use_hooks: false,
-            max_retries: 0,
-            max_steps: 20,
-            depth,
-            agent_name,
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct PieAgent {
     pub model: Model,
@@ -86,8 +48,42 @@ pub struct PieAgent {
     pub pool: Arc<DbPool>,
     pub session: Session,
     pub config: AgentConfig,
-    pub loaded_skills: Arc<Mutex<HashSet<String>>>,
-    pub loaded_refs: Arc<Mutex<HashSet<String>>>,
+    loaded_skills: Arc<Mutex<HashSet<String>>>,
+    #[allow(dead_code)]
+    loaded_refs: Arc<Mutex<HashSet<String>>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentConfig {
+    pub agent_name: Option<String>,
+    pub history_limit: u32,
+    pub max_steps: u32,
+    pub depth: u32,
+    pub max_retries: u32,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            agent_name: None,
+            history_limit: 10,
+            max_steps: 20,
+            depth: 0,
+            max_retries: 3,
+        }
+    }
+}
+
+impl AgentConfig {
+    pub fn subagent(depth: u32, agent_name: Option<String>) -> Self {
+        Self {
+            agent_name,
+            history_limit: 10,
+            max_steps: 10,
+            depth,
+            max_retries: 3,
+        }
+    }
 }
 
 impl PieAgent {
@@ -115,7 +111,7 @@ impl PieAgent {
         &self,
         query: &Instructions,
         interactivity: Interactivity,
-    ) -> Result<(String, Vec<String>)> {
+    ) -> Result<String> {
         let mut query_mentions = query.clone();
 
         if self.config.history_limit > 0 {
@@ -124,8 +120,8 @@ impl PieAgent {
                 .iter()
                 .rev()
                 .take(self.config.history_limit as usize)
-                .filter(|e| e.role == Role::User)
-                .for_each(|e| query_mentions.merge_mentions(&e.content));
+                .filter(|e| e.role() == Role::User)
+                .for_each(|e| query_mentions.merge_mentions(&e.content()));
         }
 
         let sp = SystemPrompt::new(
@@ -148,78 +144,11 @@ impl PieAgent {
             }
         }
 
-        let sys = sp.render().await?;
-        if self.config.use_hooks {
-            let (final_sys, warnings) = self.run_pre_prompt_hooks(sys, query).await?;
-            tracing::debug!(size = final_sys.len(), "final system prompt ready");
-            Ok((final_sys, warnings))
-        } else {
-            tracing::debug!(size = sys.len(), "system prompt ready (no hooks)");
-            Ok((sys, Vec::new()))
-        }
-    }
-
-    async fn run_pre_prompt_hooks(
-        &self,
-        system_prompt: String,
-        query: &Instructions,
-    ) -> Result<(String, Vec<String>)> {
-        let mut system = system_prompt;
-        let mut warnings = Vec::new();
-
-        let Some(cfg) = crate::config::CONFIG.get() else {
-            return Ok((system, warnings));
-        };
-
-        let ctx = crate::hook::HookContext::new(
-            crate::hook::HookEvent::PrePrompt,
-            std::env::current_dir()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string(),
-            self.session.id.to_string(),
-            crate::hook::HookContextData::Prompt(crate::hook::PromptData {
-                system: Some(system.clone()),
-                query: Some(query.raw.clone()),
-            }),
-        );
-
-        match cfg.hooks.run(crate::hook::HookEvent::PrePrompt, &ctx).await {
-            Ok((outcomes, transformed_data)) => {
-                let mut errors = Vec::new();
-                for outcome in &outcomes {
-                    if let crate::hook::HookOutcome::Error { .. } = outcome {
-                        errors.push(outcome.format());
-                    }
-                }
-
-                if !errors.is_empty() {
-                    return Err(anyhow::anyhow!(
-                        "Prompt rejected by validation hooks:\n{}",
-                        errors.join("\n")
-                    ));
-                }
-
-                if let crate::hook::HookContextData::Prompt(p) = transformed_data
-                    && let Some(s) = p.system
-                {
-                    system = s;
-                }
-
-                for outcome in outcomes {
-                    if let crate::hook::HookOutcome::Warning { .. } = outcome {
-                        warnings.push(outcome.format());
-                    }
-                }
-
-                Ok((system, warnings))
-            }
-            Err(e) => Err(e),
-        }
+        sp.render().await
     }
 
     pub async fn run_pre_completion_hooks(&self, output: &str) -> Result<Option<String>> {
-        let Some(cfg) = crate::config::CONFIG.get() else {
+        let Some(cfg) = CONFIG.get() else {
             return Ok(None);
         };
 
@@ -260,12 +189,12 @@ impl PieAgent {
     fn build_tools(&self) -> Result<Vec<agentsdk::core::tools::Tool>> {
         let session_id = self.session.id.to_string();
         let mut tools = vec![
-            shell(self.sandbox.clone(), self.pool.clone(), session_id.clone()),
             read_file_tool(),
-            list_directory_tool(),
-            glob_tool(),
             write_file_tool(self.pool.clone(), session_id.clone()),
             replace_tool(self.pool.clone(), session_id.clone()),
+            list_directory_tool(),
+            glob_tool(),
+            shell(self.sandbox.clone(), self.pool.clone(), session_id.clone()),
             load_skills_tool(self.registry.clone(), Some(self.loaded_skills.clone())),
             load_references_tool(self.loaded_refs.clone()),
             execute_skill_script_tool(self.sandbox.clone()),
@@ -298,11 +227,11 @@ impl PieAgent {
             .rev()
             .take(self.config.history_limit as usize)
             .rev()
-            .filter_map(|entry| match entry.role {
-                Role::User => Some(Message::User(UserMessage::new(&entry.content))),
-                Role::Assistant => Some(Message::Assistant(AssistantMessage::from(
-                    entry.content.clone(),
-                ))),
+            .filter_map(|entry| match entry.role() {
+                Role::User => Some(Message::User(UserMessage::new(entry.content()))),
+                Role::Assistant => {
+                    Some(Message::Assistant(AssistantMessage::from(entry.content())))
+                }
                 _ => None,
             })
             .chain(std::iter::once(Message::User(UserMessage::new(&query.raw))))
@@ -357,8 +286,7 @@ impl PieAgent {
                     let agent = agent_clone.clone();
                     let query = query_inner.clone();
                     async move {
-                        let (system, _warnings) =
-                            agent.prepare_system_prompt(&query, interactivity).await?;
+                        let system = agent.prepare_system_prompt(&query, interactivity).await?;
                         let messages = agent.build_messages(&query);
                         let tools = agent.build_tools()?;
 
@@ -466,7 +394,6 @@ struct StreamProcessor<'a> {
     session: &'a mut Session,
     event_tx: UnboundedSender<AgentEvent>,
     pub accumulated: String,
-    pending_tool: PendingToolCall,
 }
 
 impl<'a> StreamProcessor<'a> {
@@ -475,7 +402,6 @@ impl<'a> StreamProcessor<'a> {
             session,
             event_tx,
             accumulated: String::new(),
-            pending_tool: PendingToolCall::default(),
         }
     }
 
@@ -504,46 +430,62 @@ impl<'a> StreamProcessor<'a> {
                     let _ = self.event_tx.send(AgentEvent::Delta(cleaned));
                 }
             }
-            LanguageModelStreamChunkType::ToolCallStart(details) => {
-                self.pending_tool.name.clone_from(&details.name);
-            }
             LanguageModelStreamChunkType::ToolCallAvailable(info) => {
-                self.pending_tool.params = format_tool_params(&info.input);
+                let info = ToolCallInfo {
+                    call_id: info.call_id,
+                    tool_name: info.tool.name.clone(),
+                    params: info.input.clone(),
+                    output: None,
+                };
+                let _ = self.session.record_tool_call(info).await;
             }
             LanguageModelStreamChunkType::ToolCallEnd(result) => {
-                let output = result
+                let call_id = result.call_id;
+                let name = result.tool.name.clone();
+                let output = match &result.output {
+                    Ok(v) => Some(Ok(v.clone())),
+                    Err(e) => Some(Err(serde_json::json!(e.to_string()))),
+                };
+
+                let info = ToolCallInfo {
+                    call_id,
+                    tool_name: name.clone(),
+                    params: serde_json::Value::Null,
+                    output,
+                };
+                let merged = self.session.record_tool_call(info).await;
+
+                let params = merged
+                    .as_ref()
+                    .map_or_else(|_| serde_json::Value::Null, |m| m.params.clone());
+                let params_str = format_tool_params(&params);
+                let params_str = anonymize_path(&params_str);
+                let display = if params_str.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{name}: {params_str}")
+                };
+
+                let output_str = result
                     .output
                     .as_ref()
                     .ok()
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                let output = anonymize_path(&output);
-                let name = std::mem::take(&mut self.pending_tool.name);
-                let params = std::mem::take(&mut self.pending_tool.params);
-                let params = anonymize_path(&params);
+                let output_str = anonymize_path(&output_str);
 
-                let display = if params.is_empty() {
-                    name.clone()
-                } else {
-                    format!("{name}: {params}")
-                };
-
-                if name == "plan_set" || name == "plan_step_update" {
+                let is_plan_tool = name == "plan_set" || name == "plan_step_update";
+                if is_plan_tool {
                     let _ = self.event_tx.send(AgentEvent::PlanUpdate);
                 }
 
-                persist_tool_call(self.session, &name, &display, &output).await;
-
-                let is_plan_tool = name == "plan_set" || name == "plan_step_update";
-                let show_tool =
-                    !is_plan_tool || crate::config::CONFIG.get().is_some_and(|c| c.debug);
-
+                let show_tool = !is_plan_tool || CONFIG.get().is_some_and(|c| c.debug);
                 if show_tool {
                     let _ = self.event_tx.send(AgentEvent::ToolCall {
                         name,
                         display,
-                        output,
+                        output: output_str,
                     });
                 }
             }
@@ -555,27 +497,6 @@ impl<'a> StreamProcessor<'a> {
         }
         true
     }
-}
-
-async fn persist_tool_call(session: &mut Session, _name: &str, display: &str, output: &str) {
-    let result_line = if output.is_empty() {
-        String::new()
-    } else {
-        output.lines().next().unwrap_or("").to_string()
-    };
-
-    let content = if result_line.is_empty() {
-        display.to_string()
-    } else {
-        format!("{display} → {result_line}")
-    };
-    let _ = session.add_tool(&content).await;
-}
-
-#[derive(Default)]
-struct PendingToolCall {
-    name: String,
-    params: String,
 }
 
 fn format_tool_params(input: &serde_json::Value) -> String {
