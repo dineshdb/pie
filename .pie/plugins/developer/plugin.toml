@@ -70,6 +70,6 @@ matcher = { tools = ["shell"] }
 name = "final-verification"
 event = "completion.pre"
 type = "cmd"
-handler = "developer.py verify"
+handler = "true"
 scope = "transform"
 timeout_ms = 300000

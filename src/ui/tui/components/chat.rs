@@ -115,11 +115,11 @@ impl ChatComponent {
         self.cached_lines.clear();
     }
 
-    pub fn update_response(&mut self, content: String) {
+    pub fn update_response(&mut self, delta: &str) {
         if let Some(idx) = self.response_idx
             && let Some(msg) = self.messages.get_mut(idx)
         {
-            msg.set_content(content);
+            msg.content.push_str(delta);
             self.chat_state.scroll_to_bottom();
             self.cached_lines.clear();
         }
@@ -339,7 +339,7 @@ impl ChatComponent {
     fn handle_user_event(&mut self, ev: &StreamEvent) -> Msg {
         match ev {
             StreamEvent::Delta(s) => {
-                self.update_response(s.clone());
+                self.update_response(s);
                 Msg::Redraw
             }
             StreamEvent::Done(s) => {
@@ -666,7 +666,7 @@ mod tests {
         assert_eq!(chat.response_idx, Some(0));
         assert!(chat.messages[0].is_response());
 
-        chat.update_response("Hello".to_string());
+        chat.update_response("Hello");
         assert_eq!(chat.messages[0].content, "Hello");
 
         chat.finish_stream("Hello world".to_string());
