@@ -148,7 +148,7 @@ impl PieAgent {
             }
         }
 
-        let sys = sp.render()?;
+        let sys = sp.render().await?;
         if self.config.use_hooks {
             let (final_sys, warnings) = self.run_pre_prompt_hooks(sys, query).await?;
             tracing::debug!(size = final_sys.len(), "final system prompt ready");
@@ -337,7 +337,7 @@ impl PieAgent {
             if self.config.depth < 2
                 && let Some(agent_name) = find_subsume_candidate(&query, &self.registry.agents)
             {
-                let mut subagent = self.spawn_subagent(Some(agent_name));
+                let mut subagent = self.spawn_subagent(Some(agent_name)).await;
                 return subagent
                     .stream(query_str, interactivity, event_tx, abort_rx)
                     .await;
@@ -348,7 +348,7 @@ impl PieAgent {
 
             loop {
                 let current_query = Instructions::new(current_query_raw.clone());
-                self.session.add_user(&current_query.raw)?;
+                self.session.add_user(&current_query.raw).await?;
 
                 let agent_clone = self.clone();
                 let query_inner = current_query.clone();
@@ -394,14 +394,14 @@ impl PieAgent {
                 {
                     tracing::info!("PreCompletion hook triggered, re-running LLM with feedback");
                     let assistant_text = response.text().await.unwrap_or_default();
-                    self.session.add_assistant(&assistant_text)?;
+                    self.session.add_assistant(&assistant_text).await?;
                     current_query_raw = feedback;
                     loop_count += 1;
                     continue;
                 }
 
                 if !output.is_empty() {
-                    self.session.add_assistant(&output)?;
+                    self.session.add_assistant(&output).await?;
                 }
                 let _ = event_tx.send(AgentEvent::Done(output.clone()));
                 return Ok(output);
@@ -409,10 +409,11 @@ impl PieAgent {
         })
     }
 
-    pub fn spawn_subagent(&self, agent_name: Option<String>) -> Self {
+    pub async fn spawn_subagent(&self, agent_name: Option<String>) -> Self {
         #[allow(clippy::expect_used)]
-        let sub_session =
-            Session::create(self.pool.clone()).expect("failed to create subagent session");
+        let sub_session = Session::create(self.pool.clone())
+            .await
+            .expect("failed to create subagent session");
         let config = AgentConfig::subagent(self.config.depth + 1, agent_name);
 
         PieAgent::new(
@@ -487,14 +488,14 @@ impl<'a> StreamProcessor<'a> {
             tokio::select! {
                 chunk = response.stream.next() => {
                     let Some(chunk) = chunk else { break; };
-                    if !self.process_chunk(chunk) { break; }
+                    if !self.process_chunk(chunk).await { break; }
                 }
                 _ = abort_rx.recv() => break,
             }
         }
     }
 
-    fn process_chunk(&mut self, chunk: LanguageModelStreamChunkType) -> bool {
+    async fn process_chunk(&mut self, chunk: LanguageModelStreamChunkType) -> bool {
         match chunk {
             LanguageModelStreamChunkType::TextDelta(delta) => {
                 let cleaned = strip_control_tokens(&delta);
@@ -532,7 +533,7 @@ impl<'a> StreamProcessor<'a> {
                     let _ = self.event_tx.send(AgentEvent::PlanUpdate);
                 }
 
-                persist_tool_call(self.session, &name, &display, &output);
+                persist_tool_call(self.session, &name, &display, &output).await;
 
                 let is_plan_tool = name == "plan_set" || name == "plan_step_update";
                 let show_tool =
@@ -556,7 +557,7 @@ impl<'a> StreamProcessor<'a> {
     }
 }
 
-fn persist_tool_call(session: &mut Session, _name: &str, display: &str, output: &str) {
+async fn persist_tool_call(session: &mut Session, _name: &str, display: &str, output: &str) {
     let result_line = if output.is_empty() {
         String::new()
     } else {
@@ -568,7 +569,7 @@ fn persist_tool_call(session: &mut Session, _name: &str, display: &str, output: 
     } else {
         format!("{display} → {result_line}")
     };
-    let _ = session.add_tool(&content);
+    let _ = session.add_tool(&content).await;
 }
 
 #[derive(Default)]

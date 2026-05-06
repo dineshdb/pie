@@ -1,7 +1,6 @@
 use crate::db::DbPool;
 use agentsdk::core::tools::{Tool, ToolExecute};
 use anyhow::Context;
-use rusqlite::params;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -34,84 +33,101 @@ pub enum StepStatus {
 
 #[derive(Debug, Clone, Serialize, JsonSchema, Deserialize, PartialEq, Eq)]
 pub struct Step {
-    pub id: Option<i64>,
     pub name: String,
     #[serde(default)]
     pub status: StepStatus,
 }
 
 pub trait PlanRepo {
-    fn load_steps(&self, session_id: &str) -> anyhow::Result<Vec<Step>>;
-    fn save_step(&self, session_id: &str, step: &Step) -> anyhow::Result<i64>;
+    fn load_steps(
+        &self,
+        session_id: &str,
+    ) -> impl Future<Output = anyhow::Result<Vec<Step>>> + Send;
+    fn save_step(
+        &self,
+        session_id: &str,
+        step: &Step,
+    ) -> impl Future<Output = anyhow::Result<i64>> + Send;
     fn update_step_status(
         &self,
         session_id: &str,
         name: &str,
         status: StepStatus,
-    ) -> anyhow::Result<()>;
-    fn delete_steps(&self, session_id: &str) -> anyhow::Result<()>;
+    ) -> impl Future<Output = anyhow::Result<()>> + Send;
+    fn delete_steps(&self, session_id: &str) -> impl Future<Output = anyhow::Result<()>> + Send;
 }
 
 impl PlanRepo for DbPool {
-    fn load_steps(&self, session_id: &str) -> anyhow::Result<Vec<Step>> {
-        let conn = self.get()?;
-        let mut stmt = conn.prepare(
-            "SELECT id, name, status FROM steps WHERE session_id = ? ORDER BY created_at ASC",
-        )?;
-        let rows = stmt.query_map(params![session_id], |row| {
-            let status_str: String = row.get(2)?;
-            Ok(Step {
-                id: Some(row.get(0)?),
-                name: row.get(1)?,
-                status: status_str.parse().unwrap_or(StepStatus::Pending),
-            })
-        })?;
+    async fn load_steps(&self, session_id: &str) -> anyhow::Result<Vec<Step>> {
+        let rows = sqlx::query_as!(
+            StepRow,
+            "SELECT name, status FROM steps WHERE session_id = ? ORDER BY created_at ASC",
+            session_id,
+        )
+        .fetch_all(self)
+        .await?;
 
-        Ok(rows.flatten().collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| Step {
+                name: r.name,
+                status: r.status.parse().unwrap_or(StepStatus::Pending),
+            })
+            .collect())
     }
 
-    fn save_step(&self, session_id: &str, step: &Step) -> anyhow::Result<i64> {
-        let conn = self.get()?;
+    async fn save_step(&self, session_id: &str, step: &Step) -> anyhow::Result<i64> {
         let status_ref: &str = step.status.as_ref();
-        conn.execute(
-            "INSERT INTO steps (session_id, name, status, updated_at)
+        let result = sqlx::query!(
+            r#"INSERT INTO steps (session_id, name, status, updated_at)
              VALUES (?1, ?2, ?3, unixepoch('subsec') * 1000)
              ON CONFLICT(session_id, name) DO UPDATE SET
              status = excluded.status,
-             updated_at = excluded.updated_at",
-            params![session_id, step.name, status_ref],
-        )?;
-        Ok(conn.last_insert_rowid())
+             updated_at = excluded.updated_at"#,
+            session_id,
+            step.name,
+            status_ref,
+        )
+        .execute(self)
+        .await?;
+        Ok(result.last_insert_rowid())
     }
 
-    fn update_step_status(
+    async fn update_step_status(
         &self,
         session_id: &str,
         name: &str,
         status: StepStatus,
     ) -> anyhow::Result<()> {
-        let conn = self.get()?;
         let status_ref: &str = status.as_ref();
-        conn.execute(
+        sqlx::query!(
             "UPDATE steps SET status = ?, updated_at = unixepoch('subsec') * 1000
              WHERE session_id = ? AND name = ?",
-            params![status_ref, session_id, name],
-        )?;
+            status_ref,
+            session_id,
+            name,
+        )
+        .execute(self)
+        .await?;
         Ok(())
     }
 
-    fn delete_steps(&self, session_id: &str) -> anyhow::Result<()> {
-        let conn = self.get()?;
-        conn.execute(
-            "DELETE FROM steps WHERE session_id = ?",
-            params![session_id],
-        )?;
+    async fn delete_steps(&self, session_id: &str) -> anyhow::Result<()> {
+        sqlx::query!("DELETE FROM steps WHERE session_id = ?", session_id)
+            .execute(self)
+            .await?;
         Ok(())
     }
 }
 
-pub fn enforce_planning(pool: &Arc<DbPool>, session_id: &str, tool: &str) -> Result<(), String> {
-    let steps = pool.load_steps(session_id).unwrap_or_default();
+#[derive(sqlx::FromRow)]
+struct StepRow {
+    name: String,
+    status: String,
+}
+
+pub async fn enforce_planning(pool: &DbPool, session_id: &str, tool: &str) -> Result<(), String> {
+    let steps = pool.load_steps(session_id).await.unwrap_or_default();
     if steps.is_empty() {
         return Err(format!(
             "CRITICAL ERROR: You called '{tool}' without a plan. \
@@ -150,15 +166,19 @@ fn build_plan_set(pool: Arc<DbPool>, session_id: String) -> anyhow::Result<Tool>
             r#"CRITICAL: Planning phase. Call this FIRST to define the plan steps. Input: {"steps": [{"name": "..."}]}"#,
         )
         .input_schema(schemars::schema_for!(StepListInput))
-        .execute(ToolExecute::from_sync(move |_ctx, params| {
-            let input: StepListInput = serde_json::from_value(params.clone())
-                .map_err(|e| format!("Invalid input: {e}"))?;
+        .execute(ToolExecute::from_async(move |_ctx, params| {
+            let pool = pool.clone();
+            let session_id = session_id.clone();
+            async move {
+                let input: StepListInput = serde_json::from_value(params.clone())
+                    .map_err(|e| format!("Invalid input: {e}"))?;
 
-            for t in input.steps {
-                let _ = pool.save_step(&session_id, &t);
+                for t in input.steps {
+                    let _ = pool.save_step(&session_id, &t).await;
+                }
+
+                Ok(json!({ "status": "ok" }).to_string())
             }
-
-            Ok(json!({ "status": "ok" }).to_string())
         }))
         .build()
         .context("failed to build plan_set tool")
@@ -171,15 +191,19 @@ fn build_plan_step_update(pool: Arc<DbPool>, session_id: String) -> anyhow::Resu
             r#"MANDATORY: Update a plan step status. Input: {"updates": [{"name": "...", "status": "completed"}]}"#,
         )
         .input_schema(schemars::schema_for!(StepUpdateList))
-        .execute(ToolExecute::from_sync(move |_ctx, params| {
-            let input: StepUpdateList = serde_json::from_value(params.clone())
-                .map_err(|e| format!("Invalid input: {e}"))?;
+        .execute(ToolExecute::from_async(move |_ctx, params| {
+            let pool = pool.clone();
+            let session_id = session_id.clone();
+            async move {
+                let input: StepUpdateList = serde_json::from_value(params.clone())
+                    .map_err(|e| format!("Invalid input: {e}"))?;
 
-            for update in input.updates {
-                let _ = pool.update_step_status(&session_id, &update.name, update.status);
+                for update in input.updates {
+                    let _ = pool.update_step_status(&session_id, &update.name, update.status).await;
+                }
+
+                Ok(json!({ "status": "ok" }).to_string())
             }
-
-            Ok(json!({ "status": "ok" }).to_string())
         }))
         .build()
         .context("failed to build plan_step_update tool")
@@ -190,9 +214,13 @@ fn build_plan_show(pool: Arc<DbPool>, session_id: String) -> anyhow::Result<Tool
         .name("plan_show")
         .description("List the current plan steps and their status.")
         .input_schema(schemars::schema_for!(GetStepsInput))
-        .execute(ToolExecute::from_sync(move |_ctx, _params| {
-            let steps = pool.load_steps(&session_id).unwrap_or_default();
-            Ok(json!({ "steps": steps }).to_string())
+        .execute(ToolExecute::from_async(move |_ctx, _params| {
+            let pool = pool.clone();
+            let session_id = session_id.clone();
+            async move {
+                let steps = pool.load_steps(&session_id).await.unwrap_or_default();
+                Ok(json!({ "steps": steps }).to_string())
+            }
         }))
         .build()
         .context("failed to build plan_show tool")

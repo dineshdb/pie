@@ -37,7 +37,7 @@ pub async fn spawn_stream(
     event_tx: UnboundedSender<StreamEvent>,
     mut abort_rx: UnboundedReceiver<()>,
 ) {
-    let session = match Session::load(ctx.pool.clone(), ctx.session_id) {
+    let session = match Session::load(ctx.pool.clone(), ctx.session_id).await {
         Ok(s) => s,
         Err(e) => {
             tracing::error!("failed to load session: {e}");

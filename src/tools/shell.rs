@@ -19,43 +19,48 @@ pub fn shell(
         .name("shell")
         .description("Execute a system command, bash tools, clis, etc. Requires plan.")
         .input_schema(schemars::schema_for!(ShellInput))
-        .execute(ToolExecute::from_sync(move |_ctx, params| {
-            super::emit_tool_input("shell", &params);
+        .execute(ToolExecute::from_async(move |_ctx, params| {
+            let pool = pool.clone();
+            let session_id = session_id.clone();
+            let sandbox_settings = sandbox_settings.clone();
+            async move {
+                super::emit_tool_input("shell", &params);
 
-            let cmd_str = params.get("command").and_then(|v| v.as_str());
-            crate::tools::plan::enforce_planning(&pool, &session_id, "shell")?;
+                let cmd_str = params.get("command").and_then(|v| v.as_str());
+                crate::tools::plan::enforce_planning(&pool, &session_id, "shell").await?;
 
-            let Some(cmd) = cmd_str else {
-                return Err("command parameter is required".to_string());
-            };
-            let cmd = cmd.to_string();
-            tracing::debug!(cmd = %cmd, "shell:");
-            let output = build_command(&cmd, &sandbox_settings)
-                .env("GIT_TERMINAL_PROMPT", "0")
-                .env("PAGER", "cat")
-                .env("EDITOR", "true")
-                .output();
-            let (stdout, stderr, exit_code) = match output {
-                Ok(out) => {
-                    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                    let exit_code = out.status.code().unwrap_or(-1);
-                    tracing::debug!(exit_code, stdout_len = stdout.len(), out = %stdout, "shell:");
-                    (stdout, stderr, exit_code)
-                }
-                Err(e) => {
-                    tracing::debug!(error = %e, "shell failed");
-                    (String::new(), e.to_string(), -1)
-                }
-            };
-            let result = json!({
-                "cmd": cmd,
-                "code": exit_code,
-                "stdout": stdout,
-                "stderr": stderr,
-            });
-            tracing::trace!(%result, "shell:");
-            Ok(serde_json::to_string(&result).unwrap_or_default())
+                let Some(cmd) = cmd_str else {
+                    return Err("command parameter is required".to_string());
+                };
+                let cmd = cmd.to_string();
+                tracing::debug!(cmd = %cmd, "shell:");
+                let output = build_command(&cmd, &sandbox_settings)
+                    .env("GIT_TERMINAL_PROMPT", "0")
+                    .env("PAGER", "cat")
+                    .env("EDITOR", "true")
+                    .output();
+                let (stdout, stderr, exit_code) = match output {
+                    Ok(out) => {
+                        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                        let exit_code = out.status.code().unwrap_or(-1);
+                        tracing::debug!(exit_code, stdout_len = stdout.len(), out = %stdout, "shell:");
+                        (stdout, stderr, exit_code)
+                    }
+                    Err(e) => {
+                        tracing::debug!(error = %e, "shell failed");
+                        (String::new(), e.to_string(), -1)
+                    }
+                };
+                let result = json!({
+                    "cmd": cmd,
+                    "code": exit_code,
+                    "stdout": stdout,
+                    "stderr": stderr,
+                });
+                tracing::trace!(%result, "shell:");
+                Ok(serde_json::to_string(&result).unwrap_or_default())
+            }
         }))
         .build()
         .unwrap()

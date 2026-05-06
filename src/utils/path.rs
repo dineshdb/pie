@@ -8,8 +8,11 @@ pub fn anonymize_path(path: &str) -> String {
     if let Some(home) = dirs::home_dir() {
         let home = home.lexiclean();
         let home_str = home.display().to_string();
-        if path_str.starts_with(&home_str) {
-            return path_str.replace(&home_str, "~/");
+        if path_str == home_str {
+            return "~".to_string();
+        }
+        if let Some(rest) = path_str.strip_prefix(&home_str) {
+            return format!("~{rest}");
         }
     }
     path_str

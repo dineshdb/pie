@@ -113,24 +113,29 @@ pub fn write_file_tool(pool: Arc<crate::db::DbPool>, session_id: String) -> Tool
         .name("write_file")
         .description("Write content to a file. Overwrites if it exists. Requires plan.")
         .input_schema(schemars::schema_for!(WriteFileInput))
-        .execute(ToolExecute::from_sync(move |_ctx, params| {
-            super::emit_tool_input("write_file", &params);
-            let input: WriteFileInput =
-                serde_json::from_value(params).map_err(|e| format!("Invalid input: {e}"))?;
+        .execute(ToolExecute::from_async(move |_ctx, params| {
+            let pool = pool.clone();
+            let session_id = session_id.clone();
+            async move {
+                super::emit_tool_input("write_file", &params);
+                let input: WriteFileInput =
+                    serde_json::from_value(params).map_err(|e| format!("Invalid input: {e}"))?;
 
-            enforce_planning(&pool, &session_id, "write_file")?;
-            let path = validate_path(&input.path)?;
+                enforce_planning(&pool, &session_id, "write_file").await?;
+                let path = validate_path(&input.path)?;
 
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|e| format!("Failed to create directories: {e}"))?;
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)
+                        .map_err(|e| format!("Failed to create directories: {e}"))?;
+                }
+
+                fs::write(&path, &input.content)
+                    .map_err(|e| format!("Failed to write file: {e}"))?;
+                Ok(
+                    json!({ "status": "success", "path": input.path, "bytes": input.content.len() })
+                        .to_string(),
+                )
             }
-
-            fs::write(&path, &input.content).map_err(|e| format!("Failed to write file: {e}"))?;
-            Ok(
-                json!({ "status": "success", "path": input.path, "bytes": input.content.len() })
-                    .to_string(),
-            )
         }))
         .build()
         .unwrap()
@@ -143,31 +148,35 @@ pub fn replace_tool(pool: Arc<crate::db::DbPool>, session_id: String) -> Tool {
         .name("replace")
         .description("Search and replace a specific string in a file. Fails if old_string is not found or is ambiguous. Requires plan.")
         .input_schema(schemars::schema_for!(ReplaceInput))
-        .execute(ToolExecute::from_sync(move |_ctx, params| {
-            super::emit_tool_input("replace", &params);
-            enforce_planning(&pool, &session_id, "replace")?;
+        .execute(ToolExecute::from_async(move |_ctx, params| {
+            let pool = pool.clone();
+            let session_id = session_id.clone();
+            async move {
+                super::emit_tool_input("replace", &params);
+                enforce_planning(&pool, &session_id, "replace").await?;
 
-            let input: ReplaceInput =
-                serde_json::from_value(params).map_err(|e| format!("Invalid input: {e}"))?;
+                let input: ReplaceInput =
+                    serde_json::from_value(params).map_err(|e| format!("Invalid input: {e}"))?;
 
-            let path = validate_path(&input.path)?;
-            let content =
-                fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))?;
-            let occurrences = content.matches(&input.old_string).count();
-            if occurrences == 0 {
-                return Err(format!("String not found in {}", input.path));
+                let path = validate_path(&input.path)?;
+                let content =
+                    fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))?;
+                let occurrences = content.matches(&input.old_string).count();
+                if occurrences == 0 {
+                    return Err(format!("String not found in {}", input.path));
+                }
+                if occurrences > 1 {
+                    return Err(format!(
+                        "String found {occurrences} times in {}. Please provide more context to make it unique.",
+                        input.path
+                    ));
+                }
+
+                let new_content = content.replace(&input.old_string, &input.new_string);
+                fs::write(&path, new_content).map_err(|e| format!("Failed to write file: {e}"))?;
+
+                Ok(json!({ "status": "success", "path": input.path }).to_string())
             }
-            if occurrences > 1 {
-                return Err(format!(
-                    "String found {occurrences} times in {}. Please provide more context to make it unique.",
-                    input.path
-                ));
-            }
-
-            let new_content = content.replace(&input.old_string, &input.new_string);
-            fs::write(&path, new_content).map_err(|e| format!("Failed to write file: {e}"))?;
-
-            Ok(json!({ "status": "success", "path": input.path }).to_string())
         }))
         .build()
         .unwrap()

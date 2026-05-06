@@ -113,12 +113,12 @@ impl Cli {
     }
 }
 
-fn resolve_session(pool: Arc<DbPool>, resume: bool) -> anyhow::Result<Session> {
+async fn resolve_session(pool: Arc<DbPool>, resume: bool) -> anyhow::Result<Session> {
     let cwd = std::env::current_dir()?.to_string_lossy().to_string();
-    if resume && let Some(session) = Session::find_latest_for_cwd(pool.clone(), &cwd)? {
+    if resume && let Some(session) = Session::find_latest_for_cwd(pool.clone(), &cwd).await? {
         return Ok(session);
     }
-    Session::create(pool)
+    Session::create(pool).await
 }
 
 #[tokio::main]
@@ -133,9 +133,9 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let pool = if cli.is_persistent() {
-        Arc::new(db::create_persistent_pool()?)
+        Arc::new(db::create_persistent_pool().await?)
     } else {
-        Arc::new(db::create_memory_pool()?)
+        Arc::new(db::create_memory_pool().await?)
     };
 
     let pie_config = load_config()?;
@@ -145,7 +145,7 @@ async fn main() -> anyhow::Result<()> {
     config::CONFIG.set(config).unwrap();
     let config = config::CONFIG.get().context("config should be set")?;
 
-    let session = resolve_session(pool.clone(), cli.resume)?;
+    let session = resolve_session(pool.clone(), cli.resume).await?;
     let registry = registry::Registry::load();
 
     if let Some(cmd) = cli.command {
@@ -205,7 +205,7 @@ async fn main() -> anyhow::Result<()> {
             }
         };
 
-        let session = Session::create(pool.clone())?;
+        let session = Session::create(pool.clone()).await?;
         let query = Instructions::new(full_query);
         return handler::handle_query(
             model,
@@ -220,7 +220,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Interactive mode: session-based REPL with file logging
-    let session = resolve_session(pool, cli.resume)?;
+    let session = resolve_session(pool, cli.resume).await?;
     ui::tui::run_tui(
         model,
         config.provider.clone(),
@@ -288,22 +288,22 @@ fn read_piped_stdin() -> Option<String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn resolve_session_creates_new_when_not_resuming() {
-        let pool = Arc::new(db::create_memory_pool().unwrap());
-        let session = resolve_session(pool, false).unwrap();
+    #[tokio::test]
+    async fn resolve_session_creates_new_when_not_resuming() {
+        let pool = Arc::new(db::create_memory_pool().await.unwrap());
+        let session = resolve_session(pool, false).await.unwrap();
         assert!(session.history_entries().is_empty());
     }
 
-    #[test]
-    fn resolve_session_restores_when_resuming() {
-        let pool = Arc::new(db::create_memory_pool().unwrap());
-        let mut original = Session::create(pool.clone()).unwrap();
-        original.add_user("hello").unwrap();
-        original.add_assistant("world").unwrap();
+    #[tokio::test]
+    async fn resolve_session_restores_when_resuming() {
+        let pool = Arc::new(db::create_memory_pool().await.unwrap());
+        let mut original = Session::create(pool.clone()).await.unwrap();
+        original.add_user("hello").await.unwrap();
+        original.add_assistant("world").await.unwrap();
         drop(original);
 
-        let session = resolve_session(pool, true).unwrap();
+        let session = resolve_session(pool, true).await.unwrap();
         let entries = session.history_entries();
         assert_eq!(entries.len(), 2, "restored session should have history");
         assert_eq!(entries[0].content, "hello");

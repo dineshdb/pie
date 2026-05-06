@@ -11,11 +11,10 @@
 use crate::config::{PieConfig, ResolvedProvider};
 use crate::providers::{Model, fetch_models};
 use crate::session::{Role, Session};
-use crate::tools::plan::PlanRepo;
 use crate::ui::tui::command::{Command, CommandAction};
 use crate::ui::tui::components::chat::{ActiveDialog, ChatComponent};
 use crate::ui::tui::components::input::InputComponent;
-use crate::ui::tui::realm::{App, Id, Msg, StreamEvent, StreamPort};
+use crate::ui::tui::realm::{App, Id, Msg, StreamEvent, StreamPort, run_sync};
 use crate::ui::tui::state::ChatMessage;
 use crate::ui::tui::widgets::plan_list::PlanView;
 use crate::ui::tui::widgets::status_bar::StatusBar;
@@ -182,7 +181,8 @@ fn handle_submit(
             }
         }
         CommandAction::NewSession => {
-            if let Ok(new_session) = Session::create(input.session_pool.clone()) {
+            let new_session = run_sync(Session::create(input.session_pool.clone()));
+            if let Ok(new_session) = new_session {
                 if let Some(chat) = chat_mut!(app) {
                     chat.clear_messages();
                     chat.add_message(ChatMessage::system("Welcome to pie! Type ? for help."));
@@ -435,7 +435,7 @@ fn render(app: &mut App, input: &mut InputComponent, terminal: &mut Terminal) ->
         let input_height = input_lines;
 
         let (show_plan, step_count) = if let Some(chat) = chat_ref!(app) {
-            let steps = chat.pool.load_steps(&chat.session_id).unwrap_or_default();
+            let steps = chat.cached_plan_steps.clone();
             (chat.show_plan && !steps.is_empty(), steps.len())
         } else {
             (false, 0)
@@ -482,7 +482,7 @@ fn render(app: &mut App, input: &mut InputComponent, terminal: &mut Terminal) ->
         if let Some(p_area) = plan_area
             && let Some(chat) = chat_ref!(app)
         {
-            let plan_view = PlanView::new(chat.pool.clone(), &chat.session_id).block(
+            let plan_view = PlanView::new(chat.cached_plan_steps.clone()).block(
                 Block::default()
                     .borders(Borders::TOP)
                     .border_style(Style::default().fg(Color::DarkGray))

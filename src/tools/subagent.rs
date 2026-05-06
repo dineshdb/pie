@@ -47,7 +47,9 @@ pub fn subagent_tool(
                     registry,
                     sandbox,
                     pool.clone(),
-                    crate::session::Session::create(pool).expect("failed to create session"),
+                    crate::session::Session::create(pool)
+                        .await
+                        .expect("failed to create session"),
                     AgentConfig::subagent(
                         0,
                         if name.is_empty() {

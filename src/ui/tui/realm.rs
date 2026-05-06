@@ -1,3 +1,4 @@
+use std::future::Future;
 use tuirealm::application::Application;
 use tuirealm::event::{Event, KeyEvent};
 use tuirealm::listener::{Poll, PortResult};
@@ -70,3 +71,14 @@ impl Poll<StreamEvent> for StreamPort {
 
 /// Type alias for the tuirealm Application used throughout the app.
 pub type App = Application<Id, Msg, StreamEvent>;
+
+/// Run an async future synchronously from the TUI render loop.
+///
+/// Uses `block_in_place` to avoid blocking the tokio runtime, then
+/// `block_on` to drive the future to completion.
+pub fn run_sync<F, T>(fut: F) -> T
+where
+    F: Future<Output = T>,
+{
+    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(fut))
+}

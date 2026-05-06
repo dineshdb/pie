@@ -38,36 +38,10 @@ impl Role {
     }
 }
 
-impl rusqlite::types::ToSql for Role {
-    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-        self.as_str().to_sql()
-    }
-}
-
-impl rusqlite::types::FromSql for Role {
-    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
-        let s = String::column_result(value)?;
-        s.parse()
-            .map_err(|_| rusqlite::types::FromSqlError::InvalidType)
-    }
-}
-
-// Newtype wrapper for Uuid to satisfy orphan rules
-pub struct DbUuid(pub Uuid);
-
-impl rusqlite::types::ToSql for DbUuid {
-    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-        Ok(self.0.to_string().into())
-    }
-}
-
-impl rusqlite::types::FromSql for DbUuid {
-    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
-        let s = value.as_str()?;
-        Uuid::parse_str(s)
-            .map(DbUuid)
-            .map_err(|_| rusqlite::types::FromSqlError::InvalidType)
-    }
+#[derive(sqlx::FromRow)]
+struct MessageRow {
+    role: String,
+    content: String,
 }
 
 // ── Session ────────────────────────────────────────────────────────
@@ -80,14 +54,13 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn create(pool: Arc<DbPool>) -> anyhow::Result<Self> {
+    pub async fn create(pool: Arc<DbPool>) -> anyhow::Result<Self> {
         let id = Uuid::now_v7();
         let cwd = std::env::current_dir()?.to_string_lossy().to_string();
-        let conn = pool.get()?;
-        conn.execute(
-            "INSERT INTO sessions (id, cwd) VALUES (?, ?)",
-            rusqlite::params![DbUuid(id), cwd],
-        )?;
+        let id_str = id.to_string();
+        sqlx::query!("INSERT INTO sessions (id, cwd) VALUES (?, ?)", id_str, cwd)
+            .execute(&*pool)
+            .await?;
         Ok(Self {
             id,
             pool,
@@ -95,15 +68,12 @@ impl Session {
         })
     }
 
-    pub fn load(pool: Arc<DbPool>, session_id: Uuid) -> anyhow::Result<Self> {
-        let exists = {
-            let conn = pool.get()?;
-            conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?)",
-                rusqlite::params![DbUuid(session_id)],
-                |row| row.get::<_, bool>(0),
-            )?
-        };
+    pub async fn load(pool: Arc<DbPool>, session_id: Uuid) -> anyhow::Result<Self> {
+        let sid = session_id.to_string();
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?)")
+            .bind(sid)
+            .fetch_one(&*pool)
+            .await?;
         if !exists {
             anyhow::bail!("Session {session_id} not found");
         }
@@ -112,24 +82,23 @@ impl Session {
             pool,
             cache: Vec::new(),
         };
-        session.rebuild_cache()?;
+        session.rebuild_cache().await?;
         Ok(session)
     }
 
-    pub fn find_latest_for_cwd(pool: Arc<DbPool>, cwd: &str) -> anyhow::Result<Option<Self>> {
-        let id: Option<DbUuid> = {
-            let conn = pool.get()?;
-            conn.query_row(
-                "SELECT id FROM sessions WHERE cwd = ? ORDER BY updated_at DESC LIMIT 1",
-                rusqlite::params![cwd],
-                |row| row.get(0),
-            )
-            .ok()
-        };
-        if let Some(id) = id {
-            Ok(Some(Self::load(pool, id.0)?))
-        } else {
-            Ok(None)
+    pub async fn find_latest_for_cwd(pool: Arc<DbPool>, cwd: &str) -> anyhow::Result<Option<Self>> {
+        let id_str: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM sessions WHERE cwd = ? ORDER BY updated_at DESC LIMIT 1",
+        )
+        .bind(cwd)
+        .fetch_optional(&*pool)
+        .await?;
+        match id_str {
+            Some(sid) => {
+                let id = Uuid::parse_str(&sid)?;
+                Ok(Some(Self::load(pool, id).await?))
+            }
+            None => Ok(None),
         }
     }
 
@@ -141,23 +110,22 @@ impl Session {
         &self.pool
     }
 
-    fn add_message(&mut self, role: Role, content: &str) -> anyhow::Result<()> {
-        let conn = self.pool.get()?;
+    async fn add_message(&mut self, role: Role, content: &str) -> anyhow::Result<()> {
         let now_ms = chrono::Utc::now().timestamp_millis();
+        let sid = self.id.to_string();
+        let ts = now_ms * 1000;
+        let role_str = role.as_str();
 
-        let mut hash = None;
-        if role == Role::Tool {
-            hash = Some(format!("{:x}", md5::compute(content)));
-        }
+        sqlx::query!(
+            "INSERT INTO messages (session_id, ts, role, content) VALUES (?, ?, ?, ?)",
+            sid,
+            ts,
+            role_str,
+            content,
+        )
+        .execute(&*self.pool)
+        .await?;
 
-        conn.execute(
-            "INSERT INTO messages (session_id, ts, role, content, hash) VALUES (?, ?, ?, ?, ?)",
-            rusqlite::params![DbUuid(self.id), now_ms * 1000, role, content, hash],
-        )?;
-        conn.execute(
-            "UPDATE sessions SET updated_at = ? WHERE id = ?",
-            rusqlite::params![now_ms, DbUuid(self.id)],
-        )?;
         self.cache.push(HistoryEntry {
             role,
             content: content.to_string(),
@@ -165,140 +133,122 @@ impl Session {
         Ok(())
     }
 
-    pub fn add_user(&mut self, content: &str) -> anyhow::Result<()> {
-        self.add_message(Role::User, content)
+    pub async fn add_user(&mut self, content: &str) -> anyhow::Result<()> {
+        self.add_message(Role::User, content).await
     }
 
-    pub fn add_assistant(&mut self, content: &str) -> anyhow::Result<()> {
-        self.add_message(Role::Assistant, content)
+    pub async fn add_assistant(&mut self, content: &str) -> anyhow::Result<()> {
+        self.add_message(Role::Assistant, content).await
     }
 
-    pub fn add_tool(&mut self, content: &str) -> anyhow::Result<()> {
-        self.add_message(Role::Tool, content)
+    pub async fn add_tool(&mut self, content: &str) -> anyhow::Result<()> {
+        self.add_message(Role::Tool, content).await
     }
 
-    fn rebuild_cache(&mut self) -> anyhow::Result<()> {
-        let conn = self.pool.get()?;
-        let mut stmt = conn.prepare(
-            "SELECT role, content FROM messages \
-             WHERE session_id = ? AND compacted = 0 \
-             ORDER BY id",
-        )?;
-        let messages: Vec<HistoryEntry> = stmt
-            .query_map(rusqlite::params![DbUuid(self.id)], |row| {
-                let role: Role = row.get(0)?;
-                let content: String = row.get(1)?;
-                Ok(HistoryEntry { role, content })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+    async fn rebuild_cache(&mut self) -> anyhow::Result<()> {
+        let sid = self.id.to_string();
+        let rows = sqlx::query_as!(
+            MessageRow,
+            "SELECT role, content FROM messages WHERE session_id = ? AND compacted = 0 ORDER BY id",
+            sid,
+        )
+        .fetch_all(&*self.pool)
+        .await?;
 
-        self.cache = messages;
+        self.cache = rows
+            .into_iter()
+            .filter_map(|r| {
+                Some(HistoryEntry {
+                    role: r.role.parse().ok()?,
+                    content: r.content,
+                })
+            })
+            .collect();
         Ok(())
     }
 }
 
+#[allow(clippy::indexing_slicing)]
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db;
 
-    fn pool() -> anyhow::Result<Arc<DbPool>> {
-        Ok(Arc::new(db::create_test_pool()?))
+    async fn pool() -> anyhow::Result<Arc<DbPool>> {
+        Ok(Arc::new(db::create_test_pool().await?))
     }
 
-    #[test]
-    fn create_session() -> anyhow::Result<()> {
-        let pool = pool()?;
-        let session = Session::create(pool.clone())?;
+    #[tokio::test]
+    async fn create_session() -> anyhow::Result<()> {
+        let pool = pool().await?;
+        let session = Session::create(pool.clone()).await?;
         assert!(session.history_entries().is_empty());
         Ok(())
     }
 
-    #[test]
-    fn load_nonexistent_session() -> anyhow::Result<()> {
-        let pool = pool()?;
-        let result = Session::load(pool, Uuid::now_v7());
+    #[tokio::test]
+    async fn load_nonexistent_session() -> anyhow::Result<()> {
+        let pool = pool().await?;
+        let result = Session::load(pool, Uuid::now_v7()).await;
         assert!(result.is_err());
         Ok(())
     }
 
-    #[test]
-    fn find_latest_for_cwd_returns_most_recent() -> anyhow::Result<()> {
-        let pool = pool()?;
-        let cwd = "/test/path";
+    #[tokio::test]
+    async fn find_latest_for_cwd_returns_most_recent() -> anyhow::Result<()> {
+        let pool = pool().await?;
+        let cwd = std::env::current_dir()?.to_string_lossy().to_string();
 
-        // Insert sessions with explicit timestamps to guarantee ordering
-        let conn = pool.get()?;
-        let id1 = Uuid::now_v7();
-        conn.execute(
-            "INSERT INTO sessions (id, cwd, created_at, updated_at) VALUES (?, ?, 1000, 1000)",
-            rusqlite::params![DbUuid(id1), cwd],
-        )?;
+        let _s1 = Session::create(pool.clone()).await?;
+        let mut s2 = Session::create(pool.clone()).await?;
+        s2.add_user("ensure updated_at is later").await?;
 
-        let id2 = Uuid::now_v7();
-        conn.execute(
-            "INSERT INTO sessions (id, cwd, created_at, updated_at) VALUES (?, ?, 2000, 2000)",
-            rusqlite::params![DbUuid(id2), cwd],
-        )?;
-        drop(conn);
-
-        let found = Session::find_latest_for_cwd(pool, cwd)?
+        let found = Session::find_latest_for_cwd(pool, &cwd)
+            .await?
             .ok_or_else(|| anyhow::anyhow!("no session found"))?;
-        assert_eq!(found.id, id2);
+        assert_eq!(found.id, s2.id);
         Ok(())
     }
 
-    #[test]
-    fn find_latest_for_cwd_returns_none_when_empty() -> anyhow::Result<()> {
-        let pool = pool()?;
-        let result = Session::find_latest_for_cwd(pool, "/nonexistent")?;
+    #[tokio::test]
+    async fn find_latest_for_cwd_returns_none_when_empty() -> anyhow::Result<()> {
+        let pool = pool().await?;
+        let result = Session::find_latest_for_cwd(pool, "/nonexistent").await?;
         assert!(result.is_none());
         Ok(())
     }
 
-    #[test]
-    fn add_user_and_assistant() -> anyhow::Result<()> {
-        let pool = pool()?;
-        let mut session = Session::create(pool.clone())?;
-        session.add_user("hello")?;
-        session.add_assistant("hi there")?;
+    #[tokio::test]
+    async fn add_user_and_assistant() -> anyhow::Result<()> {
+        let pool = pool().await?;
+        let mut session = Session::create(pool.clone()).await?;
+        session.add_user("hello").await?;
+        session.add_assistant("hi there").await?;
 
         let entries = session.history_entries();
         assert_eq!(entries.len(), 2);
-        let first = entries
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("no entry 0"))?;
-        assert_eq!(first.role, Role::User);
-        assert_eq!(first.content, "hello");
-        let second = entries
-            .get(1)
-            .ok_or_else(|| anyhow::anyhow!("no entry 1"))?;
-        assert_eq!(second.role, Role::Assistant);
-        assert_eq!(second.content, "hi there");
+        assert_eq!(entries[0].role, Role::User);
+        assert_eq!(entries[0].content, "hello");
+        assert_eq!(entries[1].role, Role::Assistant);
+        assert_eq!(entries[1].content, "hi there");
         Ok(())
     }
 
-    #[test]
-    fn history_persists_after_load() -> anyhow::Result<()> {
-        let pool = pool()?;
+    #[tokio::test]
+    async fn history_persists_after_load() -> anyhow::Result<()> {
+        let pool = pool().await?;
         let id = {
-            let mut session = Session::create(pool.clone())?;
-            session.add_user("first")?;
-            session.add_assistant("second")?;
+            let mut session = Session::create(pool.clone()).await?;
+            session.add_user("first").await?;
+            session.add_assistant("second").await?;
             session.id
         };
 
-        let loaded = Session::load(pool, id)?;
+        let loaded = Session::load(pool, id).await?;
         let entries = loaded.history_entries();
         assert_eq!(entries.len(), 2);
-        let first = entries
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("no entry 0"))?;
-        assert_eq!(first.content, "first");
-        let second = entries
-            .get(1)
-            .ok_or_else(|| anyhow::anyhow!("no entry 1"))?;
-        assert_eq!(second.content, "second");
+        assert_eq!(entries[0].content, "first");
+        assert_eq!(entries[1].content, "second");
         Ok(())
     }
 }

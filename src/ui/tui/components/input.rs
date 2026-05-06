@@ -378,10 +378,10 @@ impl InputComponent {
             return vec![];
         }
 
-        let steps = self
-            .session_pool
-            .load_steps(&self.session_id.to_string())
-            .unwrap_or_default();
+        let steps = crate::ui::tui::realm::run_sync(
+            self.session_pool.load_steps(&self.session_id.to_string()),
+        )
+        .unwrap_or_default();
 
         let active: Vec<String> = steps
             .iter()
@@ -420,7 +420,10 @@ impl InputComponent {
         apply_textarea_style(&mut empty);
         self.textarea = empty;
 
-        let _ = PlanRepo::delete_steps(&*self.session_pool, &session_id.to_string());
+        let _ = crate::ui::tui::realm::run_sync(PlanRepo::delete_steps(
+            &*self.session_pool,
+            &session_id.to_string(),
+        ));
     }
 
     // ── Rendering ────────────────────────────────────────────────────

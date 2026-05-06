@@ -60,11 +60,7 @@ impl<'a> From<&SystemPrompt<'a>> for SystemPromptCtx<'a> {
             .interactivity
             .unwrap_or_else(|| sp.agent.map_or(Interactivity::None, |a| a.interactivity));
 
-        let steps = if let (Some(pool), Some(session_id)) = (&sp.pool, &sp.session_id) {
-            pool.load_steps(session_id).unwrap_or_default()
-        } else {
-            Vec::new()
-        };
+        let steps = Vec::new();
 
         let plugin_system_prompts: HashMap<String, String> = sp
             .plugins
@@ -205,8 +201,16 @@ impl<'a> SystemPrompt<'a> {
     }
 
     /// Render the final system prompt string.
-    pub fn render(&self) -> Result<String> {
-        let ctx = SystemPromptCtx::from(self);
+    pub async fn render(&self) -> Result<String> {
+        let steps = if let (Some(pool), Some(session_id)) = (&self.pool, &self.session_id) {
+            pool.load_steps(session_id).await.unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let ctx = SystemPromptCtx {
+            steps,
+            ..SystemPromptCtx::from(self)
+        };
         render_template("system_prompt", SYSTEM_PROMPT_TEMPLATE, &ctx)
     }
 
@@ -261,16 +265,17 @@ mod test_helpers {
 
     /// Render the main agent prompt with deterministic values.
     #[allow(clippy::expect_used)]
-    pub fn render_main(skills: &[Skill], json_output: bool) -> String {
+    pub async fn render_main(skills: &[Skill], json_output: bool) -> String {
         SystemPrompt::new(skills, &[], &[])
             .with_json(json_output)
             .render()
+            .await
             .expect("test render main")
     }
 
     /// Render the subagent prompt with deterministic values.
     #[allow(clippy::expect_used)]
-    pub fn render_sub() -> String {
+    pub async fn render_sub() -> String {
         let agent = Agent {
             name: "test-agent".to_string(),
             description: "test".to_string(),
@@ -284,6 +289,7 @@ mod test_helpers {
         SystemPrompt::new(&[], &agents, &[])
             .with_agent(Some("test-agent"))
             .render()
+            .await
             .expect("test render sub")
     }
 }
@@ -292,9 +298,9 @@ mod test_helpers {
 mod tests {
     use super::test_helpers::*;
 
-    #[test]
-    fn subagent_with_agent_name_includes_persona() {
-        let result = render_sub();
+    #[tokio::test]
+    async fn subagent_with_agent_name_includes_persona() {
+        let result = render_sub().await;
         let role = result.split("Agent Role").nth(1).unwrap_or("");
         assert!(
             role.contains("You are a test agent."),
@@ -304,27 +310,27 @@ mod tests {
 
     // ── Repo-awareness ─────────────────────────────────────────
 
-    #[test]
-    fn main_agent_does_not_hardcode_repo_instructions() {
-        let result = render_main(&[], false);
+    #[tokio::test]
+    async fn main_agent_does_not_hardcode_repo_instructions() {
+        let result = render_main(&[], false).await;
         assert!(
             !result.contains("/my/project"),
             "repo root must not be hardcoded in system prompt"
         );
     }
 
-    #[test]
-    fn main_agent_outside_repo_has_no_repo_instructions() {
-        let result = render_main(&[], false);
+    #[tokio::test]
+    async fn main_agent_outside_repo_has_no_repo_instructions() {
+        let result = render_main(&[], false).await;
         assert!(
             !result.contains("git repo"),
             "should not mention git repo when not in one"
         );
     }
 
-    #[test]
-    fn subagent_in_repo_cannot_delegate_further() {
-        let result = render_sub();
+    #[tokio::test]
+    async fn subagent_in_repo_cannot_delegate_further() {
+        let result = render_sub().await;
         let repo_section = result.split("git repo").nth(1).unwrap_or("");
         assert!(
             !repo_section.contains("subagent"),
@@ -334,10 +340,10 @@ mod tests {
 
     // ── Config layering ─────────────────────────────────────────
 
-    #[test]
-    fn skills_appear_only_when_provided() {
-        let with = render_main(&[skill("my-skill", "desc", "content")], false);
-        let without = render_main(&[], false);
+    #[tokio::test]
+    async fn skills_appear_only_when_provided() {
+        let with = render_main(&[skill("my-skill", "desc", "content")], false).await;
+        let without = render_main(&[], false).await;
         assert!(with.contains("my-skill"), "provided skill must appear");
         assert!(
             !without.contains("my-skill"),
@@ -345,18 +351,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn runtime_context_includes_date_and_working_directory() {
+    #[tokio::test]
+    async fn runtime_context_includes_date_and_working_directory() {
         unsafe { std::env::set_var("PWD", "/test/project") };
-        let result = render_main(&[], false);
-        assert!(result.contains('-'), "date must appear"); // Simple check for date format
+        let result = render_main(&[], false).await;
+        assert!(result.contains('-'), "date must appear");
         assert!(result.contains("/test/project"), "pwd must appear");
     }
 
-    #[test]
-    fn json_output_mode_injected_when_enabled() {
-        let with = render_main(&[], true);
-        let without = render_main(&[], false);
+    #[tokio::test]
+    async fn json_output_mode_injected_when_enabled() {
+        let with = render_main(&[], true).await;
+        let without = render_main(&[], false).await;
         assert!(
             with.contains("JSON Output Mode"),
             "json output mode must appear when enabled"
@@ -369,9 +375,9 @@ mod tests {
 
     // ── Template integrity ─────────────────────────────────────────
 
-    #[test]
-    fn all_template_variables_resolve() {
-        let result = render_main(&[skill("bash", "commands", "content")], false);
+    #[tokio::test]
+    async fn all_template_variables_resolve() {
+        let result = render_main(&[skill("bash", "commands", "content")], false).await;
         assert!(!result.contains("{%"), "unrendered Jinja block tag");
         assert!(!result.contains("{{"), "unrendered Jinja expression");
     }

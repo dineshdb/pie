@@ -22,6 +22,11 @@ After each change, run following tests to verify if the change is valid.
   architecture and organization to slim down and /simplify the codebase to keep
   it lean and clean.
 - Prefer newtypes over raw types
+- Use sqlx, statically typed queries for maximum foolproofness.
+
+## I'm an Idiot
+
+So make the codebase foolproof. Add tests, lints, automatic formatting, git hooks(suggest some), etc. You have a memory of a goldfish so you don't remember, I'm a fool. So write those instructions and rules somewhere for reusability. Don't make me angry because I get easily angry just like Hulk. I'm always angry.
 
 ## Simplification
 

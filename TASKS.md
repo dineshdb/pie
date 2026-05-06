@@ -12,3 +12,4 @@
 - [ ] Add hook for after conversation completion
   - [ ] Use it to run completion checks and nudge the system to get to back to work.
   - [ ] System Notifications
+- [ ] Define tools such that they can check and run automatically at different points.

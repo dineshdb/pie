@@ -1,7 +1,4 @@
-use crate::db::DbPool;
-use crate::tools::plan::PlanRepo;
-use crate::tools::plan::StepStatus;
-use std::sync::Arc;
+use crate::tools::plan::{Step, StepStatus};
 use tuirealm::ratatui::buffer::Buffer;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::{Color, Style};
@@ -10,18 +7,13 @@ use tuirealm::ratatui::widgets;
 use tuirealm::ratatui::widgets::{Paragraph, Widget};
 
 pub struct PlanView<'a> {
-    pub db: Arc<DbPool>,
-    pub session: &'a str,
+    steps: Vec<Step>,
     pub block: Option<widgets::Block<'a>>,
 }
 
 impl<'a> PlanView<'a> {
-    pub fn new(db: Arc<DbPool>, session: &'a str) -> PlanView<'a> {
-        PlanView {
-            db,
-            block: None,
-            session,
-        }
+    pub fn new(steps: Vec<Step>) -> PlanView<'a> {
+        PlanView { steps, block: None }
     }
 
     pub fn block(mut self, block: widgets::Block<'a>) -> PlanView<'a> {
@@ -44,7 +36,7 @@ impl Widget for PlanView<'_> {
         let mut lines = Vec::new();
         let prefix = Span::styled("  ", Style::default().fg(Color::DarkGray));
 
-        for step in &self.db.load_steps(self.session).unwrap_or_default() {
+        for step in &self.steps {
             let (icon, color) = match step.status {
                 StepStatus::Pending => ("○", Color::DarkGray),
                 StepStatus::InProgress => ("▶", Color::Yellow),

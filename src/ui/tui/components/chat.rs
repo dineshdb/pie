@@ -4,6 +4,7 @@
 
 use crate::db::DbPool;
 use crate::registry::Registry;
+use crate::tools::plan::Step;
 use crate::ui::tui::realm::{Msg, StreamEvent};
 use crate::ui::tui::state::ChatMessage;
 use crate::ui::tui::widgets::chat::{self, ChatState, ChatView};
@@ -49,6 +50,7 @@ pub struct ChatComponent {
     pub pool: Arc<DbPool>,
     pub session_id: String,
     pub show_plan: bool,
+    pub cached_plan_steps: Vec<Step>,
 }
 
 impl ChatComponent {
@@ -73,6 +75,7 @@ impl ChatComponent {
             pool,
             session_id,
             show_plan: true,
+            cached_plan_steps: Vec::new(),
         }
     }
 
@@ -374,6 +377,12 @@ impl ChatComponent {
                 Msg::Redraw
             }
             StreamEvent::PlanUpdate => {
+                let pool = self.pool.clone();
+                let session_id = self.session_id.clone();
+                self.cached_plan_steps = crate::ui::tui::realm::run_sync(async {
+                    use crate::tools::plan::PlanRepo;
+                    pool.load_steps(&session_id).await.unwrap_or_default()
+                });
                 self.cached_lines.clear();
                 Msg::Redraw
             }
@@ -599,18 +608,18 @@ mod tests {
         })
     }
 
-    fn test_pool() -> Arc<DbPool> {
-        Arc::new(crate::db::create_test_pool().unwrap())
+    async fn test_pool() -> Arc<DbPool> {
+        Arc::new(crate::db::create_test_pool().await.unwrap())
     }
 
-    #[test]
-    fn new_chat_has_welcome_message_first() {
+    #[tokio::test]
+    async fn new_chat_has_welcome_message_first() {
         let messages = vec![ChatMessage::system("Welcome to pie! Type ? for help.")];
         let chat = ChatComponent::new(
             messages,
             "test-model".to_string(),
             test_registry(),
-            test_pool(),
+            test_pool().await,
             "test-session".to_string(),
         );
         assert_eq!(chat.messages.len(), 1);
@@ -619,13 +628,13 @@ mod tests {
         assert!(chat.show_plan);
     }
 
-    #[test]
-    fn add_message_auto_scrolls() {
+    #[tokio::test]
+    async fn add_message_auto_scrolls() {
         let mut chat = ChatComponent::new(
             vec![ChatMessage::system("Welcome")],
             "test-model".to_string(),
             test_registry(),
-            test_pool(),
+            test_pool().await,
             "test-session".to_string(),
         );
         chat.chat_state.auto_scroll = false;
@@ -636,13 +645,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn toggle_plan_state() {
+    #[tokio::test]
+    async fn toggle_plan_state() {
         let mut chat = ChatComponent::new(
             vec![],
             "test-model".to_string(),
             test_registry(),
-            test_pool(),
+            test_pool().await,
             "test-session".to_string(),
         );
         assert!(chat.show_plan);
@@ -652,13 +661,13 @@ mod tests {
         assert!(chat.show_plan);
     }
 
-    #[test]
-    fn start_and_finish_stream() {
+    #[tokio::test]
+    async fn start_and_finish_stream() {
         let mut chat = ChatComponent::new(
             vec![],
             "test-model".to_string(),
             test_registry(),
-            test_pool(),
+            test_pool().await,
             "test-session".to_string(),
         );
         chat.start_response();
