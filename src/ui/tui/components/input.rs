@@ -10,7 +10,9 @@ use crate::session::Session;
 use crate::tools::plan::{PlanRepo, StepStatus};
 use crate::ui::tui::realm::{Msg, StreamEvent};
 use crate::ui::tui::stream::{StreamContext, spawn_stream};
-use crate::ui::tui::widgets::completion::{CompletionPopup, CompletionState, Direction};
+use crate::ui::tui::widgets::completion::{
+    CompletionPopup, CompletionState, Direction, slash_token_range,
+};
 use crate::ui::tui::widgets::history::InputHistory;
 use crate::ui::tui::widgets::input::{InputView, cursor_position};
 use p1e_sandbox::SandboxConfig;
@@ -217,13 +219,18 @@ impl InputComponent {
         let row = self.textarea.cursor().0;
         let mut lines: Vec<String> = self.textarea.lines().iter().map(String::from).collect();
         if let Some(line) = lines.get_mut(row) {
-            *line = completion.to_string();
+            if let Some((start, _end)) = slash_token_range(line) {
+                let mut new_line = String::with_capacity(start + completion.len());
+                new_line.push_str(&line[..start]);
+                new_line.push_str(completion);
+                *line = new_line;
+            } else {
+                *line = completion.to_string();
+            }
         }
         let mut ta = TextArea::new(lines);
         apply_textarea_style(&mut ta);
-        for _ in 0..completion.len() {
-            ta.move_cursor(tui_textarea::CursorMove::End);
-        }
+        ta.move_cursor(tui_textarea::CursorMove::End);
         self.textarea = ta;
         self.current_hint.clear();
     }
@@ -231,7 +238,7 @@ impl InputComponent {
     fn update_hint(&mut self) {
         self.current_hint.clear();
         let line = self.current_line();
-        if !line.starts_with('/') || line.len() < 2 {
+        if slash_token_range(&line).is_none() || line.len() < 2 {
             return;
         }
 

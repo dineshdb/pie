@@ -105,6 +105,27 @@ fn scroll_offset(selected: usize, visible: usize, total: usize) -> usize {
     }
 }
 
+/// Find the last `/`-token in a line where `/` is at position 0 or after whitespace.
+/// Returns `(start, end)` byte offsets.
+pub fn slash_token_range(line: &str) -> Option<(usize, usize)> {
+    let mut best = None;
+    for (i, _) in line.char_indices().filter(|&(_, c)| c == '/') {
+        if i > 0
+            && !line
+                .as_bytes()
+                .get(i - 1)
+                .is_some_and(u8::is_ascii_whitespace)
+        {
+            continue;
+        }
+        let end = line[i..]
+            .find(|c: char| c.is_whitespace())
+            .map_or(line.len(), |pos| i + pos);
+        best = Some((i, end));
+    }
+    best
+}
+
 #[derive(Clone, Copy)]
 pub enum Direction {
     Prev,
@@ -154,14 +175,15 @@ impl CompletionState {
     }
 
     pub fn update(&mut self, line: &str) {
-        if !line.starts_with('/') {
+        let Some((start, end)) = slash_token_range(line) else {
             self.reset();
             return;
-        }
+        };
+        let token = &line[start..end];
 
-        let matches = find_completions(line, &self.registry.completions);
+        let matches = find_completions(token, &self.registry.completions);
         if matches.is_empty()
-            || (matches.len() == 1 && matches.first().is_some_and(|c| c.label == line))
+            || (matches.len() == 1 && matches.first().is_some_and(|c| c.label == token))
         {
             self.reset();
             return;
@@ -185,14 +207,16 @@ impl CompletionState {
     }
 
     pub fn find_hint(&self, line: &str) -> Option<String> {
-        if !line.starts_with('/') || line.len() < 2 {
+        let (start, end) = slash_token_range(line)?;
+        let token = &line[start..end];
+        if token.len() < 2 {
             return None;
         }
         self.registry
             .completions
             .iter()
-            .find(|c| c.label.starts_with(line) && c.label != line)
-            .map(|c| c.label[line.len()..].to_string())
+            .find(|c| c.label.starts_with(token) && c.label != token)
+            .map(|c| c.label[token.len()..].to_string())
     }
 }
 
