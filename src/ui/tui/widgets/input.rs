@@ -1,4 +1,4 @@
-use crate::registry::{CompletionItem, CompletionKind};
+use crate::registry::CompletionItem;
 use tuirealm::ratatui::buffer::Buffer;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::{Color, Modifier, Style};
@@ -72,15 +72,6 @@ impl Widget for InputView<'_> {
     }
 }
 
-fn kind_color(kind: CompletionKind) -> Color {
-    match kind {
-        CompletionKind::Builtin => Color::Yellow,
-        CompletionKind::Skill => Color::Cyan,
-        CompletionKind::Agent => Color::Green,
-    }
-}
-
-/// Highlight `/name` tokens that match known completions.
 fn highlight_line(text: &str, completions: &[CompletionItem]) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let mut last = 0;
@@ -107,7 +98,7 @@ fn highlight_line(text: &str, completions: &[CompletionItem]) -> Vec<Span<'stati
             spans.push(Span::styled(
                 token.to_string(),
                 Style::default()
-                    .fg(kind_color(item.kind))
+                    .fg(item.kind.color())
                     .add_modifier(Modifier::BOLD),
             ));
             last = word_end;
@@ -133,9 +124,9 @@ pub fn cursor_position(area: Rect, cursor_row: usize, cursor_col: usize) -> (u16
 }
 
 #[cfg(test)]
-#[allow(clippy::indexing_slicing)]
 mod tests {
     use super::*;
+    use crate::registry::CompletionKind;
     use tuirealm::ratatui::Terminal;
     use tuirealm::ratatui::backend::TestBackend;
 

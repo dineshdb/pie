@@ -1,31 +1,11 @@
-#![warn(
-    // Correctness
-    future_incompatible,
-    nonstandard_style,
-    rust_2024_compatibility,
-    // Strictness
-    missing_debug_implementations,
-    missing_copy_implementations,
-    trivial_casts,
-    trivial_numeric_casts,
-    unsafe_op_in_unsafe_fn,
-    unused_import_braces,
-    unused_lifetimes,
-    unused_qualifications,
-    variant_size_differences,
-    // Clippy pedantic (as compiler warnings)
-    clippy::pedantic,
-)]
-#![deny(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    clippy::indexing_slicing
-)]
-#![allow(
-    clippy::module_name_repetitions,
-    clippy::multiple_crate_versions,
-    clippy::future_not_send
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )
 )]
 
 mod agent;
@@ -284,7 +264,6 @@ fn read_piped_stdin() -> Option<String> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
 

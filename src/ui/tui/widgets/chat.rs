@@ -321,7 +321,6 @@ fn append_tool_lines(lines: &mut Vec<Line<'static>>, content: &str, width: usize
 pub(crate) use super::truncate_str;
 
 #[cfg(test)]
-#[allow(clippy::indexing_slicing)]
 mod tests {
     use super::*;
     use tuirealm::ratatui::Terminal;

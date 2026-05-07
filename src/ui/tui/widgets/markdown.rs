@@ -133,7 +133,6 @@ fn push_text(
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
 

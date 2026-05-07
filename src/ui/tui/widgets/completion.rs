@@ -1,4 +1,4 @@
-use crate::registry::{CompletionItem, CompletionKind, Registry};
+use crate::registry::{CompletionItem, Registry};
 use std::sync::Arc;
 use tuirealm::ratatui::buffer::Buffer;
 use tuirealm::ratatui::layout::Rect;
@@ -234,19 +234,15 @@ fn completion_line(
     name_width: usize,
     area_width: u16,
 ) -> Line<'static> {
-    let name_fg = match item.kind {
-        CompletionKind::Builtin => Color::Yellow,
-        CompletionKind::Skill => Color::Cyan,
-        CompletionKind::Agent => Color::Green,
-    };
-
     let name_style = if is_selected {
         Style::default()
             .fg(Color::Black)
             .bg(Color::Cyan)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(name_fg).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(item.kind.color())
+            .add_modifier(Modifier::BOLD)
     };
 
     let desc_style = if is_selected {
@@ -291,4 +287,223 @@ fn truncate_str(s: &str, max_chars: usize) -> String {
         .last()
         .map_or(max_chars.min(s.len()), |(i, c)| i + c.len_utf8());
     format!("{}...", &s[..end])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::registry::CompletionKind;
+
+    fn test_registry(items: Vec<(&str, &str, CompletionKind)>) -> Arc<Registry> {
+        Arc::new(Registry {
+            agents: Vec::new(),
+            skills: Vec::new(),
+            plugins: Vec::new(),
+            completions: items
+                .into_iter()
+                .map(|(label, desc, kind)| CompletionItem {
+                    label: label.to_string(),
+                    description: desc.to_string(),
+                    kind,
+                })
+                .collect(),
+        })
+    }
+
+    #[test]
+    fn slash_token_at_start() {
+        assert_eq!(slash_token_range("/hello world"), Some((0, 6)));
+    }
+
+    #[test]
+    fn slash_token_after_space() {
+        assert_eq!(slash_token_range("use /rev now"), Some((4, 8)));
+    }
+
+    #[test]
+    fn slash_token_no_slash() {
+        assert_eq!(slash_token_range("hello world"), None);
+    }
+
+    #[test]
+    fn slash_token_embedded_in_word() {
+        assert_eq!(slash_token_range("foo/bar"), None);
+    }
+
+    #[test]
+    fn slash_token_returns_last_when_multiple() {
+        assert_eq!(slash_token_range("/first /second end"), Some((7, 14)));
+    }
+
+    #[test]
+    fn slash_token_at_end_of_line() {
+        assert_eq!(slash_token_range("use /review"), Some((4, 11)));
+    }
+
+    #[test]
+    fn slash_token_only_slash() {
+        assert_eq!(slash_token_range("/"), Some((0, 1)));
+    }
+
+    #[test]
+    fn slash_token_empty_string() {
+        assert_eq!(slash_token_range(""), None);
+    }
+
+    #[test]
+    fn slash_token_path_is_full_token() {
+        // No whitespace in "/usr/bin/bash" so it's one token
+        assert_eq!(slash_token_range("/usr/bin/bash"), Some((0, 13)));
+    }
+
+    #[test]
+    fn slash_token_second_slash_embedded() {
+        // /bin is embedded in path, not at word boundary; whole /usr/bin is one token
+        assert_eq!(slash_token_range("use /usr/bin"), Some((4, 12)));
+    }
+
+    #[test]
+    fn update_triggers_at_start() {
+        let reg = test_registry(vec![
+            ("/review", "Review code", CompletionKind::Skill),
+            ("/refactor", "Refactor", CompletionKind::Skill),
+        ]);
+        let mut state = CompletionState::new(reg);
+        state.update("/re");
+        assert!(state.is_active());
+        assert_eq!(state.candidates().len(), 2);
+    }
+
+    #[test]
+    fn update_triggers_mid_line() {
+        let reg = test_registry(vec![("/debug", "Debug", CompletionKind::Agent)]);
+        let mut state = CompletionState::new(reg);
+        state.update("use /deb");
+        assert!(state.is_active());
+        assert_eq!(state.candidates().len(), 1);
+        assert_eq!(state.selected(), Some("/debug"));
+    }
+
+    #[test]
+    fn update_no_match_resets() {
+        let reg = test_registry(vec![("/review", "Review", CompletionKind::Skill)]);
+        let mut state = CompletionState::new(reg);
+        state.update("/zzz");
+        assert!(!state.is_active());
+    }
+
+    #[test]
+    fn update_exact_match_resets() {
+        let reg = test_registry(vec![("/review", "Review", CompletionKind::Skill)]);
+        let mut state = CompletionState::new(reg);
+        state.update("/review");
+        assert!(!state.is_active(), "exact match should not show popup");
+    }
+
+    #[test]
+    fn update_no_slash_resets() {
+        let reg = test_registry(vec![("/review", "Review", CompletionKind::Skill)]);
+        let mut state = CompletionState::new(reg);
+        state.update("/rev");
+        assert!(state.is_active());
+        state.update("no slash here");
+        assert!(!state.is_active());
+    }
+
+    #[test]
+    fn update_preserves_selection() {
+        let reg = test_registry(vec![
+            ("/review", "Review", CompletionKind::Skill),
+            ("/refactor", "Refactor", CompletionKind::Skill),
+        ]);
+        let mut state = CompletionState::new(reg);
+        state.update("/re");
+        assert_eq!(state.candidates().len(), 2);
+        state.move_selection(Direction::Next);
+        assert_eq!(state.selected(), Some("/refactor"));
+        // Narrow to /rev — only /review matches, selection falls back to 0
+        state.update("/rev");
+        assert_eq!(state.candidates().len(), 1);
+        assert_eq!(state.selected(), Some("/review"));
+    }
+
+    #[test]
+    fn find_hint_at_start() {
+        let reg = test_registry(vec![("/review", "Review", CompletionKind::Skill)]);
+        let state = CompletionState::new(reg);
+        assert_eq!(state.find_hint("/rev"), Some("iew".to_string()));
+    }
+
+    #[test]
+    fn find_hint_mid_line() {
+        let reg = test_registry(vec![("/debug", "Debug", CompletionKind::Agent)]);
+        let state = CompletionState::new(reg);
+        assert_eq!(state.find_hint("use /deb"), Some("ug".to_string()));
+    }
+
+    #[test]
+    fn find_hint_exact_match_returns_none() {
+        let reg = test_registry(vec![("/review", "Review", CompletionKind::Skill)]);
+        let state = CompletionState::new(reg);
+        assert_eq!(state.find_hint("/review"), None);
+    }
+
+    #[test]
+    fn find_hint_no_match_returns_none() {
+        let reg = test_registry(vec![("/review", "Review", CompletionKind::Skill)]);
+        let state = CompletionState::new(reg);
+        assert_eq!(state.find_hint("/zzz"), None);
+    }
+
+    #[test]
+    fn find_hint_slash_only_returns_none() {
+        let reg = test_registry(vec![("/review", "Review", CompletionKind::Skill)]);
+        let state = CompletionState::new(reg);
+        assert_eq!(state.find_hint("/"), None);
+    }
+
+    #[test]
+    fn find_hint_no_slash_returns_none() {
+        let reg = test_registry(vec![("/review", "Review", CompletionKind::Skill)]);
+        let state = CompletionState::new(reg);
+        assert_eq!(state.find_hint("no slash"), None);
+    }
+
+    // ── apply_completion logic ─────────────────────────────────
+
+    #[test]
+    fn apply_completion_preserves_prefix_and_suffix() {
+        let line = "use /rev now";
+        let (start, end) = slash_token_range(line).unwrap();
+        let completion = "/review";
+        let result = format!("{}{}{}", &line[..start], completion, &line[end..]);
+        assert_eq!(result, "use /review now");
+    }
+
+    #[test]
+    fn apply_completion_at_start_no_suffix() {
+        let line = "/rev";
+        let (start, end) = slash_token_range(line).unwrap();
+        let completion = "/review";
+        let result = format!("{}{}{}", &line[..start], completion, &line[end..]);
+        assert_eq!(result, "/review");
+    }
+
+    #[test]
+    fn apply_completion_mid_line_no_suffix() {
+        let line = "use /deb";
+        let (start, end) = slash_token_range(line).unwrap();
+        let completion = "/debug";
+        let result = format!("{}{}{}", &line[..start], completion, &line[end..]);
+        assert_eq!(result, "use /debug");
+    }
+
+    // ── CompletionKind::color ──────────────────────────────────
+
+    #[test]
+    fn completion_kind_colors() {
+        assert_eq!(CompletionKind::Builtin.color(), Color::Yellow);
+        assert_eq!(CompletionKind::Skill.color(), Color::Cyan);
+        assert_eq!(CompletionKind::Agent.color(), Color::Green);
+    }
 }

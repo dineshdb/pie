@@ -69,3 +69,27 @@ tempfile = "3"
 lto = true
 panic = "abort"
 strip = true
+
+[lints.rust]
+future_incompatible = "warn"
+nonstandard_style = "warn"
+rust_2024_compatibility = "warn"
+missing_debug_implementations = "warn"
+missing_copy_implementations = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_import_braces = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+variant_size_differences = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+module_name_repetitions = "allow"
+multiple_crate_versions = "allow"
+future_not_send = "allow"

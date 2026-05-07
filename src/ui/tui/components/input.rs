@@ -219,11 +219,8 @@ impl InputComponent {
         let row = self.textarea.cursor().0;
         let mut lines: Vec<String> = self.textarea.lines().iter().map(String::from).collect();
         if let Some(line) = lines.get_mut(row) {
-            if let Some((start, _end)) = slash_token_range(line) {
-                let mut new_line = String::with_capacity(start + completion.len());
-                new_line.push_str(&line[..start]);
-                new_line.push_str(completion);
-                *line = new_line;
+            if let Some((start, end)) = slash_token_range(line) {
+                *line = format!("{}{}{}", &line[..start], completion, &line[end..]);
             } else {
                 *line = completion.to_string();
             }

@@ -252,7 +252,6 @@ pub fn execute_skill_script_tool(sandbox_settings: Arc<SandboxConfig>) -> Tool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
     use crate::config::pie_home;
