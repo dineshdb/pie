@@ -1,3 +1,4 @@
+use crate::registry::{CompletionItem, CompletionKind};
 use tuirealm::ratatui::buffer::Buffer;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::{Color, Modifier, Style};
@@ -13,6 +14,7 @@ pub struct InputView<'a> {
     pub hint: &'a str,
     pub is_empty: bool,
     pub is_streaming: bool,
+    pub completions: &'a [CompletionItem],
 }
 
 impl Widget for InputView<'_> {
@@ -47,7 +49,7 @@ impl Widget for InputView<'_> {
                     spans.push(Span::styled(PROMPT, prompt_style));
                 }
 
-                spans.push(Span::raw(segment));
+                spans.extend(highlight_line(&segment, self.completions));
                 if show_placeholder && show_prompt && j == 0 {
                     spans.push(Span::styled(
                         self.placeholder,
@@ -68,6 +70,57 @@ impl Widget for InputView<'_> {
 
         Paragraph::new(rendered).render(area, buf);
     }
+}
+
+fn kind_color(kind: CompletionKind) -> Color {
+    match kind {
+        CompletionKind::Builtin => Color::Yellow,
+        CompletionKind::Skill => Color::Cyan,
+        CompletionKind::Agent => Color::Green,
+    }
+}
+
+/// Highlight `/name` tokens that match known completions.
+fn highlight_line(text: &str, completions: &[CompletionItem]) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut last = 0;
+
+    for (i, _) in text.char_indices().filter(|&(_, c)| c == '/') {
+        if i > 0
+            && !text
+                .as_bytes()
+                .get(i - 1)
+                .is_some_and(u8::is_ascii_whitespace)
+        {
+            continue;
+        }
+
+        let word_end = text[i..]
+            .find(|c: char| c.is_whitespace())
+            .map_or(text.len(), |pos| i + pos);
+
+        let token = &text[i..word_end];
+        if let Some(item) = completions.iter().find(|c| c.label == token) {
+            if i > last {
+                spans.push(Span::raw(text[last..i].to_string()));
+            }
+            spans.push(Span::styled(
+                token.to_string(),
+                Style::default()
+                    .fg(kind_color(item.kind))
+                    .add_modifier(Modifier::BOLD),
+            ));
+            last = word_end;
+        }
+    }
+
+    if last < text.len() {
+        spans.push(Span::raw(text[last..].to_string()));
+    }
+    if spans.is_empty() {
+        spans.push(Span::raw(text.to_string()));
+    }
+    spans
 }
 
 pub fn cursor_position(area: Rect, cursor_row: usize, cursor_col: usize) -> (u16, u16) {
@@ -110,9 +163,9 @@ mod tests {
             hint: "",
             is_empty: true,
             is_streaming: false,
+            completions: &[],
         };
         let buf = render_input(view, 30, 3);
-        // Row 0 is the content row (no border anymore)
         let content = row(&buf, 0);
         assert!(
             content.contains("Type something"),
@@ -129,6 +182,7 @@ mod tests {
             hint: "",
             is_empty: false,
             is_streaming: false,
+            completions: &[],
         };
         let buf = render_input(view, 30, 3);
         let content = row(&buf, 0);
@@ -144,9 +198,9 @@ mod tests {
             hint: "",
             is_empty: true,
             is_streaming: true,
+            completions: &[],
         };
         let buf = render_input(view, 30, 3);
-        // Prompt cell should be Cyan
         let prompt_cell = &buf[(0, 0)];
         assert_eq!(
             prompt_cell.fg,
@@ -158,13 +212,56 @@ mod tests {
     #[test]
     fn cursor_position_accounts_for_prompt_offset() {
         let area = Rect::new(0, 0, 40, 5);
-        // Row 0 with col 0 should offset by 2 (prompt "> ")
         let (x, y) = cursor_position(area, 0, 0);
         assert_eq!(x, 2, "first row cursor should offset for prompt");
         assert_eq!(y, 0, "cursor should be at row 0 (no border)");
 
-        // Row 1+ should have no offset
         let (x, _) = cursor_position(area, 1, 5);
         assert_eq!(x, 5, "subsequent rows should have no prompt offset");
+    }
+
+    #[test]
+    fn highlight_skill_name_at_start() {
+        let completions = vec![CompletionItem {
+            label: "/review".to_string(),
+            description: String::new(),
+            kind: CompletionKind::Skill,
+        }];
+        let spans = highlight_line("/review fix the bug", &completions);
+        assert_eq!(spans.len(), 2, "should split into skill + rest");
+        assert_eq!(spans[0].content, "/review");
+        assert_eq!(spans[1].content, " fix the bug");
+    }
+
+    #[test]
+    fn highlight_unknown_slash_not_styled() {
+        let spans = highlight_line("/unknown thing", &[]);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content, "/unknown thing");
+    }
+
+    #[test]
+    fn highlight_mid_line_skill() {
+        let completions = vec![CompletionItem {
+            label: "/debug".to_string(),
+            description: String::new(),
+            kind: CompletionKind::Agent,
+        }];
+        let spans = highlight_line("use /debug now", &completions);
+        assert_eq!(spans.len(), 3);
+        assert_eq!(spans[0].content, "use ");
+        assert_eq!(spans[1].content, "/debug");
+        assert_eq!(spans[2].content, " now");
+    }
+
+    #[test]
+    fn slash_not_at_word_boundary_not_matched() {
+        let completions = vec![CompletionItem {
+            label: "/debug".to_string(),
+            description: String::new(),
+            kind: CompletionKind::Agent,
+        }];
+        let spans = highlight_line("foo/debug", &completions);
+        assert_eq!(spans.len(), 1, "embedded /debug should not match");
     }
 }

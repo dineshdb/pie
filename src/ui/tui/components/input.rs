@@ -456,6 +456,7 @@ impl InputComponent {
             hint: &self.current_hint,
             is_empty,
             is_streaming,
+            completions: &self.registry.completions,
         };
         frame.render_widget(input_view, area);
 
