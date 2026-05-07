@@ -176,6 +176,13 @@ impl Session {
         .execute(&*self.pool)
         .await?;
 
+        sqlx::query!(
+            "UPDATE sessions SET updated_at = unixepoch('subsec') * 1000 WHERE id = ?",
+            sid,
+        )
+        .execute(&*self.pool)
+        .await?;
+
         self.cache.push(entry);
         Ok(())
     }

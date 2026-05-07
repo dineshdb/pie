@@ -1,6 +1,7 @@
 ---
 name: simplify
 description: Code simplification review — find duplication, dead code, over-abstraction, and missed reuse.
+model: deep
 interactivity: minimal
 ---
 

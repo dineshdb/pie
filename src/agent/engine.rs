@@ -396,6 +396,17 @@ impl PieAgent {
     }
 
     pub async fn spawn_subagent(&self, agent_name: Option<String>) -> Self {
+        let tier = agent_name.as_ref().and_then(|name| {
+            self.registry
+                .agents
+                .iter()
+                .find(|a| &a.name == name)
+                .and_then(|a| a.model.as_deref())
+        });
+        let model = CONFIG
+            .get()
+            .map_or(self.model.clone(), |c| c.resolve_model(tier, &self.model));
+
         #[allow(clippy::expect_used)]
         let sub_session = Session::create(self.pool.clone())
             .await
@@ -403,7 +414,7 @@ impl PieAgent {
         let config = AgentConfig::subagent(self.config.depth + 1, agent_name);
 
         PieAgent::new(
-            self.model.clone(),
+            model,
             self.registry.clone(),
             self.sandbox.clone(),
             self.pool.clone(),

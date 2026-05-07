@@ -53,6 +53,8 @@ pub struct PieConfig {
     pub default_provider: Option<String>,
     #[serde(default)]
     pub provider: HashMap<String, ProviderConfig>,
+    #[serde(default)]
+    pub model: HashMap<String, ModelTier>,
     pub agent: Option<AgentConfig>,
     pub sandbox: Option<SandboxConfig>,
     pub output_format: Option<String>,
@@ -60,6 +62,13 @@ pub struct PieConfig {
     #[serde(default)]
     pub hooks: Vec<crate::hook::HookDef>,
     pub hooks_timeout_ms: Option<u64>,
+}
+
+/// A named model tier in `[model.<name>]` sections.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelTier {
+    pub provider: String,
+    pub model: Option<String>,
 }
 
 impl PieConfig {
@@ -84,11 +93,34 @@ pub struct AgentConfig {
 #[derive(Debug)]
 pub struct ResolvedConfig {
     pub provider: ResolvedProvider,
+    pub model_tiers: HashMap<String, ResolvedProvider>,
     pub max_steps: u32,
     pub output_format: OutputFormat,
     pub log_level: String,
     pub debug: bool,
     pub hooks: crate::hook::HooksManager,
+}
+
+impl ResolvedConfig {
+    /// Resolve a model tier name (from agent frontmatter) to a concrete `Model`.
+    /// Falls back to the provided `fallback` if the tier is unset or unresolvable.
+    pub fn resolve_model(
+        &self,
+        tier: Option<&str>,
+        fallback: &crate::providers::Model,
+    ) -> crate::providers::Model {
+        let Some(tier_name) = tier else {
+            return fallback.clone();
+        };
+        let Some(provider) = self.model_tiers.get(tier_name) else {
+            tracing::warn!("model tier '{tier_name}' not found in config, using default");
+            return fallback.clone();
+        };
+        crate::providers::build_from_resolved(provider).unwrap_or_else(|e| {
+            tracing::warn!("failed to build model for tier '{tier_name}': {e}");
+            fallback.clone()
+        })
+    }
 }
 
 impl ProviderConfig {
@@ -140,6 +172,8 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
             resolved_provider.name = name.to_string();
         }
 
+        let model_tiers = resolve_model_tiers(&pie);
+
         let log_level = if cli.debug { "debug" } else { pie.log_level() }.to_string();
         let hooks = crate::hook::HooksManager::new(
             pie.hooks.into_iter().map(crate::hook::Hook::from).collect(),
@@ -148,6 +182,7 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
 
         Ok(Self {
             provider: resolved_provider,
+            model_tiers,
             max_steps,
             output_format,
             log_level,
@@ -183,6 +218,35 @@ impl TryFrom<ProviderConfig> for ResolvedProvider {
             temperature: provider.temperature,
         })
     }
+}
+
+/// Resolve `[model.<name>]` tiers into `ResolvedProvider`s by looking up
+/// each tier's `provider` field in the `[provider.*]` map.
+fn resolve_model_tiers(pie: &PieConfig) -> HashMap<String, ResolvedProvider> {
+    let mut tiers = HashMap::new();
+    for (name, tier) in &pie.model {
+        let Some(provider_cfg) = pie.provider.get(&tier.provider) else {
+            tracing::warn!(
+                "model tier '{name}' references unknown provider '{}'",
+                tier.provider
+            );
+            continue;
+        };
+        let mut cfg = provider_cfg.clone();
+        if let Some(ref model_override) = tier.model {
+            cfg.model = Some(model_override.clone());
+        }
+        match ResolvedProvider::try_from(cfg) {
+            Ok(mut resolved) => {
+                resolved.name.clone_from(name);
+                tiers.insert(name.clone(), resolved);
+            }
+            Err(e) => {
+                tracing::warn!("model tier '{name}' has invalid config: {e}");
+            }
+        }
+    }
+    tiers
 }
 
 pub fn load_config() -> anyhow::Result<PieConfig> {

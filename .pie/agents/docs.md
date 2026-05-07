@@ -1,6 +1,7 @@
 ---
 name: docs
 description: Fetch up-to-date library documentation and code examples using Context7.
+model: fast
 interactivity: none
 ---
 

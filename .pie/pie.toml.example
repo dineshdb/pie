@@ -32,6 +32,26 @@ model = "claude-3-5-sonnet-20240620"
 base_url = "https://api.anthropic.com/v1"
 api_key = "sk-ant-..."
 
+# Model tiers — agents reference these by name in their frontmatter.
+# If an agent doesn't specify a tier, or the tier isn't defined,
+# it falls back to default_provider.
+#
+# [model.<name>]
+#   provider = "<provider_name>"  # references a [provider.*] section
+#   model = "<model_name>"        # overrides the provider's default model
+
+[model.fast]
+provider = "local"
+model = "mlx-community/gemma-4-e4b-it-4bit"
+
+[model.deep]
+provider = "openai"
+model = "gpt-4o"
+
+[model.broad]
+provider = "anthropic"
+model = "claude-opus-4-7"
+
 [sandbox]
 # Native OS-level isolation (sandbox-exec on macOS, bubblewrap on Linux)
 

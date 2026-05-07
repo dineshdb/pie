@@ -1,4 +1,5 @@
 use crate::agent::{AgentConfig, PieAgent};
+use crate::config::CONFIG;
 use crate::db::DbPool;
 use crate::providers::Model;
 use crate::registry::Registry;
@@ -42,8 +43,17 @@ pub fn subagent_tool(
             let pool = pool.clone();
 
             async move {
+                let tier = registry
+                    .agents
+                    .iter()
+                    .find(|a| a.name == name)
+                    .and_then(|a| a.model.as_deref());
+                let resolved_model = CONFIG
+                    .get()
+                    .map_or(model.clone(), |c| c.resolve_model(tier, &model));
+
                 let mut agent = PieAgent::new(
-                    model,
+                    resolved_model,
                     registry,
                     sandbox,
                     pool.clone(),

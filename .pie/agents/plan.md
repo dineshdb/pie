@@ -1,6 +1,7 @@
 ---
 name: plan
 description: Implementation planning — gathers context, asks clarifying questions, produces detailed plans that reduce implementation work.
+model: deep
 interactivity: interactive
 ---
 

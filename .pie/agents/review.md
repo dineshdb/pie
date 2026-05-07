@@ -1,6 +1,7 @@
 ---
 name: review
-description: Comprehensive code review using the PERFECT pattern — Purpose, Edge Cases, Reliability, Form, Evidence, Clarity, Taste.
+description: Code review using the PERFECT pattern — Purpose, Edge Cases, Reliability, Form, Evidence, Clarity, Taste.
+model: deep
 interactivity: minimal
 ---
 
