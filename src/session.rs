@@ -29,7 +29,7 @@ pub enum Role {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ToolCallInfo {
+pub struct ToolCall {
     pub call_id: Uuid,
     pub tool_name: String,
     pub params: serde_json::Value,
@@ -42,7 +42,7 @@ pub enum HistoryEntry {
     User(String),
     Assistant(String),
     System(String),
-    Tool(ToolCallInfo),
+    Tool(ToolCall),
 }
 
 impl HistoryEntry {
@@ -52,6 +52,13 @@ impl HistoryEntry {
             Self::Assistant(_) => Role::Assistant,
             Self::System(_) => Role::System,
             Self::Tool(_) => Role::Tool,
+        }
+    }
+
+    pub fn user(&self) -> Option<&Self> {
+        match self {
+            Self::User(_) => Some(self),
+            _ => None,
         }
     }
 
@@ -183,11 +190,11 @@ impl Session {
             .await
     }
 
-    async fn add_tool(&mut self, info: ToolCallInfo) -> anyhow::Result<()> {
+    async fn add_tool(&mut self, info: ToolCall) -> anyhow::Result<()> {
         self.add_entry(HistoryEntry::Tool(info)).await
     }
 
-    pub async fn record_tool_call(&mut self, info: ToolCallInfo) -> anyhow::Result<ToolCallInfo> {
+    pub async fn record_tool_call(&mut self, info: ToolCall) -> anyhow::Result<ToolCall> {
         let existing = self.cache.iter_mut().rev().find_map(|e| match e {
             HistoryEntry::Tool(t) if t.call_id == info.call_id => Some(t),
             _ => None,

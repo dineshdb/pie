@@ -5,7 +5,8 @@ use crate::instructions::Instructions;
 use crate::prompt::SystemPrompt;
 use crate::providers::{Model, strip_control_tokens};
 use crate::registry::Registry;
-use crate::session::{Role, Session, ToolCallInfo};
+use crate::session::{HistoryEntry, Role, Session, ToolCall};
+use crate::skill::Skill;
 use crate::tools::plan::plan_tools;
 use crate::tools::{
     execute_skill_script_tool, glob_tool, list_directory_tool, load_references_tool,
@@ -13,16 +14,20 @@ use crate::tools::{
     write_file_tool,
 };
 use crate::utils::anonymize_path;
+use agentsdk::core::language_model::LanguageModelResponseContentType;
+use agentsdk::core::tools::{ToolCallInfo, ToolDetails, ToolResultInfo};
 use agentsdk::core::utils::step_count_is;
 use agentsdk::core::{
     AssistantMessage, LanguageModelRequest, LanguageModelStreamChunkType, Message,
     StreamTextResponse, UserMessage,
 };
+use agentsdk::extensions::Extensions;
 use anyhow::{Context, Result};
 use futures::future::BoxFuture;
 use itertools::Itertools;
 use p1e_sandbox::SandboxConfig;
 use std::collections::HashSet;
+use std::fmt::Write;
 use std::sync::{Arc, Mutex, PoisonError};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio_stream::StreamExt;
@@ -134,16 +139,6 @@ impl PieAgent {
         .resolve(&query_mentions)
         .with_interactivity(interactivity);
 
-        {
-            let mut loaded = self
-                .loaded_skills
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            for skill in &sp.loaded_skills {
-                loaded.insert(skill.name.clone());
-            }
-        }
-
         sp.render().await
     }
 
@@ -217,8 +212,70 @@ impl PieAgent {
     }
 
     fn build_messages(&self, query: &Instructions) -> Vec<Message> {
+        let mut merged_mentions = query.clone();
+        if self.config.history_limit > 0 {
+            self.session
+                .history_entries()
+                .iter()
+                .rev()
+                .take(self.config.history_limit as usize)
+                .filter_map(HistoryEntry::user)
+                .for_each(|e| merged_mentions.merge_mentions(&e.content()));
+        }
+
+        let mentions: Vec<String> = merged_mentions.mentions.iter().cloned().collect();
+        let resolved = Skill::resolve(&self.registry.skills, &mentions);
+
+        let mut skill_messages: Vec<Message> = Vec::new();
+        if !resolved.is_empty() {
+            {
+                let mut loaded = self
+                    .loaded_skills
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                for skill in &resolved {
+                    loaded.insert(skill.name.clone());
+                }
+            }
+
+            let call_id = uuid::Uuid::now_v7();
+            let names: Vec<String> = resolved.iter().map(|s| s.name.clone()).collect();
+
+            let tool_call_info = ToolCallInfo {
+                call_id,
+                tool: ToolDetails {
+                    name: "load_skills".to_string(),
+                    id: String::new(),
+                },
+                input: serde_json::json!({ "skills": names }),
+                extensions: Extensions::default(),
+            };
+
+            skill_messages.push(Message::Assistant(AssistantMessage::new(
+                LanguageModelResponseContentType::ToolCall(tool_call_info),
+                None,
+            )));
+
+            let mut content = String::new();
+            for skill in &resolved {
+                write!(
+                    content,
+                    "## Skill: {}\n{}\n---\n",
+                    skill.name, skill.content
+                )
+                .ok();
+            }
+
+            let mut tool_result = ToolResultInfo::new("load_skills");
+            tool_result.call_id = call_id;
+            tool_result.output(serde_json::Value::String(content));
+            skill_messages.push(Message::Tool(tool_result));
+        }
+
         if self.config.history_limit == 0 {
-            return vec![Message::User(UserMessage::new(&query.raw))];
+            let mut msgs = skill_messages;
+            msgs.push(Message::User(UserMessage::new(&query.raw)));
+            return msgs;
         }
 
         self.session
@@ -234,6 +291,7 @@ impl PieAgent {
                 }
                 _ => None,
             })
+            .chain(skill_messages)
             .chain(std::iter::once(Message::User(UserMessage::new(&query.raw))))
             .collect()
     }
@@ -355,10 +413,7 @@ impl PieAgent {
     }
 }
 
-pub fn extract_output_text(
-    text: &str,
-    tool_results: Option<&[agentsdk::core::ToolResultInfo]>,
-) -> String {
+pub fn extract_output_text(text: &str, tool_results: Option<&[ToolResultInfo]>) -> String {
     if !text.is_empty() {
         let subagent_res = tool_results.and_then(|results| {
             results
@@ -431,7 +486,7 @@ impl<'a> StreamProcessor<'a> {
                 }
             }
             LanguageModelStreamChunkType::ToolCallAvailable(info) => {
-                let info = ToolCallInfo {
+                let info = ToolCall {
                     call_id: info.call_id,
                     tool_name: info.tool.name.clone(),
                     params: info.input.clone(),
@@ -447,7 +502,7 @@ impl<'a> StreamProcessor<'a> {
                     Err(e) => Some(Err(serde_json::json!(e.to_string()))),
                 };
 
-                let info = ToolCallInfo {
+                let info = ToolCall {
                     call_id,
                     tool_name: name.clone(),
                     params: serde_json::Value::Null,

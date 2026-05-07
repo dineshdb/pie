@@ -102,19 +102,6 @@ You may suggest logical next steps or ask for clarification if it improves the o
 Acknowledge user hints and adjust your strategy accordingly.
 {% endif -%}
 
-{% if loaded_skills %}
---- BEGIN LOADED SKILLS ---
-
-{% for skill in loaded_skills -%}
-### {{ skill.name }}
-
-{{ skill.content }}
-
-{% endfor -%}
-
---- END LOADED SKILLS ---
-{% endif %}
-
 {% if steps -%}
 ## Current Plan
 
