@@ -1,0 +1,251 @@
+use super::loader::get_providers_data;
+use super::types::{PieConfig, ProviderBaseUrl, ProviderConfig, ProviderEndpoint};
+use crate::Cli;
+use crate::output::OutputFormat;
+use anyhow::Context;
+use p1e_sandbox::SandboxConfig;
+use redact::Secret;
+use std::collections::HashMap;
+use std::sync::Arc;
+use url::Url;
+
+#[derive(Debug)]
+pub struct ResolvedConfig {
+    pub provider: ResolvedProvider,
+    pub model_tiers: HashMap<String, ResolvedProvider>,
+    pub max_steps: u32,
+    pub output_format: OutputFormat,
+    pub log_level: String,
+    pub debug: bool,
+    pub hooks: crate::hook::HooksManager,
+}
+
+impl ResolvedConfig {
+    /// Resolve a model tier name (from agent frontmatter) to a concrete `Model`.
+    /// Falls back to the provided `fallback` if the tier is unset or unresolvable.
+    pub fn resolve_model(
+        &self,
+        tier: Option<&str>,
+        fallback: &crate::providers::Model,
+    ) -> crate::providers::Model {
+        let Some(tier_name) = tier else {
+            return fallback.clone();
+        };
+        let Some(provider) = self.model_tiers.get(tier_name) else {
+            tracing::warn!("model tier '{tier_name}' not found in config, using default");
+            return fallback.clone();
+        };
+        crate::providers::build_from_resolved(provider).unwrap_or_else(|e| {
+            tracing::warn!("failed to build model for tier '{tier_name}': {e}");
+            fallback.clone()
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedProvider {
+    pub name: String,
+    pub model: String,
+    pub anthropic_url: Option<Url>,
+    pub openai_url: Url,
+    pub api_key: Secret<String>,
+    #[allow(dead_code)]
+    pub temperature: Option<f32>,
+}
+
+impl ResolvedProvider {
+    pub fn env_vars(&self) -> HashMap<String, String> {
+        let mut env = HashMap::new();
+        env.insert("OPENAI_MODEL".to_string(), self.model.clone());
+        env.insert("OPENAI_BASE_URL".to_string(), self.openai_url.to_string());
+        env.insert(
+            "OPENAI_API_KEY".to_string(),
+            self.api_key.expose_secret().clone(),
+        );
+
+        if let Some(ref url) = self.anthropic_url {
+            env.insert(
+                "ANTHROPIC_AUTH_TOKEN".to_string(),
+                self.api_key.expose_secret().clone(),
+            );
+            env.insert("ANTHROPIC_BASE_URL".to_string(), url.to_string());
+            env.insert("ANTHROPIC_MODEL".to_string(), self.model.clone());
+        }
+
+        env
+    }
+
+    pub fn resolve(
+        provider: ProviderConfig,
+        providers_data: &HashMap<String, ProviderBaseUrl>,
+    ) -> anyhow::Result<Self> {
+        let (name, known_data, custom_openai, custom_anthropic) =
+            if provider.endpoint.openai.is_some() || provider.endpoint.anthropic.is_some() {
+                (
+                    "custom".to_string(),
+                    None,
+                    provider.endpoint.openai,
+                    provider.endpoint.anthropic,
+                )
+            } else if let Some(ref n) = provider.endpoint.name {
+                if Url::parse(n).is_ok() {
+                    ("custom".to_string(), None, Some(n.clone()), None)
+                } else {
+                    (n.clone(), providers_data.get(n), None, None)
+                }
+            } else {
+                ("default".to_string(), None, None, None)
+            };
+
+        let openai_url = custom_openai
+            .as_ref()
+            .and_then(|s| Url::parse(s).ok())
+            .or_else(|| known_data.and_then(|d| d.openai.as_ref().and_then(|s| Url::parse(s).ok())))
+            .or_else(|| {
+                if custom_openai.is_none() && known_data.is_none() {
+                    "http://localhost:11434/v1".parse().ok()
+                } else {
+                    None
+                }
+            })
+            .context(format!(
+                "provider '{name}' not found or has no valid base URL"
+            ))?;
+
+        let anthropic_url = custom_anthropic
+            .as_ref()
+            .and_then(|s| Url::parse(s).ok())
+            .or_else(|| {
+                known_data.and_then(|d| d.anthropic.as_ref().and_then(|s| Url::parse(s).ok()))
+            })
+            .or_else(|| {
+                if custom_anthropic.is_none() && known_data.is_none() {
+                    "http://localhost:11434".parse().ok()
+                } else {
+                    None
+                }
+            });
+
+        Ok(Self {
+            name,
+            model: provider
+                .model
+                .context("model is required (set --model, OPENAI_MODEL, or config provider)")?,
+            openai_url,
+            anthropic_url,
+            api_key: provider
+                .api_key
+                .unwrap_or_else(|| Secret::new(String::new())),
+            temperature: provider.temperature,
+        })
+    }
+}
+
+impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
+    type Error = anyhow::Error;
+
+    fn try_from((cli, pie): (Cli, PieConfig)) -> Result<Self, Self::Error> {
+        let providers_data = get_providers_data()?;
+        let provider_name = cli.provider.as_deref().or(pie.default_provider.as_deref());
+
+        let provider_cfg = if let Some(name) = provider_name {
+            pie.provider
+                .get(name)
+                .cloned()
+                .context(format!("provider '{name}' not found in config"))?
+        } else {
+            let openai_env = std::env::var("OPENAI_BASE_URL").ok();
+            let anthropic_env = std::env::var("ANTHROPIC_BASE_URL").ok();
+
+            let mut endpoint = ProviderEndpoint::default();
+            if let Some(val) = openai_env {
+                if Url::parse(&val).is_ok() {
+                    endpoint.openai = Some(val);
+                    endpoint.anthropic = anthropic_env;
+                } else {
+                    endpoint.name = Some(val);
+                }
+            } else if let Some(val) = anthropic_env {
+                endpoint.anthropic = Some(val);
+            }
+
+            ProviderConfig {
+                model: std::env::var("OPENAI_MODEL").ok(),
+                endpoint,
+                api_key: std::env::var("OPENAI_API_KEY").ok().map(Secret::new),
+                temperature: None,
+            }
+        };
+
+        let output_format = match cli.output_format() {
+            OutputFormat::Default => pie.output_format(),
+            format => format,
+        };
+
+        let provider = provider_cfg.merge(cli.provider_config);
+        let mut resolved_provider = ResolvedProvider::resolve(provider, providers_data)?;
+        if let Some(name) = provider_name {
+            resolved_provider.name = name.to_string();
+        }
+
+        let model_tiers = resolve_model_tiers(&pie, providers_data);
+
+        let log_level = if cli.debug { "debug" } else { pie.log_level() }.to_string();
+        let hooks = crate::hook::HooksManager::new(
+            pie.hooks.into_iter().map(crate::hook::Hook::from).collect(),
+            pie.hooks_timeout_ms,
+        );
+
+        Ok(Self {
+            provider: resolved_provider,
+            model_tiers,
+            max_steps: pie.agent.as_ref().and_then(|a| a.max_steps).unwrap_or(25),
+            output_format,
+            log_level,
+            debug: cli.debug,
+            hooks,
+        })
+    }
+}
+
+/// Resolve `[model.<name>]` tiers into `ResolvedProvider`s by looking up
+/// each tier's `provider` field in the `[provider.*]` map.
+fn resolve_model_tiers(
+    pie: &PieConfig,
+    data: &HashMap<String, ProviderBaseUrl>,
+) -> HashMap<String, ResolvedProvider> {
+    let mut tiers = HashMap::new();
+    for (name, tier) in &pie.model {
+        let Some(provider_cfg) = pie.provider.get(&tier.provider) else {
+            tracing::warn!(
+                "model tier '{name}' references unknown provider '{}'",
+                tier.provider
+            );
+            continue;
+        };
+        let mut cfg = provider_cfg.clone();
+        if let Some(ref model_override) = tier.model {
+            cfg.model = Some(model_override.clone());
+        }
+        match ResolvedProvider::resolve(cfg, data) {
+            Ok(mut resolved) => {
+                resolved.name.clone_from(name);
+                tiers.insert(name.clone(), resolved);
+            }
+            Err(e) => {
+                tracing::warn!("model tier '{name}' has invalid config: {e}");
+            }
+        }
+    }
+    tiers
+}
+
+pub fn build_sandbox(pie_config: &PieConfig) -> Arc<SandboxConfig> {
+    let sandbox = pie_config.sandbox.clone().unwrap_or_default();
+    if let Err(warnings) = sandbox.validate() {
+        for w in &warnings {
+            tracing::warn!("sandbox config: {w}");
+        }
+    }
+    Arc::new(sandbox)
+}

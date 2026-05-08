@@ -8,7 +8,7 @@
 //!
 //! Each frame: drain all events, merge them, then render once.
 
-use crate::config::{PieConfig, ResolvedProvider};
+use crate::config::{PieConfig, ResolvedProvider, get_providers_data};
 use crate::providers::{Model, fetch_models};
 use crate::session::{Role, Session};
 use crate::ui::tui::command::{Command, CommandAction};
@@ -103,7 +103,8 @@ fn process_msg(
             let providers = input.available_providers.clone();
             tracing::info!(provider = %provider_name, "fetching models for provider");
             if let Some(cfg) = providers.get(&provider_name)
-                && let Ok(mut resolved) = ResolvedProvider::try_from(cfg.clone())
+                && let Ok(providers_data) = get_providers_data()
+                && let Ok(mut resolved) = ResolvedProvider::resolve(cfg.clone(), providers_data)
             {
                 resolved.name = provider_name;
                 let tx = tx.clone();
@@ -127,7 +128,8 @@ fn process_msg(
         Msg::SwitchProviderAndModel(provider_name, model_name) => {
             let providers = input.available_providers.clone();
             if let Some(cfg) = providers.get(&provider_name)
-                && let Ok(mut resolved) = ResolvedProvider::try_from(cfg.clone())
+                && let Ok(providers_data) = get_providers_data()
+                && let Ok(mut resolved) = ResolvedProvider::resolve(cfg.clone(), providers_data)
             {
                 resolved.name = provider_name;
                 resolved.model = model_name;
@@ -274,7 +276,7 @@ fn execute_shell_direct(
     let tx = tx.clone();
     let command = command.to_string();
     tokio::spawn(async move {
-        let output = p1e_sandbox::build_command(&command, &sandbox)
+        let output = p1e_sandbox::build_shell_command(&command, &sandbox)
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("PAGER", "cat")
             .env("EDITOR", "true")

@@ -1,6 +1,6 @@
 use crate::skill::{self, Skill};
 use agentsdk::core::tools::{Tool, ToolExecute};
-use p1e_sandbox::{SandboxConfig, build_command};
+use p1e_sandbox::SandboxConfig;
 use serde_json::json;
 use std::collections::HashSet;
 use std::fmt::Write;
@@ -175,7 +175,7 @@ struct ExecuteSkillScriptInput {
 /// Run a command inside the sandbox. Returns JSON with stdout, stderr, exit code.
 #[allow(clippy::unwrap_used)]
 fn run_sandboxed(cmd: &str, cfg: &SandboxConfig) -> String {
-    let output = build_command(cmd, cfg)
+    let output = p1e_sandbox::build_shell_command(cmd, cfg)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("PAGER", "cat")
         .output();

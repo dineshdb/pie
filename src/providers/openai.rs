@@ -79,7 +79,7 @@ impl LanguageModel for Model {
 pub fn build_from_resolved(provider: &ResolvedProvider) -> Result<Model> {
     let inner = OpenAICompatible::<DynamicModel>::builder()
         .model_name(&provider.model)
-        .base_url(&provider.base_url)
+        .base_url(provider.openai_url.as_str())
         .api_key(provider.api_key.expose_secret())
         .build()
         .context("failed to build OpenAI-compatible provider")?;
@@ -93,7 +93,7 @@ pub async fn fetch_models(provider: &ResolvedProvider) -> Result<Vec<String>> {
         .build()
         .context("failed to build reqwest client")?;
 
-    let base_url = provider.base_url.trim_end_matches('/');
+    let base_url = provider.openai_url.as_str().trim_end_matches('/');
     let url = format!("{base_url}/models");
     let api_key_owned = provider.api_key.clone();
 

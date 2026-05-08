@@ -1,5 +1,5 @@
 use agentsdk::core::tools::{Tool, ToolExecute};
-use p1e_sandbox::{SandboxConfig, build_command};
+use p1e_sandbox::SandboxConfig;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -34,7 +34,7 @@ pub fn shell(
                 };
                 let cmd = cmd.to_string();
                 tracing::debug!(cmd = %cmd, "shell:");
-                let output = build_command(&cmd, &sandbox_settings)
+                let output = p1e_sandbox::build_shell_command(&cmd, &sandbox_settings)
                     .env("GIT_TERMINAL_PROMPT", "0")
                     .env("PAGER", "cat")
                     .env("EDITOR", "true")

@@ -1,7 +1,8 @@
 use agentsdk::core::tools::{Tool, ToolExecute};
-use p1e_sandbox::{SandboxConfig, build_command};
+use p1e_sandbox::SandboxConfig;
 use std::fmt::Write;
 use std::sync::Arc;
+use url::Url;
 
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 struct WebsearchInput {
@@ -21,7 +22,7 @@ struct DdgrResult {
     #[serde(rename = "abstract")]
     description: String,
     title: String,
-    url: String,
+    url: Url,
 }
 
 /// Search the web using `DuckDuckGo` (ddgr) and return results in Markdown.
@@ -57,7 +58,7 @@ pub fn websearch(
                 let cmd = format!("ddgr --json -n {limit} \"{escaped_query}\"");
 
                 tracing::debug!(cmd = %cmd, "websearch:");
-                let output = build_command(&cmd, &sandbox_settings)
+                let output = p1e_sandbox::build_shell_command(&cmd, &sandbox_settings)
                     .output();
 
                 match output {

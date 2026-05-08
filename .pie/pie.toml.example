@@ -30,7 +30,15 @@ api_key = "sk-..."
 # Note: Pie uses OpenAI-compatible headers. Some providers may need a proxy.
 model = "claude-3-5-sonnet-20240620"
 base_url = "https://api.anthropic.com/v1"
+anthropic_url = "https://api.anthropic.com"
 api_key = "sk-ant-..."
+
+[provider.zai]
+# Zhipu AI / Z.ai
+model = "glm-5.1"
+base_url = "https://api.z.ai/api/paas/v4/"
+anthropic_url = "https://api.z.ai/api/anthropic"
+api_key = "..."
 
 # Model tiers — agents reference these by name in their frontmatter.
 # If an agent doesn't specify a tier, or the tier isn't defined,

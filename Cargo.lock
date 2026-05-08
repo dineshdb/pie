@@ -2158,6 +2158,7 @@ dependencies = [
  "tui-textarea-2",
  "tuirealm",
  "unicode-width",
+ "url",
  "uuid",
 ]
 
@@ -4027,6 +4028,7 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+ "serde_derive",
 ]
 
 [[package]]

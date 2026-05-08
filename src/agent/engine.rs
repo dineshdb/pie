@@ -26,6 +26,7 @@ use anyhow::{Context, Result};
 use futures::future::BoxFuture;
 use itertools::Itertools;
 use p1e_sandbox::SandboxConfig;
+use serde::Deserialize;
 use std::collections::HashSet;
 use std::fmt::Write;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -58,7 +59,7 @@ pub struct PieAgent {
     loaded_refs: Arc<Mutex<HashSet<String>>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct AgentConfig {
     pub agent_name: Option<String>,
     pub history_limit: u32,

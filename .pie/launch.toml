@@ -1,0 +1,17 @@
+# Default launch configurations for well-known commands
+
+[claude]
+aliases = ["cc"]
+args = ["--dangerously-skip-permissions"]
+env = { "CLAUDE_CODE_PIE" = "true" }
+
+[opencode]
+aliases = ["oc"]
+args = []
+env = {}
+
+[pi]
+args = []
+env = {}
+[pi.sandbox]
+allow_write = [".", "~/.pi"]

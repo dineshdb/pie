@@ -75,6 +75,9 @@ The fastest way to get started is with environment variables:
 export OPENAI_API_KEY="sk-..."
 export OPENAI_MODEL="mlx-community/gemma-4-e4b-it-4bit"
 export OPENAI_BASE_URL="http://localhost:1234/v1"
+
+# For providers that support Anthropic-compatible endpoints (e.g. zai)
+export ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic"
 ```
 
 ### `pie.toml`
@@ -98,10 +101,12 @@ model = "mlx-community/gemma-4-e4b-it-4bit"
 base_url = "http://localhost:1234/v1"
 api_key = "sk-..."
 
-[provider.ollama]
-model = "llama3"
-base_url = "http://localhost:11434/v1"
-
+[provider.zai]
+model = "glm-5.1"
+base_url = "https://api.z.ai/api/paas/v4/"
+anthropic_url = "https://api.z.ai/api/anthropic"
+api_key = "..."
+```
 [agent]
 max_steps = 25 # Max tool-call iterations per query
 ```

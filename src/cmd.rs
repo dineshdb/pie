@@ -3,12 +3,15 @@ use std::sync::Arc;
 use tracing::warn;
 
 pub fn handle_status(config: &ResolvedConfig, registry: &Arc<crate::registry::Registry>) {
-    println!("Provider: {}", config.provider.name);
-    println!("Model:    {}", config.provider.model);
-    println!("Base URL: {}", config.provider.base_url);
-    println!("Log Level: {}", config.log_level);
-    println!("Output Format: {:?}", config.output_format);
-    println!("Max Steps: {}", config.max_steps);
+    println!("Provider:    {}", config.provider.name);
+    println!("Model:       {}", config.provider.model);
+    println!("Base URL:    {}", config.provider.openai_url);
+    if let Some(ref url) = config.provider.anthropic_url {
+        println!("Anthropic:   {url}");
+    }
+    println!("Log Level:   {}", config.log_level);
+    println!("Output:      {:?}", config.output_format);
+    println!("Max Steps:   {}", config.max_steps);
 
     println!("\n--- Hooks Manager ---");
     println!("Timeout: {}ms", config.hooks.timeout_ms);

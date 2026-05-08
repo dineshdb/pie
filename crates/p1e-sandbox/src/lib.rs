@@ -33,6 +33,7 @@ impl Default for SandboxConfig {
                 "/dev/zero".into(),
                 "/dev/random".into(),
                 "/dev/urandom".into(),
+                "/dev/tty".into(),
                 "/private/tmp".into(),
                 "/private/var/folders".into(),
             ],
@@ -98,19 +99,24 @@ fn find_duplicates(list: &[String], name: &str, warnings: &mut Vec<String>) {
 }
 
 /// Build a sandboxed command using native OS sandboxing.
-/// Falls back to unsandboxed `sh -c <cmd>` if the sandbox tool is unavailable.
-pub fn build_command(cmd: &str, cfg: &SandboxConfig) -> Command {
+/// Falls back to unsandboxed command if the sandbox tool is unavailable.
+pub fn build_command(program: &str, args: &[String], cfg: &SandboxConfig) -> Command {
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     let available = *AVAILABLE.get_or_init(is_sandbox_tool_available);
 
     if available {
-        build_sandboxed(cmd, cfg)
+        build_sandboxed(program, args, cfg)
     } else {
         tracing::warn!("sandbox tool not found, running unsandboxed");
-        let mut c = Command::new("bash");
-        c.arg("-c").arg(cmd);
+        let mut c = Command::new(program);
+        c.args(args);
         c
     }
+}
+
+/// Build a sandboxed shell command (via `bash -c`).
+pub fn build_shell_command(cmd: &str, cfg: &SandboxConfig) -> Command {
+    build_command("bash", &["-c".into(), cmd.into()], cfg)
 }
 
 /// Expand `~` to home directory.
@@ -155,19 +161,23 @@ pub(crate) mod platform {
             .is_ok_and(|o| o.status.success())
     }
 
-    pub(crate) fn build(cmd: &str, cfg: &SandboxConfig) -> Command {
+    pub(crate) fn build(program: &str, args: &[String], cfg: &SandboxConfig) -> Command {
         let profile = generate_profile(cfg);
-        tracing::debug!(%cmd, "sandbox-exec:");
+        tracing::debug!(%program, ?args, "sandbox-exec:");
         let mut c = Command::new(BINARY);
-        c.arg("-p").arg(&profile).arg("bash").arg("-c").arg(cmd);
+        c.arg("-p").arg(&profile).arg(program).args(args);
         c
     }
 
     pub(crate) fn generate_profile(cfg: &SandboxConfig) -> String {
-        let mut lines = Vec::new();
-        lines.push("(version 1)".to_string());
-        lines.push("(allow default)".to_string());
-        lines.push("(allow file-read-metadata)".to_string());
+        let mut lines = vec![
+            "(version 1)".to_string(),
+            "(allow default)".to_string(),
+            "(allow file-read-metadata)".to_string(),
+            "(allow mach-lookup)".to_string(),
+            "(allow sysctl-read)".to_string(),
+            "(allow ipc-posix-shm)".to_string(),
+        ];
 
         // Network: SBPL cannot filter by domain — only allow/deny all outbound.
         if cfg.allowed_domains.is_empty() && !cfg.denied_domains.is_empty() {
@@ -186,6 +196,23 @@ pub(crate) mod platform {
 
         if !cfg.allow_write.is_empty() {
             lines.push("(deny file-write*)".to_string());
+
+            // Always allow essential interactive/system write paths if we are restricting writes
+            let essentials = [
+                "/dev/null",
+                "/dev/zero",
+                "/dev/random",
+                "/dev/urandom",
+                "/dev/tty",
+                "/tmp",
+                "/private/tmp",
+                "/private/var/folders",
+            ];
+
+            for path in essentials {
+                lines.push(format!("(allow file-write* (subpath \"{path}\"))"));
+            }
+
             for path in &cfg.allow_write {
                 let resolved = resolve_path(path);
                 lines.push(format!("(allow file-write* (subpath \"{resolved}\"))"));
@@ -214,7 +241,7 @@ pub(crate) mod platform {
             .is_ok_and(|o| o.status.success())
     }
 
-    pub(crate) fn build(cmd: &str, cfg: &SandboxConfig) -> Command {
+    pub(crate) fn build(program: &str, args: &[String], cfg: &SandboxConfig) -> Command {
         let mut c = Command::new(BINARY);
         c.arg("--die-with-parent");
 
@@ -239,14 +266,26 @@ pub(crate) mod platform {
             c.arg("--bind").arg(&resolved).arg(&resolved);
         }
 
+        // Always allow essential TTY/tmp for interactive use on Linux if restricting
+        if !cfg.allow_write.is_empty() {
+            // bwrap --dev /dev handles most of this, but we ensure /tmp is bound if not already
+            if !cfg
+                .allow_write
+                .iter()
+                .any(|p| p == "/tmp" || p == "/private/tmp")
+            {
+                c.arg("--bind").arg("/tmp").arg("/tmp");
+            }
+        }
+
         if !cfg.allowed_domains.is_empty() {
             tracing::debug!(
                 "bwrap cannot filter network per-domain; network restrictions not enforced"
             );
         }
 
-        c.arg("bash").arg("-c").arg(cmd);
-        tracing::debug!(%cmd, "bwrap:");
+        c.arg(program).args(args);
+        tracing::debug!(%program, ?args, "bwrap:");
         c
     }
 }
@@ -263,8 +302,8 @@ fn is_sandbox_tool_available() -> bool {
     plat::is_available()
 }
 
-fn build_sandboxed(cmd: &str, cfg: &SandboxConfig) -> Command {
-    plat::build(cmd, cfg)
+fn build_sandboxed(program: &str, args: &[String], cfg: &SandboxConfig) -> Command {
+    plat::build(program, args, cfg)
 }
 
 #[cfg(test)]

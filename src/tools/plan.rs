@@ -226,6 +226,11 @@ fn build_plan_show(pool: Arc<DbPool>, session_id: String) -> anyhow::Result<Tool
         .context("failed to build plan_show tool")
 }
 
+/// Build the plan-related tools.
+///
+/// # Errors
+///
+/// Returns an error if any of the tools cannot be built.
 pub fn plan_tools(pool: Arc<DbPool>, session_id: String) -> anyhow::Result<Vec<Tool>> {
     Ok(vec![
         build_plan_set(pool.clone(), session_id.clone())?,

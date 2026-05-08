@@ -44,6 +44,12 @@ pub struct Plugin {
 }
 
 impl Plugin {
+    /// Load a plugin from a directory containing a `plugin.toml`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The `plugin.toml` file cannot be read or parsed.
     pub fn load_from_dir(path: &std::path::Path) -> anyhow::Result<Self> {
         let plugin_toml = path.join("plugin.toml");
         let content = std::fs::read_to_string(&plugin_toml)?;
