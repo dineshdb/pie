@@ -16,6 +16,7 @@ mod handler;
 mod hook;
 mod instructions;
 mod output;
+mod plugin;
 mod prompt;
 mod providers;
 mod registry;

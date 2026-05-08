@@ -96,7 +96,8 @@ fn process_msg(
             if let Some(chat) = chat_mut!(app) {
                 chat.finish_stream(output);
             }
-            input.finish_stream();
+            let query = input.finish_stream();
+            crate::ui::notify::turn_complete(query.as_deref());
         }
 
         Msg::FetchModels(provider_name) => {

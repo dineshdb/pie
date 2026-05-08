@@ -58,7 +58,7 @@ fn embedded_skills_dir() -> Option<&'static Dir<'static>> {
 /// Parse a raw markdown string with `---` frontmatter into a Skill.
 fn parse_skill(raw: &str) -> Option<Skill> {
     let (yaml, content) = split_frontmatter(raw);
-    let meta: SkillFrontmatter = serde_yml::from_str(&yaml).ok()?;
+    let meta: SkillFrontmatter = serde_yaml::from_str(&yaml).ok()?;
     Some(Skill {
         name: meta.name.trim().to_string(),
         description: meta.description.trim().to_string(),

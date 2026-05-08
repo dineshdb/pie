@@ -53,7 +53,7 @@ impl Plugin {
     pub fn load_from_dir(path: &std::path::Path) -> anyhow::Result<Self> {
         let plugin_toml = path.join("plugin.toml");
         let content = std::fs::read_to_string(&plugin_toml)?;
-        let mut plugin: Plugin = serde_yml::from_str(&content)?;
+        let mut plugin: Plugin = serde_yaml::from_str(&content)?;
 
         // Load SYSTEM.md if it exists
         let system_md = path.join("SYSTEM.md");
@@ -80,31 +80,7 @@ impl Registry {
         let agents = get_all_agents();
         let skills = get_all_skills();
 
-        // Load plugins from directories
-        let mut plugins = Vec::new();
-        let global_home = crate::config::pie_home();
-        let mut scan_dirs = Vec::new();
-        scan_dirs.push(global_home.join("plugins"));
-        if let Some(root) = crate::utils::git_repo_root() {
-            scan_dirs.push(std::path::PathBuf::from(root).join(".pie").join("plugins"));
-        }
-
-        for dir in scan_dirs {
-            if !dir.exists() {
-                continue;
-            }
-            if let Ok(entries) = std::fs::read_dir(&dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir()
-                        && path.join("plugin.toml").exists()
-                        && let Ok(plugin) = Plugin::load_from_dir(&path)
-                    {
-                        plugins.push(plugin);
-                    }
-                }
-            }
-        }
+        let (_, plugins) = crate::plugin::scan_plugins();
 
         let mut completions = Vec::new();
 

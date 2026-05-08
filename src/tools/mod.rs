@@ -15,6 +15,66 @@ mod skills;
 pub(crate) mod subagent;
 mod websearch;
 
+/// Typed tool names for stringly-typed comparisons across the codebase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::Display)]
+pub enum ToolName {
+    #[strum(serialize = "shell")]
+    Shell,
+    #[strum(serialize = "read_file")]
+    ReadFile,
+    #[strum(serialize = "write_file")]
+    WriteFile,
+    #[strum(serialize = "replace")]
+    Replace,
+    #[strum(serialize = "list_directory")]
+    ListDirectory,
+    #[strum(serialize = "glob")]
+    Glob,
+    #[strum(serialize = "load_skills")]
+    LoadSkills,
+    #[strum(serialize = "load_references")]
+    LoadReferences,
+    #[strum(serialize = "execute_skill_script")]
+    ExecuteSkillScript,
+    #[strum(serialize = "websearch")]
+    Websearch,
+    #[strum(serialize = "subagent")]
+    Subagent,
+    #[strum(serialize = "plan_set")]
+    PlanSet,
+    #[strum(serialize = "plan_step_update")]
+    PlanStepUpdate,
+    #[strum(serialize = "plan_show")]
+    PlanShow,
+}
+
+impl ToolName {
+    /// Try to parse a tool name string into the enum.
+    pub fn from_str_lossy(s: &str) -> Option<Self> {
+        match s {
+            "shell" => Some(Self::Shell),
+            "read_file" => Some(Self::ReadFile),
+            "write_file" => Some(Self::WriteFile),
+            "replace" => Some(Self::Replace),
+            "list_directory" => Some(Self::ListDirectory),
+            "glob" => Some(Self::Glob),
+            "load_skills" => Some(Self::LoadSkills),
+            "load_references" => Some(Self::LoadReferences),
+            "execute_skill_script" => Some(Self::ExecuteSkillScript),
+            "websearch" => Some(Self::Websearch),
+            "subagent" => Some(Self::Subagent),
+            "plan_set" => Some(Self::PlanSet),
+            "plan_step_update" => Some(Self::PlanStepUpdate),
+            "plan_show" => Some(Self::PlanShow),
+            _ => None,
+        }
+    }
+
+    pub fn is_plan_tool(self) -> bool {
+        matches!(self, Self::PlanSet | Self::PlanStepUpdate)
+    }
+}
+
 /// Lock a mutex, recovering from poison instead of panicking.
 pub(crate) fn safe_lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
@@ -27,4 +87,33 @@ pub(crate) fn emit_tool_input(name: &str, params: &serde_json::Value) {
     let params_str = params.to_string();
     let anonymized = crate::utils::anonymize_path(&params_str);
     tracing::debug!("TOOL: {name} {anonymized}");
+}
+
+// ── Sandbox execution helpers ──────────────────────────────────────────
+
+/// Captured output from a sandboxed command execution.
+pub(crate) struct SandboxOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: i32,
+}
+
+/// Execute a command inside the sandbox and capture its output.
+pub(crate) fn run_sandboxed_command(cmd: &str, cfg: &p1e_sandbox::SandboxConfig) -> SandboxOutput {
+    let result = p1e_sandbox::build_shell_command(cmd, cfg)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("PAGER", "cat")
+        .output();
+    match result {
+        Ok(out) => SandboxOutput {
+            stdout: String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
+            exit_code: out.status.code().unwrap_or(-1),
+        },
+        Err(e) => SandboxOutput {
+            stdout: String::new(),
+            stderr: e.to_string(),
+            exit_code: -1,
+        },
+    }
 }

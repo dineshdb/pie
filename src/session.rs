@@ -202,39 +202,40 @@ impl Session {
     }
 
     pub async fn record_tool_call(&mut self, info: ToolCall) -> anyhow::Result<ToolCall> {
-        let existing = self.cache.iter_mut().rev().find_map(|e| match e {
+        // Try to find an existing entry with the same call_id.
+        let Some(existing) = self.cache.iter_mut().rev().find_map(|e| match e {
             HistoryEntry::Tool(t) if t.call_id == info.call_id => Some(t),
             _ => None,
-        });
-
-        if let Some(existing) = existing {
-            if !info.params.is_null() {
-                existing.params = info.params;
-            }
-            if info.output.is_some() {
-                existing.output = info.output;
-            }
-
-            let sid = self.id.to_string();
-            let entry = HistoryEntry::Tool(existing.clone());
-            let content = entry.content();
-            let call_id_str = existing.call_id.to_string();
-
-            sqlx::query!(
-                "UPDATE messages SET content = ? WHERE session_id = ? AND role = 'tool' AND json_extract(content, '$.call_id') = ?",
-                content,
-                sid,
-                call_id_str
-            )
-            .execute(&*self.pool)
-            .await?;
-
-            Ok(existing.clone())
-        } else {
+        }) else {
+            // New tool call — persist and return.
             let merged = info.clone();
             self.add_tool(info).await?;
-            Ok(merged)
+            return Ok(merged);
+        };
+
+        // Merge fields into the existing entry.
+        if !info.params.is_null() {
+            existing.params = info.params;
         }
+        if info.output.is_some() {
+            existing.output = info.output;
+        }
+
+        let sid = self.id.to_string();
+        let entry = HistoryEntry::Tool(existing.clone());
+        let content = entry.content();
+        let call_id_str = existing.call_id.to_string();
+
+        sqlx::query!(
+            "UPDATE messages SET content = ? WHERE session_id = ? AND role = 'tool' AND json_extract(content, '$.call_id') = ?",
+            content,
+            sid,
+            call_id_str
+        )
+        .execute(&*self.pool)
+        .await?;
+
+        Ok(existing.clone())
     }
 
     async fn rebuild_cache(&mut self) -> anyhow::Result<()> {

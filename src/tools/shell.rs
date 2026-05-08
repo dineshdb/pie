@@ -34,29 +34,13 @@ pub fn shell(
                 };
                 let cmd = cmd.to_string();
                 tracing::debug!(cmd = %cmd, "shell:");
-                let output = p1e_sandbox::build_shell_command(&cmd, &sandbox_settings)
-                    .env("GIT_TERMINAL_PROMPT", "0")
-                    .env("PAGER", "cat")
-                    .env("EDITOR", "true")
-                    .output();
-                let (stdout, stderr, exit_code) = match output {
-                    Ok(out) => {
-                        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                        let exit_code = out.status.code().unwrap_or(-1);
-                        tracing::debug!(exit_code, stdout_len = stdout.len(), out = %stdout, "shell:");
-                        (stdout, stderr, exit_code)
-                    }
-                    Err(e) => {
-                        tracing::debug!(error = %e, "shell failed");
-                        (String::new(), e.to_string(), -1)
-                    }
-                };
+                let out = super::run_sandboxed_command(&cmd, &sandbox_settings);
+                tracing::debug!(exit_code = out.exit_code, stdout_len = out.stdout.len(), out = %out.stdout, "shell:");
                 let result = json!({
                     "cmd": cmd,
-                    "code": exit_code,
-                    "stdout": stdout,
-                    "stderr": stderr,
+                    "code": out.exit_code,
+                    "stdout": out.stdout,
+                    "stderr": out.stderr,
                 });
                 tracing::trace!(%result, "shell:");
                 Ok(serde_json::to_string(&result).unwrap_or_default())

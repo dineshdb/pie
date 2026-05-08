@@ -65,60 +65,9 @@ pub fn load_config() -> anyhow::Result<PieConfig> {
         .extract()
         .map_err(|e| anyhow::anyhow!("config parse error: {e}"))?;
 
-    // Modular Hook Loading from plugins directory
-    let mut scan_dirs = Vec::new();
-    scan_dirs.push(global_home.join("plugins"));
-    if let Some(root) = &project_root {
-        scan_dirs.push(root.join(".pie").join("plugins"));
-    }
-
-    for dir in scan_dirs {
-        if !dir.exists() {
-            continue;
-        }
-
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-
-                if path.is_dir() {
-                    let plugin_toml = path.join("plugin.toml");
-                    if plugin_toml.exists()
-                        && let Ok(content) = std::fs::read_to_string(&plugin_toml)
-                        && let Ok(mut plugin_config) = Figment::new()
-                            .merge(Toml::string(&content))
-                            .extract::<PieConfig>()
-                    {
-                        let plugin_dir_str = path.to_string_lossy().to_string();
-                        for hook in &mut plugin_config.hooks {
-                            hook.plugin_dir = Some(plugin_dir_str.clone());
-                            if hook.handler.starts_with("./") {
-                                let abs_handler = path
-                                    .join(&hook.handler)
-                                    .canonicalize()
-                                    .unwrap_or_else(|_| path.join(&hook.handler));
-                                hook.handler = abs_handler.to_string_lossy().to_string();
-                            }
-                        }
-                        pie_config.hooks.extend(plugin_config.hooks);
-                        if let Some(to) = plugin_config.hooks_timeout_ms {
-                            pie_config.hooks_timeout_ms = Some(to);
-                        }
-                    }
-                } else if path.extension().and_then(|s| s.to_str()) == Some("toml")
-                    && let Ok(content) = std::fs::read_to_string(&path)
-                    && let Ok(plugin_config) = Figment::new()
-                        .merge(Toml::string(&content))
-                        .extract::<PieConfig>()
-                {
-                    pie_config.hooks.extend(plugin_config.hooks);
-                    if let Some(to) = plugin_config.hooks_timeout_ms {
-                        pie_config.hooks_timeout_ms = Some(to);
-                    }
-                }
-            }
-        }
-    }
+    // Load hooks from plugin directories.
+    let (plugin_hooks, _) = crate::plugin::scan_plugins();
+    pie_config.hooks.extend(plugin_hooks);
 
     Ok(pie_config)
 }

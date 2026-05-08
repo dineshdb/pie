@@ -182,6 +182,33 @@ impl PieAgent {
         }
     }
 
+    pub async fn run_post_completion_hooks(&self, output: &str) {
+        let Some(cfg) = CONFIG.get() else {
+            return;
+        };
+
+        let ctx = crate::hook::HookContext::new(
+            crate::hook::HookEvent::PostCompletion,
+            std::env::current_dir()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string(),
+            self.session.id.to_string(),
+            crate::hook::HookContextData::Prompt(crate::hook::PromptData {
+                system: None,
+                query: Some(output.to_string()),
+            }),
+        );
+
+        if let Err(e) = cfg
+            .hooks
+            .run(crate::hook::HookEvent::PostCompletion, &ctx)
+            .await
+        {
+            tracing::warn!("completion.post hook failure: {}", e);
+        }
+    }
+
     fn build_tools(&self) -> Result<Vec<agentsdk::core::tools::Tool>> {
         let session_id = self.session.id.to_string();
         let mut tools = vec![
@@ -391,6 +418,7 @@ impl PieAgent {
                     self.session.add_assistant(&output).await?;
                 }
                 let _ = event_tx.send(AgentEvent::Done(output.clone()));
+                self.run_post_completion_hooks(&output).await;
                 return Ok(output);
             }
         })
@@ -430,7 +458,10 @@ pub fn extract_output_text(text: &str, tool_results: Option<&[ToolResultInfo]>) 
         let subagent_res = tool_results.and_then(|results| {
             results
                 .iter()
-                .rfind(|r| r.tool.name == "subagent")
+                .rfind(|r| {
+                    crate::tools::ToolName::from_str_lossy(&r.tool.name)
+                        == Some(crate::tools::ToolName::Subagent)
+                })
                 .and_then(|r| r.output.as_ref().ok()?.as_str())
         });
 
@@ -446,7 +477,10 @@ pub fn extract_output_text(text: &str, tool_results: Option<&[ToolResultInfo]>) 
         .and_then(|results| {
             results
                 .iter()
-                .rfind(|r| r.tool.name == "shell")
+                .rfind(|r| {
+                    crate::tools::ToolName::from_str_lossy(&r.tool.name)
+                        == Some(crate::tools::ToolName::Shell)
+                })
                 .or_else(|| results.last())?
                 .output
                 .as_ref()
@@ -542,7 +576,8 @@ impl<'a> StreamProcessor<'a> {
                     .to_string();
                 let output_str = anonymize_path(&output_str);
 
-                let is_plan_tool = name == "plan_set" || name == "plan_step_update";
+                let tool = crate::tools::ToolName::from_str_lossy(&name);
+                let is_plan_tool = tool.is_some_and(crate::tools::ToolName::is_plan_tool);
                 if is_plan_tool {
                     let _ = self.event_tx.send(AgentEvent::PlanUpdate);
                 }

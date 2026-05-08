@@ -24,6 +24,9 @@ pub enum HookEvent {
     #[serde(rename = "completion.pre")]
     #[strum(serialize = "completion.pre")]
     PreCompletion,
+    #[serde(rename = "completion.post")]
+    #[strum(serialize = "completion.post")]
+    PostCompletion,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default, Display)]
@@ -254,7 +257,7 @@ impl Hook {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
 
         Ok(HookOutcome::from_cmd(
-            &hook_name, exit_code, stdout, stderr, context,
+            &hook_name, exit_code, &stdout, &stderr, context,
         ))
     }
 
@@ -501,83 +504,96 @@ impl HookOutcome {
     fn from_cmd(
         name: &str,
         exit_code: Option<i32>,
-        stdout: String,
-        stderr: String,
+        stdout: &str,
+        stderr: &str,
         context: &HookContext,
     ) -> Self {
-        if !stdout.is_empty()
-            && let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&stdout)
-        {
-            let action_res = serde_json::from_value::<ActionOutput>(json_val.clone());
-            if let Ok(action) = action_res {
-                if let Some(decision) = &action.decision {
-                    match decision {
-                        ActionDecision::Block | ActionDecision::Deny => {
-                            return HookOutcome::Error {
-                                name: name.to_string(),
-                                exit_code,
-                                message: format!(
-                                    "Operation blocked by decision:\n{}",
-                                    action.message.unwrap_or(stdout)
-                                ),
-                            };
-                        }
-                        ActionDecision::Allow if action.updated_input.is_none() => {
-                            return HookOutcome::Success;
-                        }
-                        _ => {}
-                    }
-                }
-
-                if let Some(data) = action.updated_input {
-                    return HookOutcome::Transformed {
-                        name: name.to_string(),
-                        data,
-                    };
-                }
-
-                // Return raw JSON as delta — the pipeline handles merging.
-                if context.data.is_tool() || action.decision.is_none() {
-                    return HookOutcome::Transformed {
-                        name: name.to_string(),
-                        data: json_val,
-                    };
-                }
-
-                if matches!(action.decision, Some(ActionDecision::Allow)) {
-                    return HookOutcome::Success;
-                }
-            }
+        // Try parsing stdout as structured action output.
+        if let Some(outcome) = Self::parse_action_response(name, exit_code, stdout, context) {
+            return outcome;
         }
 
-        // Exit-code based fallback
+        // Exit-code based fallback.
         if exit_code == Some(0) {
             return HookOutcome::Success;
         }
 
-        let combined_output = if stderr.is_empty() {
-            stdout
-        } else if stdout.is_empty() {
-            stderr
-        } else {
-            format!("{stdout}\n{stderr}")
+        let combined = match (stdout, stderr) {
+            ("", s) | (s, "") => s.to_string(),
+            (s, e) => format!("{s}\n{e}"),
         };
 
-        let is_rejection = matches!(exit_code, Some(2 | 64 | 65 | 77));
-
-        if is_rejection {
+        if matches!(exit_code, Some(2 | 64 | 65 | 77)) {
             HookOutcome::Error {
                 name: name.to_string(),
                 exit_code,
-                message: format!("Operation blocked:\n{combined_output}"),
+                message: format!("Operation blocked:\n{combined}"),
             }
         } else {
             HookOutcome::Warning {
                 name: name.to_string(),
                 exit_code,
-                message: combined_output,
+                message: combined,
             }
         }
+    }
+
+    /// Try to interpret stdout as a structured action response.
+    fn parse_action_response(
+        name: &str,
+        exit_code: Option<i32>,
+        stdout: &str,
+        context: &HookContext,
+    ) -> Option<Self> {
+        if stdout.is_empty() {
+            return None;
+        }
+        let json_val: serde_json::Value = serde_json::from_str(stdout).ok()?;
+        let action: ActionOutput = serde_json::from_value(json_val.clone()).ok()?;
+
+        // Decision-based handling.
+        if let Some(ref decision) = action.decision {
+            match decision {
+                ActionDecision::Block | ActionDecision::Deny => {
+                    return Some(HookOutcome::Error {
+                        name: name.to_string(),
+                        exit_code,
+                        message: format!(
+                            "Operation blocked by decision:\n{}",
+                            action.message.as_deref().unwrap_or(stdout)
+                        ),
+                    });
+                }
+                ActionDecision::Allow if action.updated_input.is_none() => {
+                    return Some(HookOutcome::Success);
+                }
+                ActionDecision::Allow => {
+                    return action.updated_input.map(|data| HookOutcome::Transformed {
+                        name: name.to_string(),
+                        data,
+                    });
+                }
+                ActionDecision::Ask => {}
+            }
+        }
+
+        // Explicit data transform takes priority.
+        if let Some(data) = action.updated_input {
+            return Some(HookOutcome::Transformed {
+                name: name.to_string(),
+                data,
+            });
+        }
+
+        // Return raw JSON as delta for tool contexts or when no decision was made.
+        if context.data.is_tool() || action.decision.is_none() {
+            return Some(HookOutcome::Transformed {
+                name: name.to_string(),
+                data: json_val,
+            });
+        }
+
+        None
     }
 
     pub fn format(&self) -> String {

@@ -296,27 +296,33 @@ def cmd_guard(args, data):
     # 1. Redundancy check
     db = get_db()
     if db:
-        input_str = json.dumps(input_data, sort_keys=True)
-        hash_id = hashlib.md5((tool + input_str).encode()).hexdigest()
-        cursor = db.cursor()
-        cursor.execute(
-            "SELECT hash FROM messages WHERE session_id = ? AND role = 'tool' ORDER BY ts DESC LIMIT 5",
-            (session_id,),
-        )
-        recent = cursor.fetchall()
-        if recent:
-            if recent[0][0] == hash_id:
-                print(
-                    f"### [Safety/Efficiency Alert]\nEFFICIENCY: You just ran this `{tool}` call in the previous turn. STOP and re-evaluate.",
-                    file=sys.stderr,
-                )
-                sys.exit(2)
-            elif any(r[0] == hash_id for r in recent):
-                print(
-                    f"### [Safety/Efficiency Alert]\nEFFICIENCY: You ran this `{tool}` call recently. Ensure you aren't stuck in a loop.",
-                    file=sys.stderr,
-                )
-        db.close()
+        try:
+            input_str = json.dumps(input_data, sort_keys=True)
+            hash_id = hashlib.md5((tool + input_str).encode()).hexdigest()
+            cursor = db.cursor()
+            cursor.execute(
+                "SELECT content FROM messages WHERE session_id = ? AND role = 'tool' ORDER BY ts DESC LIMIT 5",
+                (session_id,),
+            )
+            recent = cursor.fetchall()
+            # Compute hashes from content for comparison
+            recent_hashes = [hashlib.md5(r[0].encode()).hexdigest() for r in recent if r[0]]
+            if recent_hashes:
+                if recent_hashes[0] == hash_id:
+                    print(
+                        f"### [Safety/Efficiency Alert]\nEFFICIENCY: You just ran this `{tool}` call in the previous turn. STOP and re-evaluate.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(2)
+                elif hash_id in recent_hashes:
+                    print(
+                        f"### [Safety/Efficiency Alert]\nEFFICIENCY: You ran this `{tool}` call recently. Ensure you aren't stuck in a loop.",
+                        file=sys.stderr,
+                    )
+        except sqlite3.OperationalError:
+            pass
+        finally:
+            db.close()
 
     # 2. Safety (Shell)
     if tool == "shell":

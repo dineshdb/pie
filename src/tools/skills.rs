@@ -174,24 +174,13 @@ struct ExecuteSkillScriptInput {
 
 /// Run a command inside the sandbox. Returns JSON with stdout, stderr, exit code.
 #[allow(clippy::unwrap_used)]
-fn run_sandboxed(cmd: &str, cfg: &SandboxConfig) -> String {
-    let output = p1e_sandbox::build_shell_command(cmd, cfg)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("PAGER", "cat")
-        .output();
-    let (stdout, stderr, code) = match output {
-        Ok(out) => (
-            String::from_utf8_lossy(&out.stdout).trim().to_string(),
-            String::from_utf8_lossy(&out.stderr).trim().to_string(),
-            out.status.code().unwrap_or(-1),
-        ),
-        Err(e) => (String::new(), e.to_string(), -1),
-    };
+fn run_sandboxed_json(cmd: &str, cfg: &SandboxConfig) -> String {
+    let out = super::run_sandboxed_command(cmd, cfg);
     serde_json::to_string(&json!({
         "cmd": cmd,
-        "code": code,
-        "stdout": stdout,
-        "stderr": stderr,
+        "code": out.exit_code,
+        "stdout": out.stdout,
+        "stderr": out.stderr,
     }))
     .unwrap_or_default()
 }
@@ -245,7 +234,7 @@ pub fn execute_skill_script_tool(sandbox_settings: Arc<SandboxConfig>) -> Tool {
                 sandbox.allow_read.push(skill_path);
             }
 
-            Ok(run_sandboxed(&cmd, &sandbox))
+            Ok(run_sandboxed_json(&cmd, &sandbox))
         }))
         .build()
         .unwrap()

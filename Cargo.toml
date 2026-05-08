@@ -40,7 +40,7 @@ reqwest = { version = "0.13", features = ["json"] }
 schemars = "1"
 serde.workspace = true
 serde_json.workspace = true
-serde_yml = "0.0.12"
+serde_yaml = "0.9"
 strum = { version = "0.28", features = ["derive"] }
 tachyonfx = "0.25"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "sync"] }

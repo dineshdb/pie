@@ -47,6 +47,7 @@ pub struct InputComponent {
     pub sandbox_settings: Arc<SandboxConfig>,
     pub max_steps: u32,
     pub stream_abort: Option<mpsc::UnboundedSender<()>>,
+    last_query: Option<String>,
     pub registry: Arc<Registry>,
 }
 
@@ -92,6 +93,7 @@ impl InputComponent {
             sandbox_settings,
             max_steps,
             stream_abort: None,
+            last_query: None,
             registry,
         }
     }
@@ -345,6 +347,7 @@ impl InputComponent {
     pub fn start_stream(&mut self, query: &str, tx: &mpsc::UnboundedSender<StreamEvent>) {
         let (abort_tx, abort_rx) = mpsc::unbounded_channel::<()>();
         self.stream_abort = Some(abort_tx);
+        self.last_query = Some(query.to_string());
 
         let ctx = StreamContext::from(&*self);
         tokio::spawn(spawn_stream(ctx, query.to_string(), tx.clone(), abort_rx));
@@ -354,8 +357,9 @@ impl InputComponent {
         self.stream_abort.take()
     }
 
-    pub fn finish_stream(&mut self) {
+    pub fn finish_stream(&mut self) -> Option<String> {
         self.stream_abort = None;
+        self.last_query.take()
     }
 
     /// Returns a provider config based on current model.
