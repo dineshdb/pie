@@ -1,6 +1,6 @@
 use crate::config::ResolvedConfig;
 use std::sync::Arc;
-use tracing::warn;
+use tracing::{info, warn};
 
 pub fn handle_status(config: &ResolvedConfig, registry: &Arc<crate::registry::Registry>) {
     println!("Provider:    {}", config.provider.name);
@@ -31,6 +31,18 @@ pub fn handle_status(config: &ResolvedConfig, registry: &Arc<crate::registry::Re
     println!("Agents: {}", registry.agents.len());
     for agent in &registry.agents {
         println!(" - {}", agent.name);
+    }
+
+    if !config.known_commands.is_empty() {
+        println!("\n--- Known Commands ---");
+        let mut commands: Vec<_> = config.known_commands.iter().collect();
+        commands.sort_by_key(|(name, _)| *name);
+        for (name, cfg) in commands {
+            info!(
+                " - {name}: {}",
+                cfg.description.as_deref().unwrap_or(&cfg.command)
+            );
+        }
     }
 }
 

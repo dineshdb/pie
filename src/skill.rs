@@ -1,4 +1,4 @@
-use crate::config::EMBEDDED_PIE_DIR;
+use crate::config::{EMBEDDED_PIE_DIR, pie_home};
 use include_dir::Dir;
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -38,7 +38,7 @@ impl Skill {
 }
 
 /// Serde-deserializable frontmatter for skill files.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, serde::Serialize)]
 struct SkillFrontmatter {
     name: String,
     description: String,
@@ -47,7 +47,7 @@ struct SkillFrontmatter {
 }
 
 fn skills_root() -> PathBuf {
-    crate::config::pie_home().join("skills")
+    pie_home().join("skills")
 }
 
 /// Embedded skills directory (from .pie/skills/ in the crate root).

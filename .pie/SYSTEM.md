@@ -1,6 +1,3 @@
-YOU MUST ALWAYS FOLLOW THESE INSTRUCTIONS.
-
-
 Your goal is to solve complex problems
 using a mix of available tools, skills and agents. 
 
@@ -47,6 +44,7 @@ Skills are knowledge sets you load on-demand. Load relevant skills when you need
 {% for skill in skills -%}
 - {{ skill.name }}: {{ skill.description }}
 {% endfor %}
+
 
 ## Agents
 

@@ -151,6 +151,14 @@ pub struct PieConfig {
     pub hooks_timeout_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, Hash)]
+pub struct CliConfig {
+    pub command: String,
+    pub description: Option<String>,
+    #[serde(default)]
+    pub man: bool,
+}
+
 /// A named model tier in `[model.<name>]` sections.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ModelTier {

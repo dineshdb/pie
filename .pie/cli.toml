@@ -1,0 +1,9 @@
+[ls]
+command = "ls"
+description = "List directory contents"
+man = true
+
+[grep]
+command = "grep"
+description = "Search for patterns in files"
+man = true

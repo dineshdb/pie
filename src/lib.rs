@@ -134,7 +134,6 @@ pub async fn run() -> anyhow::Result<()> {
     let config = config::CONFIG.get().context("config should be set")?;
 
     let registry = registry::Registry::load();
-
     if let Some(cmd) = cli.command {
         return handle_command(cmd, config, &registry, &pie_config);
     }

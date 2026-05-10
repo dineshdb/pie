@@ -3,6 +3,7 @@ use super::types::{PieConfig, ProviderBaseUrl, ProviderConfig, ProviderEndpoint}
 use crate::Cli;
 use crate::output::OutputFormat;
 use anyhow::Context;
+use figment::providers::Format;
 use p1e_sandbox::SandboxConfig;
 use redact::Secret;
 use std::collections::HashMap;
@@ -24,6 +25,7 @@ pub struct ResolvedConfig {
     pub log_level: String,
     pub debug: bool,
     pub hooks: crate::hook::HooksManager,
+    pub known_commands: HashMap<String, super::types::CliConfig>,
 }
 
 impl std::fmt::Debug for ResolvedConfig {
@@ -42,6 +44,9 @@ impl std::fmt::Debug for ResolvedConfig {
             s.field("debug", &self.debug);
         }
         s.field("hooks", &self.hooks);
+        if !self.known_commands.is_empty() {
+            s.field("known_commands", &self.known_commands);
+        }
         s.finish()
     }
 }
@@ -236,6 +241,7 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
             pie.hooks_timeout_ms,
         );
 
+        let known_commands = load_cli_config()?;
         Ok(Self {
             provider: resolved_provider,
             model_tiers,
@@ -244,8 +250,39 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
             log_level,
             debug: cli.debug,
             hooks,
+            known_commands,
         })
     }
+}
+
+fn load_cli_config() -> anyhow::Result<HashMap<String, super::types::CliConfig>> {
+    let mut cli_figment = figment::Figment::new();
+
+    // 1. Embedded
+    if let Some(file) = super::loader::EMBEDDED_PIE_DIR.get_file("cli.toml") {
+        let content = file
+            .contents_utf8()
+            .context("embedded cli.toml is not UTF-8")?;
+        cli_figment = cli_figment.merge(figment::providers::Toml::string(content));
+    }
+
+    // 2. Global
+    let global_home = super::loader::pie_home();
+    let global_cli = global_home.join("cli.toml");
+    if global_cli.exists() {
+        cli_figment = cli_figment.merge(figment::providers::Toml::file_exact(global_cli));
+    }
+
+    // 3. Local (Project)
+    let project_root = crate::utils::git_repo_root().map(std::path::PathBuf::from);
+    let project_cli = project_root
+        .as_ref()
+        .map(|root| root.join(".pie").join("cli.toml"));
+    if let Some(p) = project_cli.filter(|p| p.exists()) {
+        cli_figment = cli_figment.merge(figment::providers::Toml::file_exact(p));
+    }
+
+    Ok(cli_figment.extract().unwrap_or_default())
 }
 
 /// Resolve `[model.<name>]` tiers into `ResolvedProvider`s by looking up

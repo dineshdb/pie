@@ -1,3 +1,11 @@
+mod filesystem;
+mod hooks;
+pub mod plan;
+mod shell;
+mod skills;
+pub(crate) mod subagent;
+mod websearch;
+
 pub use filesystem::{
     glob_tool, list_directory_tool, read_file_tool, replace_tool, write_file_tool,
 };
@@ -6,14 +14,6 @@ pub use shell::shell;
 pub use skills::{execute_skill_script_tool, load_references_tool, load_skills_tool};
 pub use subagent::subagent_tool;
 pub use websearch::websearch;
-
-mod filesystem;
-mod hooks;
-pub mod plan;
-mod shell;
-mod skills;
-pub(crate) mod subagent;
-mod websearch;
 
 /// Typed tool names for stringly-typed comparisons across the codebase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::Display, strum::EnumString)]
