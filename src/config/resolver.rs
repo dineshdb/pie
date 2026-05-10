@@ -9,6 +9,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use url::Url;
 
+const ENV_OPENAI_MODEL: &str = "OPENAI_MODEL";
+const ENV_OPENAI_BASE_URL: &str = "OPENAI_BASE_URL";
+const ENV_OPENAI_API_KEY: &str = "OPENAI_API_KEY";
+const ENV_ANTHROPIC_AUTH_TOKEN: &str = "ANTHROPIC_AUTH_TOKEN";
+const ENV_ANTHROPIC_BASE_URL: &str = "ANTHROPIC_BASE_URL";
+const ENV_ANTHROPIC_MODEL: &str = "ANTHROPIC_MODEL";
+
 pub struct ResolvedConfig {
     pub provider: ResolvedProvider,
     pub model_tiers: HashMap<String, ResolvedProvider>,
@@ -90,22 +97,19 @@ impl std::fmt::Debug for ResolvedProvider {
 }
 
 impl ResolvedProvider {
-    pub fn env_vars(&self) -> HashMap<String, String> {
+    pub fn env_vars(&self) -> HashMap<&'static str, String> {
         let mut env = HashMap::new();
-        env.insert("OPENAI_MODEL".to_string(), self.model.clone());
-        env.insert("OPENAI_BASE_URL".to_string(), self.openai_url.to_string());
-        env.insert(
-            "OPENAI_API_KEY".to_string(),
-            self.api_key.expose_secret().clone(),
-        );
+        env.insert(ENV_OPENAI_MODEL, self.model.clone());
+        env.insert(ENV_OPENAI_BASE_URL, self.openai_url.to_string());
+        env.insert(ENV_OPENAI_API_KEY, self.api_key.expose_secret().clone());
 
         if let Some(ref url) = self.anthropic_url {
             env.insert(
-                "ANTHROPIC_AUTH_TOKEN".to_string(),
+                ENV_ANTHROPIC_AUTH_TOKEN,
                 self.api_key.expose_secret().clone(),
             );
-            env.insert("ANTHROPIC_BASE_URL".to_string(), url.to_string());
-            env.insert("ANTHROPIC_MODEL".to_string(), self.model.clone());
+            env.insert(ENV_ANTHROPIC_BASE_URL, url.to_string());
+            env.insert(ENV_ANTHROPIC_MODEL, self.model.clone());
         }
 
         env
@@ -190,8 +194,8 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
                 .cloned()
                 .context(format!("provider '{name}' not found in config"))?
         } else {
-            let openai_env = std::env::var("OPENAI_BASE_URL").ok();
-            let anthropic_env = std::env::var("ANTHROPIC_BASE_URL").ok();
+            let openai_env = std::env::var(ENV_OPENAI_BASE_URL).ok();
+            let anthropic_env = std::env::var(ENV_ANTHROPIC_BASE_URL).ok();
 
             let mut endpoint = ProviderEndpoint::default();
             if let Some(val) = openai_env {
@@ -206,9 +210,9 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
             }
 
             ProviderConfig {
-                model: std::env::var("OPENAI_MODEL").ok(),
+                model: std::env::var(ENV_OPENAI_MODEL).ok(),
                 endpoint,
-                api_key: std::env::var("OPENAI_API_KEY").ok().map(Secret::new),
+                api_key: std::env::var(ENV_OPENAI_API_KEY).ok().map(Secret::new),
                 temperature: None,
             }
         };

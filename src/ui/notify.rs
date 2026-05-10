@@ -61,10 +61,11 @@ fn osascript_notify(title: &str, body: &str) {
 }
 
 fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.replace('\n', " ")
+    let text = s.replace('\n', " ");
+    if text.chars().count() <= max_len {
+        text
     } else {
-        let truncated: String = s.chars().take(max_len - 1).collect();
+        let truncated: String = text.chars().take(max_len - 1).collect();
         format!("{truncated}…")
     }
 }

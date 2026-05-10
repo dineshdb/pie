@@ -15,12 +15,6 @@ FILENAME="${TIMESTAMP}_${CLEAN_EVENT}.json"
 
 # Capture the input JSON
 if [ -n "${PIE_INPUT}" ]; then
-  # Only write JSON file if it's NOT a prompt event
-  if [[ "${PIE_EVENT}" != "prompt.pre" && "${PIE_EVENT}" != "prompt.post" ]]; then
-    echo "${PIE_INPUT}" > "${SESSION_DIR}/${FILENAME}"
-  fi
-  
-  # For prompt events, write a human-readable Markdown file
   if [[ "${PIE_EVENT}" == "prompt.pre" || "${PIE_EVENT}" == "prompt.post" ]]; then
     MD_FILENAME="${TIMESTAMP}_${CLEAN_EVENT}.md"
     {
@@ -28,11 +22,10 @@ if [ -n "${PIE_INPUT}" ]; then
       echo "Timestamp: $(date)"
       echo "Session ID: ${PIE_SESSION_ID}"
       echo
-      
-      # Use jq to extract system and query if they exist
+
       SYSTEM=$(echo "${PIE_INPUT}" | jq -r '.system // empty')
       QUERY=$(echo "${PIE_INPUT}" | jq -r '.query // empty')
-      
+
       if [ -n "${SYSTEM}" ]; then
         echo "---"
         echo "<!-- SYSTEM PROMPT -->"
@@ -42,7 +35,7 @@ if [ -n "${PIE_INPUT}" ]; then
         echo '```'
         echo
       fi
-      
+
       if [ -n "${QUERY}" ]; then
         echo "---"
         echo "<!-- USER QUERY -->"
@@ -52,8 +45,9 @@ if [ -n "${PIE_INPUT}" ]; then
         echo '```'
       fi
     } > "${SESSION_DIR}/${MD_FILENAME}"
+  else
+    echo "${PIE_INPUT}" > "${SESSION_DIR}/${FILENAME}"
   fi
 else
-  # Fallback to reading from stdin if PIE_INPUT is empty and it's an action
   cat > "${SESSION_DIR}/${FILENAME}"
 fi
