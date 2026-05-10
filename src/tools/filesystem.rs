@@ -1,9 +1,7 @@
-use crate::tools::plan::enforce_planning;
 use agentsdk::core::tools::{Tool, ToolExecute};
 use serde_json::json;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 struct ReadFileInput {
@@ -108,34 +106,28 @@ pub fn read_file_tool() -> Tool {
 
 #[allow(clippy::unwrap_used)]
 #[must_use]
-pub fn write_file_tool(pool: Arc<crate::db::DbPool>, session_id: String) -> Tool {
+pub fn write_file_tool() -> Tool {
     Tool::builder()
         .name("write_file")
         .description("Write content to a file. Overwrites if it exists. Requires plan.")
         .input_schema(schemars::schema_for!(WriteFileInput))
-        .execute(ToolExecute::from_async(move |_ctx, params| {
-            let pool = pool.clone();
-            let session_id = session_id.clone();
-            async move {
-                super::emit_tool_input("write_file", &params);
-                let input: WriteFileInput =
-                    serde_json::from_value(params).map_err(|e| format!("Invalid input: {e}"))?;
+        .execute(ToolExecute::from_async(move |_ctx, params| async move {
+            super::emit_tool_input("write_file", &params);
+            let input: WriteFileInput =
+                serde_json::from_value(params).map_err(|e| format!("Invalid input: {e}"))?;
 
-                enforce_planning(&pool, &session_id, "write_file").await?;
-                let path = validate_path(&input.path)?;
+            let path = validate_path(&input.path)?;
 
-                if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent)
-                        .map_err(|e| format!("Failed to create directories: {e}"))?;
-                }
-
-                fs::write(&path, &input.content)
-                    .map_err(|e| format!("Failed to write file: {e}"))?;
-                Ok(
-                    json!({ "status": "success", "path": input.path, "bytes": input.content.len() })
-                        .to_string(),
-                )
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("Failed to create directories: {e}"))?;
             }
+
+            fs::write(&path, &input.content).map_err(|e| format!("Failed to write file: {e}"))?;
+            Ok(
+                json!({ "status": "success", "path": input.path, "bytes": input.content.len() })
+                    .to_string(),
+            )
         }))
         .build()
         .unwrap()
@@ -143,17 +135,14 @@ pub fn write_file_tool(pool: Arc<crate::db::DbPool>, session_id: String) -> Tool
 
 #[allow(clippy::unwrap_used)]
 #[must_use]
-pub fn replace_tool(pool: Arc<crate::db::DbPool>, session_id: String) -> Tool {
+pub fn replace_tool() -> Tool {
     Tool::builder()
         .name("replace")
         .description("Search and replace a specific string in a file. Fails if old_string is not found or is ambiguous. Requires plan.")
         .input_schema(schemars::schema_for!(ReplaceInput))
         .execute(ToolExecute::from_async(move |_ctx, params| {
-            let pool = pool.clone();
-            let session_id = session_id.clone();
             async move {
                 super::emit_tool_input("replace", &params);
-                enforce_planning(&pool, &session_id, "replace").await?;
 
                 let input: ReplaceInput =
                     serde_json::from_value(params).map_err(|e| format!("Invalid input: {e}"))?;

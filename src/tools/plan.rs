@@ -126,18 +126,6 @@ struct StepRow {
     status: String,
 }
 
-pub async fn enforce_planning(pool: &DbPool, session_id: &str, tool: &str) -> Result<(), String> {
-    let steps = pool.load_steps(session_id).await.unwrap_or_default();
-    if steps.is_empty() {
-        return Err(format!(
-            "CRITICAL ERROR: You called '{tool}' without a plan. \
-             You MUST call 'plan_set' with a full plan before taking any actions. \
-             This is your CORE MANDATE for reliability."
-        ));
-    }
-    Ok(())
-}
-
 #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 struct StepListInput {
     pub steps: Vec<Step>,

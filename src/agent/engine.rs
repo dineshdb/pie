@@ -143,6 +143,22 @@ impl PieAgent {
         sp.render().await
     }
 
+    fn make_hook_ctx(
+        &self,
+        event: crate::hook::HookEvent,
+        data: crate::hook::HookContextData,
+    ) -> crate::hook::HookContext {
+        crate::hook::HookContext::new(
+            event,
+            std::env::current_dir()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string(),
+            self.session.id.to_string(),
+            data,
+        )
+    }
+
     pub async fn run_pre_prompt_hooks(
         &self,
         system: &str,
@@ -151,20 +167,13 @@ impl PieAgent {
         let Some(cfg) = CONFIG.get() else {
             return Ok((None, None));
         };
-
-        let ctx = crate::hook::HookContext::new(
+        let ctx = self.make_hook_ctx(
             crate::hook::HookEvent::PrePrompt,
-            std::env::current_dir()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string(),
-            self.session.id.to_string(),
             crate::hook::HookContextData::Prompt(crate::hook::PromptData {
                 system: Some(system.to_string()),
                 query: Some(query.to_string()),
             }),
         );
-
         match cfg.hooks.run(crate::hook::HookEvent::PrePrompt, &ctx).await {
             Ok((_, transformed_data)) => {
                 if let crate::hook::HookContextData::Prompt(p) = transformed_data {
@@ -183,20 +192,13 @@ impl PieAgent {
         let Some(cfg) = CONFIG.get() else {
             return;
         };
-
-        let ctx = crate::hook::HookContext::new(
+        let ctx = self.make_hook_ctx(
             crate::hook::HookEvent::PostPrompt,
-            std::env::current_dir()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string(),
-            self.session.id.to_string(),
             crate::hook::HookContextData::Prompt(crate::hook::PromptData {
                 system: Some(system.to_string()),
                 query: Some(query.to_string()),
             }),
         );
-
         if let Err(e) = cfg
             .hooks
             .run(crate::hook::HookEvent::PostPrompt, &ctx)
@@ -210,20 +212,13 @@ impl PieAgent {
         let Some(cfg) = CONFIG.get() else {
             return Ok(None);
         };
-
-        let ctx = crate::hook::HookContext::new(
+        let ctx = self.make_hook_ctx(
             crate::hook::HookEvent::PreCompletion,
-            std::env::current_dir()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string(),
-            self.session.id.to_string(),
             crate::hook::HookContextData::Prompt(crate::hook::PromptData {
                 system: None,
                 query: Some(output.to_string()),
             }),
         );
-
         match cfg
             .hooks
             .run(crate::hook::HookEvent::PreCompletion, &ctx)
@@ -249,20 +244,13 @@ impl PieAgent {
         let Some(cfg) = CONFIG.get() else {
             return;
         };
-
-        let ctx = crate::hook::HookContext::new(
+        let ctx = self.make_hook_ctx(
             crate::hook::HookEvent::PostCompletion,
-            std::env::current_dir()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string(),
-            self.session.id.to_string(),
             crate::hook::HookContextData::Prompt(crate::hook::PromptData {
                 system: None,
                 query: Some(output.to_string()),
             }),
         );
-
         if let Err(e) = cfg
             .hooks
             .run(crate::hook::HookEvent::PostCompletion, &ctx)
@@ -276,15 +264,15 @@ impl PieAgent {
         let session_id = self.session.id.to_string();
         let mut tools = vec![
             read_file_tool(),
-            write_file_tool(self.pool.clone(), session_id.clone()),
-            replace_tool(self.pool.clone(), session_id.clone()),
+            write_file_tool(),
+            replace_tool(),
             list_directory_tool(),
             glob_tool(),
-            shell(self.sandbox.clone(), self.pool.clone(), session_id.clone()),
+            shell(self.sandbox.clone()),
             load_skills_tool(self.registry.clone(), Some(self.loaded_skills.clone())),
             load_references_tool(self.loaded_refs.clone()),
             execute_skill_script_tool(self.sandbox.clone()),
-            websearch(self.sandbox.clone(), self.pool.clone(), session_id.clone()),
+            websearch(self.sandbox.clone()),
             subagent_tool(
                 self.model.clone(),
                 self.registry.clone(),

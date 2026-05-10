@@ -7,9 +7,23 @@ use figment::{
     providers::{Format, Toml},
 };
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+struct ScanResult {
+    hooks: Vec<HookDef>,
+    plugins: Vec<Plugin>,
+}
+
+static SCAN_CACHE: OnceLock<ScanResult> = OnceLock::new();
 
 /// Scan plugin directories (global + project-local) and return discovered hooks and plugins.
+/// Results are cached after the first call.
 pub fn scan_plugins() -> (Vec<HookDef>, Vec<Plugin>) {
+    let result = SCAN_CACHE.get_or_init(scan_plugins_inner);
+    (result.hooks.clone(), result.plugins.clone())
+}
+
+fn scan_plugins_inner() -> ScanResult {
     let dirs = plugin_scan_dirs();
     let mut hooks = Vec::new();
     let mut plugins = Vec::new();
@@ -31,7 +45,7 @@ pub fn scan_plugins() -> (Vec<HookDef>, Vec<Plugin>) {
         }
     }
 
-    (hooks, plugins)
+    ScanResult { hooks, plugins }
 }
 
 fn plugin_scan_dirs() -> Vec<PathBuf> {
@@ -42,6 +56,10 @@ fn plugin_scan_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+fn parse_plugin_toml(content: &str) -> Option<crate::config::PieConfig> {
+    Figment::new().merge(Toml::string(content)).extract().ok()
+}
+
 /// Load a plugin subdirectory with `plugin.toml`.
 fn scan_plugin_dir(path: &Path, hooks: &mut Vec<HookDef>, plugins: &mut Vec<Plugin>) {
     let plugin_toml = path.join("plugin.toml");
@@ -49,19 +67,14 @@ fn scan_plugin_dir(path: &Path, hooks: &mut Vec<HookDef>, plugins: &mut Vec<Plug
         return;
     }
 
-    // Try loading as a Plugin (for registry).
     if let Ok(plugin) = Plugin::load_from_dir(path) {
         plugins.push(plugin);
     }
 
-    // Try loading hooks from plugin.toml.
     let Ok(content) = std::fs::read_to_string(&plugin_toml) else {
         return;
     };
-    let Ok(plugin_config) = Figment::new()
-        .merge(Toml::string(&content))
-        .extract::<crate::config::PieConfig>()
-    else {
+    let Some(plugin_config) = parse_plugin_toml(&content) else {
         return;
     };
 
@@ -84,10 +97,7 @@ fn scan_plugin_toml(path: &Path, hooks: &mut Vec<HookDef>) {
     let Ok(content) = std::fs::read_to_string(path) else {
         return;
     };
-    let Ok(plugin_config) = Figment::new()
-        .merge(Toml::string(&content))
-        .extract::<crate::config::PieConfig>()
-    else {
+    let Some(plugin_config) = parse_plugin_toml(&content) else {
         return;
     };
     hooks.extend(plugin_config.hooks);

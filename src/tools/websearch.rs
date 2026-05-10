@@ -27,26 +27,18 @@ struct DdgrResult {
 
 /// Search the web using `DuckDuckGo` (ddgr) and return results in Markdown.
 #[allow(clippy::unwrap_used)]
-pub fn websearch(
-    sandbox_settings: Arc<SandboxConfig>,
-    pool: Arc<crate::db::DbPool>,
-    session_id: String,
-) -> Tool {
+pub fn websearch(sandbox_settings: Arc<SandboxConfig>) -> Tool {
     Tool::builder()
         .name("websearch")
         .description("Search the web using DuckDuckGo (ddgr) and return results in Markdown format. Use for finding information not in the local context.")
         .input_schema(schemars::schema_for!(WebsearchInput))
         .execute(ToolExecute::from_async(move |_ctx, params| {
-            let pool = pool.clone();
-            let session_id = session_id.clone();
             let sandbox_settings = sandbox_settings.clone();
             async move {
                 super::emit_tool_input("websearch", &params);
 
                 let input: WebsearchInput = serde_json::from_value(params)
                     .map_err(|e| format!("Invalid input: {e}"))?;
-
-                crate::tools::plan::enforce_planning(&pool, &session_id, "websearch").await?;
 
                 let limit = if input.limit == 0 { 5 } else { input.limit };
                 let escaped_query = input.query

@@ -16,7 +16,7 @@ pub(crate) mod subagent;
 mod websearch;
 
 /// Typed tool names for stringly-typed comparisons across the codebase.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::Display, strum::EnumString)]
 pub enum ToolName {
     #[strum(serialize = "shell")]
     Shell,
@@ -49,25 +49,8 @@ pub enum ToolName {
 }
 
 impl ToolName {
-    /// Try to parse a tool name string into the enum.
     pub fn from_str_lossy(s: &str) -> Option<Self> {
-        match s {
-            "shell" => Some(Self::Shell),
-            "read_file" => Some(Self::ReadFile),
-            "write_file" => Some(Self::WriteFile),
-            "replace" => Some(Self::Replace),
-            "list_directory" => Some(Self::ListDirectory),
-            "glob" => Some(Self::Glob),
-            "load_skills" => Some(Self::LoadSkills),
-            "load_references" => Some(Self::LoadReferences),
-            "execute_skill_script" => Some(Self::ExecuteSkillScript),
-            "websearch" => Some(Self::Websearch),
-            "subagent" => Some(Self::Subagent),
-            "plan_set" => Some(Self::PlanSet),
-            "plan_step_update" => Some(Self::PlanStepUpdate),
-            "plan_show" => Some(Self::PlanShow),
-            _ => None,
-        }
+        s.parse().ok()
     }
 
     pub fn is_plan_tool(self) -> bool {

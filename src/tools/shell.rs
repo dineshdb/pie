@@ -10,24 +10,16 @@ struct ShellInput {
 
 /// Execute a shell command inside the sandbox and return its stdout, stderr, and exit code.
 #[allow(clippy::unwrap_used)]
-pub fn shell(
-    sandbox_settings: Arc<SandboxConfig>,
-    pool: Arc<crate::db::DbPool>,
-    session_id: String,
-) -> Tool {
+pub fn shell(sandbox_settings: Arc<SandboxConfig>) -> Tool {
     Tool::builder()
         .name("shell")
         .description("Execute a system command, bash tools, clis, etc. Requires plan.")
         .input_schema(schemars::schema_for!(ShellInput))
         .execute(ToolExecute::from_async(move |_ctx, params| {
-            let pool = pool.clone();
-            let session_id = session_id.clone();
             let sandbox_settings = sandbox_settings.clone();
             async move {
                 super::emit_tool_input("shell", &params);
-
                 let cmd_str = params.get("command").and_then(|v| v.as_str());
-                crate::tools::plan::enforce_planning(&pool, &session_id, "shell").await?;
 
                 let Some(cmd) = cmd_str else {
                     return Err("command parameter is required".to_string());
