@@ -11,14 +11,6 @@ scope = "transform"
 strategy = "parallel"
 
 [[hooks]]
-name = "memory-grounding"
-event = "prompt.pre"
-type = "cmd"
-handler = "developer.py memory-ground"
-scope = "transform"
-strategy = "parallel"
-
-[[hooks]]
 name = "safety-guard"
 event = "tool.pre"
 type = "cmd"

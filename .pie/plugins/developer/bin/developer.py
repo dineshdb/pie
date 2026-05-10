@@ -260,34 +260,6 @@ def cmd_ground(args, data):
     print(json.dumps({"system": anonymize_path(new_content)}))
 
 
-def cmd_memory_ground(args, data):
-    new_content = ""
-    cwd = os.environ.get("PIE_CWD", os.getcwd())
-
-    # Global Personal Memory
-    global_gemini = os.path.expanduser("~/.gemini/GEMINI.md")
-    if os.path.exists(global_gemini):
-        with open(global_gemini, "r") as f:
-            new_content += f"\n\n### Global Personal Memory\n{f.read()}"
-
-    # Private Project Memory
-    private_memory = os.path.expanduser("~/.gemini/tmp/pie/memory/MEMORY.md")
-    if os.path.exists(private_memory):
-        with open(private_memory, "r") as f:
-            new_content += f"\n\n### Private Project Memory\n{f.read()}"
-
-    # Project & Subdirectory Instructions
-    instructions = find_upward("GEMINI.md", cwd)
-    if instructions:
-        new_content += "\n\n## Project Instructions (GEMINI.md)"
-        for path in reversed(instructions):
-            with open(path, "r") as f:
-                rel_path = os.path.relpath(path, cwd)
-                new_content += f"\n\n### From {rel_path}:\n{f.read()}"
-
-    print(json.dumps({"system": anonymize_path(new_content)}))
-
-
 def cmd_guard(args, data):
     tool = data.get("tool")
     input_data = data.get("input", {})
@@ -306,7 +278,9 @@ def cmd_guard(args, data):
             )
             recent = cursor.fetchall()
             # Compute hashes from content for comparison
-            recent_hashes = [hashlib.md5(r[0].encode()).hexdigest() for r in recent if r[0]]
+            recent_hashes = [
+                hashlib.md5(r[0].encode()).hexdigest() for r in recent if r[0]
+            ]
             if recent_hashes:
                 if recent_hashes[0] == hash_id:
                     print(
@@ -590,7 +564,6 @@ def main():
 
     handlers = {
         "ground": cmd_ground,
-        "memory-ground": cmd_memory_ground,
         "guard": cmd_guard,
         "step-alignment": cmd_step_alignment,
         "step-integrity": cmd_step_integrity,

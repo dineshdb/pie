@@ -306,12 +306,8 @@ impl Hook {
 
         match result {
             Ok(Ok(outcome)) => {
-                tracing::debug!(
-                    hook = %self.name,
-                    duration = ?duration,
-                    outcome = ?outcome,
-                    "HOOK COMPLETED"
-                );
+                tracing::trace!(hook = %self.name,?duration,"HOOK");
+                tracing::trace!(hook = %self.name, ?outcome,"HOOK");
                 Ok(outcome)
             }
             Ok(Err(e)) => {
