@@ -2,7 +2,16 @@ install:
     cargo install --path . -f
 
 prepare:
-    mkdir -p target/ && touch target/pie.db && DATABASE_URL="sqlite:target/pie.db" cargo sqlx prepare --workspace --all -- --all-targets
+    #!/usr/bin/env bash
+    set -euo pipefail
+    DB_PATH=target/sqlx_prepare.db
+    rm -f "$DB_PATH"
+    for file in src/db/migrations/*.sql; do
+        echo "Applying migration: $file"
+        sqlite3 "$DB_PATH" < "$file"
+    done
+    DATABASE_URL="sqlite:$DB_PATH" cargo sqlx prepare
+    rm -f "$DB_PATH"
 
 test:
     repo test

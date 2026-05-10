@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE steps SET status = ?, updated_at = unixepoch('subsec') * 1000\n             WHERE session_id = ? AND name = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "e95d4861e1ed29a23a1e8e3e2e7a287ac791e3339aa0ea6f5eca6fd7c0cc2a8f"
+}

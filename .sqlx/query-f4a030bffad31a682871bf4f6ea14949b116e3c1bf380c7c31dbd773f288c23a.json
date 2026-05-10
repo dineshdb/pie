@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO steps (session_id, name, status, updated_at)\n             VALUES (?1, ?2, ?3, unixepoch('subsec') * 1000)\n             ON CONFLICT(session_id, name) DO UPDATE SET\n             status = excluded.status,\n             updated_at = excluded.updated_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "f4a030bffad31a682871bf4f6ea14949b116e3c1bf380c7c31dbd773f288c23a"
+}
