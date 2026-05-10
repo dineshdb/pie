@@ -257,7 +257,12 @@ impl Hook {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
 
         Ok(HookOutcome::from_cmd(
-            &hook_name, exit_code, &stdout, &stderr, context,
+            &hook_name,
+            exit_code,
+            &stdout,
+            &stderr,
+            context,
+            self.on_failure,
         ))
     }
 
@@ -507,6 +512,7 @@ impl HookOutcome {
         stdout: &str,
         stderr: &str,
         context: &HookContext,
+        on_failure: OnFailure,
     ) -> Self {
         // Try parsing stdout as structured action output.
         if let Some(outcome) = Self::parse_action_response(name, exit_code, stdout, context) {
@@ -523,7 +529,7 @@ impl HookOutcome {
             (s, e) => format!("{s}\n{e}"),
         };
 
-        if matches!(exit_code, Some(2 | 64 | 65 | 77)) {
+        if matches!(exit_code, Some(2 | 64 | 65 | 77)) || on_failure == OnFailure::Abort {
             HookOutcome::Error {
                 name: name.to_string(),
                 exit_code,
