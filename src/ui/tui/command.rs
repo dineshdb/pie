@@ -63,11 +63,7 @@ pub enum Command {
     /// Execute a shell command directly.
     Shell(String),
     /// Invoke a named agent or skill with a query.
-    Invoke {
-        name: String,
-        query: String,
-        is_agent: bool,
-    },
+    Invoke { name: String, query: String },
     /// Built-in slash commands.
     Builtin(BuiltinCommand, Option<String>),
 }
@@ -100,14 +96,12 @@ impl Command {
                 return Self::Invoke {
                     name: without_slash.to_string(),
                     query,
-                    is_agent: true,
                 };
             }
             if registry.skills.iter().any(|s| s.name == without_slash) {
                 return Self::Invoke {
                     name: without_slash.to_string(),
                     query,
-                    is_agent: false,
                 };
             }
         }
@@ -130,20 +124,7 @@ impl Command {
             },
             Self::Shell(command) => CommandAction::Shell(command),
             Self::Send(query) => CommandAction::Stream(query),
-            Self::Invoke {
-                name,
-                query,
-                is_agent,
-            } => {
-                let rewritten = if is_agent {
-                    format!("Use the subagent tool with agent_name=\"{name}\" to handle: {query}")
-                } else if query.is_empty() {
-                    format!("/{name}")
-                } else {
-                    format!("/{name} {query}")
-                };
-                CommandAction::Stream(rewritten)
-            }
+            Self::Invoke { name, query } => CommandAction::Stream(format!("/{name} {query}")),
         }
     }
 }
