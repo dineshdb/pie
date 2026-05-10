@@ -6,7 +6,7 @@
 use crate::config::{ProviderConfig, ResolvedProvider, pie_home};
 use crate::providers::Model;
 use crate::registry::Registry;
-use crate::session::Session;
+use crate::session::{Session, SessionId};
 use crate::tools::plan::{PlanRepo, StepStatus};
 use crate::ui::tui::realm::{Msg, StreamEvent};
 use crate::ui::tui::stream::{StreamContext, spawn_stream};
@@ -42,7 +42,7 @@ pub struct InputComponent {
     pub model: Model,
     pub provider: ResolvedProvider,
     pub available_providers: HashMap<String, ProviderConfig>,
-    pub session_id: uuid::Uuid,
+    pub session_id: SessionId,
     pub session_pool: Arc<crate::db::DbPool>,
     pub sandbox_settings: Arc<SandboxConfig>,
     pub max_steps: u32,
@@ -61,7 +61,7 @@ impl InputComponent {
         available_providers: HashMap<String, ProviderConfig>,
         registry: Arc<Registry>,
     ) -> Self {
-        let session_id = session.id;
+        let session_id = session.id.clone();
         let session_pool = session.pool().clone();
 
         let history_dir = pie_home().join("history");
@@ -417,24 +417,21 @@ impl InputComponent {
     }
 
     /// Reset to a new session: update `session_id`, create fresh history, clear input.
-    pub fn reset_session(&mut self, session_id: uuid::Uuid) {
-        self.session_id = session_id;
+    pub fn reset_session(&mut self, session_id: SessionId) {
+        let _ = crate::ui::tui::realm::run_sync(PlanRepo::delete_steps(
+            &*self.session_pool,
+            &session_id.to_string(),
+        ));
         let history_dir = pie_home().join("history");
         let history_path = history_dir.join(format!("{session_id}.txt"));
+        self.session_id = session_id;
         self.history = InputHistory::new(history_path);
         self.completion.reset();
         self.current_hint.clear();
         let mut empty = TextArea::default();
         apply_textarea_style(&mut empty);
         self.textarea = empty;
-
-        let _ = crate::ui::tui::realm::run_sync(PlanRepo::delete_steps(
-            &*self.session_pool,
-            &session_id.to_string(),
-        ));
     }
-
-    // ── Rendering ────────────────────────────────────────────────────
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, is_streaming: bool) {
         let is_empty = self.is_input_empty();

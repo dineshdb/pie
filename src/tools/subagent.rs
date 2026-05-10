@@ -70,14 +70,7 @@ pub fn subagent_tool(
                     ),
                 );
 
-                // Subagents combine name and query into one execution.
-                // If 'name' is an agent name, it's used as the role.
-                let query_with_name = if name.is_empty() {
-                    query
-                } else {
-                    format!("{name} {query}")
-                };
-                agent.run(&query_with_name).await.map_err(|e| e.to_string())
+                agent.run(&query).await.map_err(|e| e.to_string())
             }
         }))
         .build()

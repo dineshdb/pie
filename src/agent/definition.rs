@@ -179,7 +179,22 @@ pub fn resolve_mentioned_agents<'a>(
 
 /// Check if we should subsume the role of a single mentioned agent.
 /// Returns the name of the agent if exactly one is mentioned.
+/// Also handles direct invocation where the first word is the agent name (with or without /).
 pub fn find_subsume_candidate(instructions: &Instructions, agents: &[Agent]) -> Option<String> {
+    // 1. Check for direct invocation as the first word
+    let first_word = instructions
+        .raw
+        .split_whitespace()
+        .next()
+        .map(|w| w.trim_start_matches('/'));
+
+    if let Some(first) = first_word
+        && let Some(agent) = agents.iter().find(|a| a.name == first)
+    {
+        return Some(agent.name.clone());
+    }
+
+    // 2. Fallback to existing mention logic
     let mentioned = resolve_mentioned_agents(instructions, agents);
     if mentioned.len() == 1 {
         mentioned.first().map(|a| a.name.clone())
@@ -286,5 +301,35 @@ mod tests {
         let instr = Instructions::new("nothing relevant");
         let mentioned = resolve_mentioned_agents(&instr, &agents);
         assert!(mentioned.is_empty());
+    }
+
+    #[test]
+    fn find_subsume_candidate_direct_invocation() {
+        let agents = vec![Agent {
+            name: "howto".into(),
+            description: "howto guide".into(),
+            interactivity: Interactivity::None,
+            model: None,
+            temperature: None,
+            content: String::new(),
+        }];
+
+        // Test with name
+        let instr = Instructions::new("howto implement x");
+        assert_eq!(
+            find_subsume_candidate(&instr, &agents),
+            Some("howto".into())
+        );
+
+        // Test with /name
+        let instr = Instructions::new("/howto implement x");
+        assert_eq!(
+            find_subsume_candidate(&instr, &agents),
+            Some("howto".into())
+        );
+
+        // Test with name but not first word
+        let instr = Instructions::new("tell me howto implement x");
+        assert_eq!(find_subsume_candidate(&instr, &agents), None);
     }
 }

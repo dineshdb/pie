@@ -1,6 +1,6 @@
 use crate::agent::{AgentConfig, AgentEvent, Interactivity, PieAgent};
 use crate::providers::Model;
-use crate::session::Session;
+use crate::session::{Session, SessionId};
 use crate::ui::tui::components::input::InputComponent;
 use crate::ui::tui::realm::StreamEvent;
 use p1e_sandbox::SandboxConfig;
@@ -12,7 +12,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 pub struct StreamContext {
     pub model: Model,
     pub sandbox: Arc<SandboxConfig>,
-    pub session_id: uuid::Uuid,
+    pub session_id: SessionId,
     pub pool: Arc<crate::db::DbPool>,
     pub max_steps: u32,
     pub registry: Arc<crate::registry::Registry>,
@@ -23,7 +23,7 @@ impl From<&InputComponent> for StreamContext {
         Self {
             model: input.model.clone(),
             sandbox: input.sandbox_settings.clone(),
-            session_id: input.session_id,
+            session_id: input.session_id.clone(),
             pool: input.session_pool.clone(),
             max_steps: input.max_steps,
             registry: input.registry.clone(),

@@ -329,8 +329,16 @@ impl PieAgent {
             let (event_tx, mut _event_rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
             let (abort_tx, mut abort_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
 
+            let query = if let Some(ref name) = self.config.agent_name
+                && !query_str.contains(name)
+            {
+                format!("{name} {query_str}")
+            } else {
+                query_str.to_string()
+            };
+
             let res = self
-                .stream(query_str, Interactivity::None, event_tx, &mut abort_rx)
+                .stream(&query, Interactivity::None, event_tx, &mut abort_rx)
                 .await;
 
             // Explicitly keep abort_tx alive until the stream is done
@@ -351,6 +359,7 @@ impl PieAgent {
 
             if self.config.depth < 2
                 && let Some(agent_name) = find_subsume_candidate(&query, &self.registry.agents)
+                && self.config.agent_name.as_ref() != Some(&agent_name)
             {
                 let mut subagent = self.spawn_subagent(Some(agent_name)).await;
                 return subagent
@@ -436,8 +445,14 @@ impl PieAgent {
             .get()
             .map_or(self.model.clone(), |c| c.resolve_model(tier, &self.model));
 
+        let sub_id = if let Some(ref name) = agent_name {
+            crate::session::SessionId::subagent(&self.session.id, name)
+        } else {
+            crate::session::SessionId::new()
+        };
+
         #[allow(clippy::expect_used)]
-        let sub_session = Session::create(self.pool.clone())
+        let sub_session = Session::create_with_id(self.pool.clone(), sub_id)
             .await
             .expect("failed to create subagent session");
         let config = AgentConfig::subagent(self.config.depth + 1, agent_name);

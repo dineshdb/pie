@@ -93,38 +93,79 @@ impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for HistoryEntry {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionId(String);
+
+impl SessionId {
+    pub fn new() -> Self {
+        let full_uuid = Uuid::now_v7().to_string();
+        let id = full_uuid.split('-').next_back().unwrap_or_default();
+        let short = if id.len() >= 6 {
+            &id[id.len() - 6..]
+        } else {
+            id
+        };
+        Self(short.to_string())
+    }
+
+    pub fn subagent(&self, agent_name: &str) -> Self {
+        let suffix = format!("-{agent_name}");
+        if self.0.ends_with(&suffix) {
+            self.clone()
+        } else {
+            Self(format!("{}{}", self.0, suffix))
+        }
+    }
+}
+
+impl std::fmt::Display for SessionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<String> for SessionId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
 // ── Session ────────────────────────────────────────────────────────
 
 #[derive(Clone)]
 pub struct Session {
-    pub id: Uuid,
+    pub id: SessionId,
     pub pool: Arc<DbPool>,
     cache: Vec<HistoryEntry>,
 }
 
 impl Session {
     pub async fn create(pool: Arc<DbPool>) -> anyhow::Result<Self> {
-        let id = Uuid::now_v7();
-        let cwd = std::env::current_dir()?.to_string_lossy().to_string();
-        let id_str = id.to_string();
-        sqlx::query!("INSERT INTO sessions (id, cwd) VALUES (?, ?)", id_str, cwd)
-            .execute(&*pool)
-            .await?;
-        Ok(Self {
-            id,
-            pool,
-            cache: Vec::new(),
-        })
+        let id = SessionId::new();
+        Self::create_with_id(pool, id).await
     }
 
-    pub async fn load(pool: Arc<DbPool>, session_id: Uuid) -> anyhow::Result<Self> {
+    pub async fn create_with_id(pool: Arc<DbPool>, id: SessionId) -> anyhow::Result<Self> {
+        let cwd = std::env::current_dir()?.to_string_lossy().to_string();
+        let id_str = id.to_string();
+        sqlx::query!(
+            "INSERT OR IGNORE INTO sessions (id, cwd) VALUES (?, ?)",
+            id_str,
+            cwd
+        )
+        .execute(&*pool)
+        .await?;
+        Self::load(pool, id).await
+    }
+
+    pub async fn load(pool: Arc<DbPool>, session_id: SessionId) -> anyhow::Result<Self> {
         let sid = session_id.to_string();
         let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?)")
-            .bind(sid)
+            .bind(&sid)
             .fetch_one(&*pool)
             .await?;
         if !exists {
-            anyhow::bail!("Session {session_id} not found");
+            anyhow::bail!("Session {sid} not found");
         }
         let mut session = Self {
             id: session_id,
@@ -143,10 +184,7 @@ impl Session {
         .fetch_optional(&*pool)
         .await?;
         match id_str {
-            Some(sid) => {
-                let id = Uuid::parse_str(&sid)?;
-                Ok(Some(Self::load(pool, id).await?))
-            }
+            Some(sid) => Ok(Some(Self::load(pool, SessionId::from(sid)).await?)),
             None => Ok(None),
         }
     }
@@ -272,7 +310,7 @@ mod tests {
     #[tokio::test]
     async fn load_nonexistent_session() -> anyhow::Result<()> {
         let pool = pool().await?;
-        let result = Session::load(pool, Uuid::now_v7()).await;
+        let result = Session::load(pool, SessionId::new()).await;
         assert!(result.is_err());
         Ok(())
     }
