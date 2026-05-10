@@ -143,6 +143,69 @@ impl PieAgent {
         sp.render().await
     }
 
+    pub async fn run_pre_prompt_hooks(
+        &self,
+        system: &str,
+        query: &str,
+    ) -> Result<(Option<String>, Option<String>)> {
+        let Some(cfg) = CONFIG.get() else {
+            return Ok((None, None));
+        };
+
+        let ctx = crate::hook::HookContext::new(
+            crate::hook::HookEvent::PrePrompt,
+            std::env::current_dir()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string(),
+            self.session.id.to_string(),
+            crate::hook::HookContextData::Prompt(crate::hook::PromptData {
+                system: Some(system.to_string()),
+                query: Some(query.to_string()),
+            }),
+        );
+
+        match cfg.hooks.run(crate::hook::HookEvent::PrePrompt, &ctx).await {
+            Ok((_, transformed_data)) => {
+                if let crate::hook::HookContextData::Prompt(p) = transformed_data {
+                    return Ok((p.system, p.query));
+                }
+                Ok((None, None))
+            }
+            Err(e) => {
+                tracing::warn!("prompt.pre infrastructure failure: {}", e);
+                Ok((None, None))
+            }
+        }
+    }
+
+    pub async fn run_post_prompt_hooks(&self, system: &str, query: &str) {
+        let Some(cfg) = CONFIG.get() else {
+            return;
+        };
+
+        let ctx = crate::hook::HookContext::new(
+            crate::hook::HookEvent::PostPrompt,
+            std::env::current_dir()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string(),
+            self.session.id.to_string(),
+            crate::hook::HookContextData::Prompt(crate::hook::PromptData {
+                system: Some(system.to_string()),
+                query: Some(query.to_string()),
+            }),
+        );
+
+        if let Err(e) = cfg
+            .hooks
+            .run(crate::hook::HookEvent::PostPrompt, &ctx)
+            .await
+        {
+            tracing::warn!("prompt.post hook failure: {}", e);
+        }
+    }
+
     pub async fn run_pre_completion_hooks(&self, output: &str) -> Result<Option<String>> {
         let Some(cfg) = CONFIG.get() else {
             return Ok(None);
@@ -381,8 +444,21 @@ impl PieAgent {
                     let agent = agent_clone.clone();
                     let query = query_inner.clone();
                     async move {
-                        let system = agent.prepare_system_prompt(&query, interactivity).await?;
-                        let messages = agent.build_messages(&query);
+                        let mut system = agent.prepare_system_prompt(&query, interactivity).await?;
+                        let mut query_text = query.raw.clone();
+
+                        let (new_system, new_query) =
+                            agent.run_pre_prompt_hooks(&system, &query_text).await?;
+                        if let Some(s) = new_system {
+                            system = s;
+                        }
+                        if let Some(q) = new_query {
+                            query_text = q;
+                        }
+
+                        agent.run_post_prompt_hooks(&system, &query_text).await;
+
+                        let messages = agent.build_messages(&Instructions::new(query_text));
                         let tools = agent.build_tools()?;
 
                         let mut builder = LanguageModelRequest::builder()

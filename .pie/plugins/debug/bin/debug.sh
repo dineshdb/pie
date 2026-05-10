@@ -15,9 +15,12 @@ FILENAME="${TIMESTAMP}_${CLEAN_EVENT}.json"
 
 # Capture the input JSON
 if [ -n "${PIE_INPUT}" ]; then
-  echo "${PIE_INPUT}" > "${SESSION_DIR}/${FILENAME}"
+  # Only write JSON file if it's NOT a prompt event
+  if [[ "${PIE_EVENT}" != "prompt.pre" && "${PIE_EVENT}" != "prompt.post" ]]; then
+    echo "${PIE_INPUT}" > "${SESSION_DIR}/${FILENAME}"
+  fi
   
-  # For prompt events, also write a human-readable Markdown file
+  # For prompt events, write a human-readable Markdown file
   if [[ "${PIE_EVENT}" == "prompt.pre" || "${PIE_EVENT}" == "prompt.post" ]]; then
     MD_FILENAME="${TIMESTAMP}_${CLEAN_EVENT}.md"
     {
