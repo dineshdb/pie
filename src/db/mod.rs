@@ -4,15 +4,6 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
 pub type DbPool = sqlx::SqlitePool;
 
-pub async fn create_memory_pool() -> Result<DbPool> {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect("sqlite::memory:")
-        .await?;
-    sqlx::migrate!("./src/db/migrations").run(&pool).await?;
-    Ok(pool)
-}
-
 pub async fn create_persistent_pool() -> Result<DbPool> {
     let home = pie_home();
     let db_path = home.join("pie.db");
@@ -31,5 +22,10 @@ pub async fn create_persistent_pool() -> Result<DbPool> {
 
 #[cfg(test)]
 pub async fn create_test_pool() -> Result<DbPool> {
-    create_memory_pool().await
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await?;
+    sqlx::migrate!("./src/db/migrations").run(&pool).await?;
+    Ok(pool)
 }

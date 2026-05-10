@@ -91,10 +91,6 @@ enum Commands {
 }
 
 impl Cli {
-    pub fn is_persistent(&self) -> bool {
-        self.resume && !self.md && !self.json
-    }
-
     pub fn output_format(&self) -> OutputFormat {
         match (self.json, self.md) {
             (true, _) => OutputFormat::Json,
@@ -126,11 +122,7 @@ pub async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let format = cli.output_format();
 
-    let pool = if cli.is_persistent() {
-        Arc::new(db::create_persistent_pool().await?)
-    } else {
-        Arc::new(db::create_memory_pool().await?)
-    };
+    let pool = Arc::new(db::create_persistent_pool().await?);
 
     let pie_config = load_config()?;
     let config: ResolvedConfig = (cli.clone(), pie_config.clone()).try_into()?;
@@ -407,14 +399,14 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_session_creates_new_when_not_resuming() {
-        let pool = Arc::new(db::create_memory_pool().await.unwrap());
+        let pool = Arc::new(db::create_test_pool().await.unwrap());
         let session = resolve_session(pool, false).await.unwrap();
         assert!(session.history_entries().is_empty());
     }
 
     #[tokio::test]
     async fn resolve_session_restores_when_resuming() {
-        let pool = Arc::new(db::create_memory_pool().await.unwrap());
+        let pool = Arc::new(db::create_test_pool().await.unwrap());
         let mut original = Session::create(pool.clone()).await.unwrap();
         original.add_user("hello").await.unwrap();
         original.add_assistant("world").await.unwrap();
