@@ -61,13 +61,9 @@ pub fn load_config() -> anyhow::Result<PieConfig> {
         figment = figment.merge(Toml::file_exact(p));
     }
 
-    let mut pie_config: PieConfig = figment
+    let pie_config: PieConfig = figment
         .extract()
         .map_err(|e| anyhow::anyhow!("config parse error: {e}"))?;
-
-    // Load hooks from plugin directories.
-    let (plugin_hooks, _) = crate::plugin::scan_plugins();
-    pie_config.hooks.extend(plugin_hooks);
 
     Ok(pie_config)
 }

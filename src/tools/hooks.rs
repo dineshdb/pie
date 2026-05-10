@@ -1,3 +1,4 @@
+use crate::agent::OutputMode;
 use crate::config::CONFIG;
 use crate::hook::{HookContext, HookContextData, HookEvent, HookOutcome, ToolData};
 use agentsdk::core::tools::{Tool, ToolExecute};
@@ -6,7 +7,11 @@ use std::sync::Arc;
 
 /// Helper to wrap all tools with hooks.
 #[allow(clippy::expect_used)]
-pub fn wrap_tools_with_hooks(tools: Vec<Tool>, session_id: &str) -> Vec<Tool> {
+pub fn wrap_tools_with_hooks(
+    tools: Vec<Tool>,
+    session_id: &str,
+    output_mode: OutputMode,
+) -> Vec<Tool> {
     tools
         .into_iter()
         .map(|t| {
@@ -30,7 +35,8 @@ pub fn wrap_tools_with_hooks(tools: Vec<Tool>, session_id: &str) -> Vec<Tool> {
                             .to_string();
 
                         let (tool_name, params, mut warnings) =
-                            run_pre_tool_hooks(&session_id, &cwd, &inner.name, params).await?;
+                            run_pre_tool_hooks(&session_id, &cwd, &inner.name, params, output_mode)
+                                .await?;
 
                         // Execute the actual tool
                         let mut result = inner
@@ -40,9 +46,15 @@ pub fn wrap_tools_with_hooks(tools: Vec<Tool>, session_id: &str) -> Vec<Tool> {
                             .map_err(|e| e.to_string());
 
                         if let Ok(output) = &result {
-                            let (new_output, post_warnings) =
-                                run_post_tool_hooks(&session_id, &cwd, &tool_name, params, output)
-                                    .await;
+                            let (new_output, post_warnings) = run_post_tool_hooks(
+                                &session_id,
+                                &cwd,
+                                &tool_name,
+                                params,
+                                output,
+                                output_mode,
+                            )
+                            .await;
 
                             if let Some(new_output) = new_output {
                                 result = Ok(new_output);
@@ -72,6 +84,7 @@ async fn run_pre_tool_hooks(
     cwd: &str,
     tool_name: &str,
     params: Value,
+    output_mode: OutputMode,
 ) -> Result<(String, Value, Vec<String>), String> {
     let mut current_tool_name = tool_name.to_string();
     let mut current_params = params;
@@ -85,6 +98,7 @@ async fn run_pre_tool_hooks(
         HookEvent::PreToolUse,
         cwd.to_string(),
         session_id.to_string(),
+        output_mode,
         HookContextData::Tool(ToolData {
             tool: Some(current_tool_name.clone()),
             input: Some(current_params.clone()),
@@ -93,7 +107,7 @@ async fn run_pre_tool_hooks(
     );
 
     let (outcomes, transformed_data) = cfg
-        .hooks
+        .plugins
         .run(HookEvent::PreToolUse, &hook_ctx)
         .await
         .map_err(|e| e.to_string())?;
@@ -129,6 +143,7 @@ async fn run_post_tool_hooks(
     tool_name: &str,
     params: Value,
     output: &str,
+    output_mode: OutputMode,
 ) -> (Option<String>, Vec<String>) {
     let mut warnings = Vec::new();
     let mut new_output = None;
@@ -144,6 +159,7 @@ async fn run_post_tool_hooks(
         HookEvent::PostToolUse,
         cwd.to_string(),
         session_id.to_string(),
+        output_mode,
         HookContextData::Tool(ToolData {
             tool: Some(tool_name.to_string()),
             input: Some(params),
@@ -151,7 +167,7 @@ async fn run_post_tool_hooks(
         }),
     );
 
-    match cfg.hooks.run(HookEvent::PostToolUse, &hook_ctx).await {
+    match cfg.plugins.run(HookEvent::PostToolUse, &hook_ctx).await {
         Ok((outcomes, transformed_data)) => {
             if let HookContextData::Tool(t) = transformed_data
                 && let Some(transformed_output) = t.output

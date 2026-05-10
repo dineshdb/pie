@@ -1,9 +1,3 @@
-[ls]
-command = "ls"
-description = "List directory contents"
-man = true
-
-[grep]
-command = "grep"
-description = "Search for patterns in files"
-man = true
+[repo]
+command = "repo"
+description = "convenient cli for code repository operations: build, lint, context test, etc."

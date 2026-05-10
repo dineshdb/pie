@@ -1,60 +1,6 @@
+use crate::cmd::BuiltinCommand;
 use crate::ui::tui::state::ChatMessage;
 use std::str::FromStr;
-use strum::{AsRefStr, EnumIter, EnumString};
-
-macro_rules! define_builtin_commands {
-    ($($variant:ident => [$($name:expr),+]),* $(,)?) => {
-        #[derive(Debug, Clone, Copy, EnumIter, EnumString, AsRefStr, PartialEq, Eq)]
-        pub enum BuiltinCommand {
-            $(
-                $(#[strum(serialize = $name)])+
-                $variant,
-            )*
-        }
-
-        impl BuiltinCommand {
-            #[allow(dead_code)]
-            pub fn all_commands() -> Vec<&'static str> {
-                vec![$($($name),+),*]
-            }
-
-            pub fn names(&self) -> &[&'static str] {
-                match self {
-                    $(Self::$variant => &[$($name),+],)*
-                }
-            }
-        }
-    };
-}
-
-define_builtin_commands! {
-    Help => ["/help", "/h"],
-    Quit => ["/quit", "/exit", "/q"],
-    Model => ["/model"],
-    Skills => ["/skills", "/ls"],
-    Clear => ["/clear"],
-    New => ["/new"],
-}
-
-const HELP_DESC: &str = "Show help and available commands";
-const QUIT_DESC: &str = "Exit the application";
-const MODEL_DESC: &str = "Switch or view the current model";
-const SKILLS_DESC: &str = "List available agents and skills";
-const CLEAR_DESC: &str = "Clear the chat history";
-const NEW_DESC: &str = "Start a new session";
-
-impl BuiltinCommand {
-    pub fn description(self) -> &'static str {
-        match self {
-            Self::Help => HELP_DESC,
-            Self::Quit => QUIT_DESC,
-            Self::Model => MODEL_DESC,
-            Self::Skills => SKILLS_DESC,
-            Self::Clear => CLEAR_DESC,
-            Self::New => NEW_DESC,
-        }
-    }
-}
 
 /// Parsed command intent from user input.
 pub enum Command {

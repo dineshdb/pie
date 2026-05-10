@@ -1,11 +1,10 @@
-use crate::agent::{Agent, Interactivity};
-use crate::config::pie_home;
+use crate::agent::{Agent, OutputMode};
 use crate::db::DbPool;
 use crate::instructions::Instructions;
-use crate::registry::Plugin;
+use crate::registry::PluginMetadata;
 use crate::skill::Skill;
 use crate::tools::plan::{PlanRepo, Step};
-use crate::utils::{AnonymizedPath, find_upward_in_repo, git_repo_root, load_file};
+use crate::utils::{AnonymizedPath, git_repo_root};
 use anyhow::{Context, Result};
 use minijinja::Environment;
 use serde::Serialize;
@@ -32,13 +31,10 @@ pub struct ExtraContext {
 pub struct SystemPromptCtx<'a> {
     pub agent_name: Option<&'a str>,
     pub agent_content: Option<&'a str>,
-    pub interactivity: Interactivity,
+    pub output_mode: OutputMode,
     pub skills: &'a [Skill],
     pub agents: &'a [Agent],
     pub loaded_skills: Vec<&'a Skill>,
-    pub global_agents_md: String,
-    pub local_agents_md: String,
-    pub json_output: bool,
     pub steps: Vec<Step>,
     pub plugin_system_prompts: HashMap<String, String>,
     pub extra_context: ExtraContext,
@@ -46,19 +42,12 @@ pub struct SystemPromptCtx<'a> {
 
 impl<'a> From<&SystemPrompt<'a>> for SystemPromptCtx<'a> {
     fn from(sp: &SystemPrompt<'a>) -> Self {
-        let (global_agents_md, local_agents_md) = {
-            (
-                load_file(pie_home().join("AGENTS.md")).unwrap_or_default(),
-                find_upward_in_repo("AGENTS.md").unwrap_or_default(),
-            )
-        };
-
         let agent_name = sp.agent.map(|a| a.name.as_str());
         let agent_content = sp.agent.map(|a| a.content.as_str());
 
-        let interactivity = sp
-            .interactivity
-            .unwrap_or_else(|| sp.agent.map_or(Interactivity::None, |a| a.interactivity));
+        let output_mode = sp
+            .output_mode
+            .unwrap_or_else(|| sp.agent.map_or(OutputMode::Md, |a| a.output_mode));
 
         let steps = Vec::new();
 
@@ -103,13 +92,10 @@ impl<'a> From<&SystemPrompt<'a>> for SystemPromptCtx<'a> {
         Self {
             agent_name,
             agent_content,
-            interactivity,
+            output_mode,
             skills: sp.skills,
             agents: sp.agents,
             loaded_skills: sp.loaded_skills.clone(),
-            global_agents_md,
-            local_agents_md,
-            json_output: sp.json_output,
             steps,
             plugin_system_prompts,
             extra_context,
@@ -142,26 +128,24 @@ fn discover_project_files(root: &str) -> Vec<String> {
 pub struct SystemPrompt<'a> {
     skills: &'a [Skill],
     agents: &'a [Agent],
-    plugins: &'a [Plugin],
+    plugins: &'a [PluginMetadata],
     pub loaded_skills: Vec<&'a Skill>,
     agent: Option<&'a Agent>,
-    json_output: bool,
-    interactivity: Option<Interactivity>,
+    output_mode: Option<OutputMode>,
     pool: Option<Arc<DbPool>>,
     session_id: Option<String>,
 }
 
 impl<'a> SystemPrompt<'a> {
     /// Create a new system prompt context from base registries.
-    pub fn new(skills: &'a [Skill], agents: &'a [Agent], plugins: &'a [Plugin]) -> Self {
+    pub fn new(skills: &'a [Skill], agents: &'a [Agent], plugins: &'a [PluginMetadata]) -> Self {
         Self {
             skills,
             agents,
             plugins,
             loaded_skills: Vec::new(),
             agent: None,
-            json_output: false,
-            interactivity: None,
+            output_mode: None,
             pool: None,
             session_id: None,
         }
@@ -180,16 +164,10 @@ impl<'a> SystemPrompt<'a> {
         self
     }
 
-    /// Set whether JSON output mode is enabled.
     #[cfg(test)]
-    pub fn with_json(mut self, json_output: bool) -> Self {
-        self.json_output = json_output;
-        self
-    }
-
-    /// Set the interactivity level.
-    pub fn with_interactivity(mut self, interactivity: Interactivity) -> Self {
-        self.interactivity = Some(interactivity);
+    /// Set the output mode.
+    pub fn with_output_mode(mut self, output_mode: OutputMode) -> Self {
+        self.output_mode = Some(output_mode);
         self
     }
 
@@ -265,9 +243,9 @@ mod test_helpers {
 
     /// Render the main agent prompt with deterministic values.
     #[allow(clippy::expect_used)]
-    pub async fn render_main(skills: &[Skill], json_output: bool) -> String {
+    pub async fn render_main(skills: &[Skill], output_mode: OutputMode) -> String {
         SystemPrompt::new(skills, &[], &[])
-            .with_json(json_output)
+            .with_output_mode(output_mode)
             .render()
             .await
             .expect("test render main")
@@ -279,7 +257,7 @@ mod test_helpers {
         let agent = Agent {
             name: "test-agent".to_string(),
             description: "test".to_string(),
-            interactivity: Interactivity::None,
+            output_mode: OutputMode::Md,
             model: None,
             temperature: None,
             content: "You are a test agent.".to_string(),
@@ -297,6 +275,7 @@ mod test_helpers {
 #[cfg(test)]
 mod tests {
     use super::test_helpers::*;
+    use crate::agent::OutputMode;
 
     #[tokio::test]
     async fn subagent_with_agent_name_includes_persona() {
@@ -312,7 +291,7 @@ mod tests {
 
     #[tokio::test]
     async fn main_agent_does_not_hardcode_repo_instructions() {
-        let result = render_main(&[], false).await;
+        let result = render_main(&[], OutputMode::Md).await;
         assert!(
             !result.contains("/my/project"),
             "repo root must not be hardcoded in system prompt"
@@ -321,7 +300,7 @@ mod tests {
 
     #[tokio::test]
     async fn main_agent_outside_repo_has_no_repo_instructions() {
-        let result = render_main(&[], false).await;
+        let result = render_main(&[], OutputMode::Md).await;
         assert!(
             !result.contains("git repo"),
             "should not mention git repo when not in one"
@@ -338,31 +317,18 @@ mod tests {
         );
     }
 
-    // ── Config layering ─────────────────────────────────────────
-
-    #[tokio::test]
-    async fn skills_appear_only_when_provided() {
-        let with = render_main(&[skill("my-skill", "desc", "content")], false).await;
-        let without = render_main(&[], false).await;
-        assert!(with.contains("my-skill"), "provided skill must appear");
-        assert!(
-            !without.contains("my-skill"),
-            "missing skill must not appear"
-        );
-    }
-
     #[tokio::test]
     async fn runtime_context_includes_date_and_working_directory() {
         unsafe { std::env::set_var("PWD", "/test/project") };
-        let result = render_main(&[], false).await;
+        let result = render_main(&[], OutputMode::Md).await;
         assert!(result.contains('-'), "date must appear");
         assert!(result.contains("/test/project"), "pwd must appear");
     }
 
     #[tokio::test]
     async fn json_output_mode_injected_when_enabled() {
-        let with = render_main(&[], true).await;
-        let without = render_main(&[], false).await;
+        let with = render_main(&[], OutputMode::Json).await;
+        let without = render_main(&[], OutputMode::Md).await;
         assert!(
             with.contains("JSON Output Mode"),
             "json output mode must appear when enabled"
@@ -377,7 +343,7 @@ mod tests {
 
     #[tokio::test]
     async fn all_template_variables_resolve() {
-        let result = render_main(&[skill("bash", "commands", "content")], false).await;
+        let result = render_main(&[skill("bash", "commands", "content")], OutputMode::Md).await;
         assert!(!result.contains("{%"), "unrendered Jinja block tag");
         assert!(!result.contains("{{"), "unrendered Jinja expression");
     }

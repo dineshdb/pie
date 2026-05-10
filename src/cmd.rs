@@ -1,8 +1,66 @@
-use crate::config::ResolvedConfig;
+use crate::config::{CliConfig, ResolvedConfig};
+use crate::registry::Registry;
+use std::collections::HashMap;
+use std::fmt::Write;
 use std::sync::Arc;
-use tracing::{info, warn};
+use strum::{AsRefStr, EnumIter, EnumString};
+use tracing::warn;
 
-pub fn handle_status(config: &ResolvedConfig, registry: &Arc<crate::registry::Registry>) {
+macro_rules! define_builtin_commands {
+    ($($variant:ident => [$($name:expr),+]),* $(,)?) => {
+        #[derive(Debug, Clone, Copy, EnumIter, EnumString, AsRefStr, PartialEq, Eq)]
+        pub enum BuiltinCommand {
+            $(
+                $(#[strum(serialize = $name)])+
+                $variant,
+            )*
+        }
+
+        impl BuiltinCommand {
+            #[allow(dead_code)]
+            pub fn all_commands() -> Vec<&'static str> {
+                vec![$($($name),+),*]
+            }
+
+            pub fn names(&self) -> &[&'static str] {
+                match self {
+                    $(Self::$variant => &[$($name),+],)*
+                }
+            }
+        }
+    };
+}
+
+define_builtin_commands! {
+    Help => ["/help", "/h"],
+    Quit => ["/quit", "/exit", "/q"],
+    Model => ["/model"],
+    Skills => ["/skills", "/ls"],
+    Clear => ["/clear"],
+    New => ["/new"],
+}
+
+const HELP_DESC: &str = "Show help and available commands";
+const QUIT_DESC: &str = "Exit the application";
+const MODEL_DESC: &str = "Switch or view the current model";
+const SKILLS_DESC: &str = "List available agents and skills";
+const CLEAR_DESC: &str = "Clear the chat history";
+const NEW_DESC: &str = "Start a new session";
+
+impl BuiltinCommand {
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Help => HELP_DESC,
+            Self::Quit => QUIT_DESC,
+            Self::Model => MODEL_DESC,
+            Self::Skills => SKILLS_DESC,
+            Self::Clear => CLEAR_DESC,
+            Self::New => NEW_DESC,
+        }
+    }
+}
+
+pub fn handle_status(config: &ResolvedConfig, registry: &Arc<Registry>) {
     println!("Provider:    {}", config.provider.name);
     println!("Model:       {}", config.provider.model);
     println!("Base URL:    {}", config.provider.openai_url);
@@ -14,13 +72,19 @@ pub fn handle_status(config: &ResolvedConfig, registry: &Arc<crate::registry::Re
     println!("Max Steps:   {}", config.max_steps);
 
     println!("\n--- Hooks Manager ---");
-    println!("Timeout: {}ms", config.hooks.timeout_ms);
-    println!("Total Hooks: {}", config.hooks.hooks.len());
-    for hook in &config.hooks.hooks {
-        println!(
-            " - {}: event={}, scope={:?}, strategy={:?}, kind={:?}",
-            hook.name, hook.event, hook.scope, hook.strategy, hook.kind
-        );
+    println!("Timeout: {}ms", config.plugins.timeout_ms);
+    println!("Plugins: {}", config.plugins.plugins.len());
+    for plugin in &config.plugins.plugins {
+        println!(" - Plugin: {}", plugin.name());
+        for hook in plugin.hooks() {
+            println!(
+                "   - {}: event={}, scope={:?}, strategy={:?}",
+                hook.name(),
+                hook.event(),
+                hook.scope(),
+                hook.strategy()
+            );
+        }
     }
 
     println!("\n--- Registry ---");
@@ -35,18 +99,11 @@ pub fn handle_status(config: &ResolvedConfig, registry: &Arc<crate::registry::Re
 
     if !config.known_commands.is_empty() {
         println!("\n--- Known Commands ---");
-        let mut commands: Vec<_> = config.known_commands.iter().collect();
-        commands.sort_by_key(|(name, _)| *name);
-        for (name, cfg) in commands {
-            info!(
-                " - {name}: {}",
-                cfg.description.as_deref().unwrap_or(&cfg.command)
-            );
-        }
+        print!("{}", format_known_commands(&config.known_commands));
     }
 }
 
-pub fn handle_skills(registry: &Arc<crate::registry::Registry>) {
+pub fn handle_skills(registry: &Arc<Registry>) {
     let skills = &registry.skills;
     let agents = &registry.agents;
 
@@ -78,4 +135,18 @@ where
         let (name, desc) = get_info(item);
         println!(" - {name}: {desc}");
     }
+}
+
+pub fn format_known_commands(commands: &HashMap<String, CliConfig>) -> String {
+    let mut out = String::from("You can run known external commands via shell tool:\n");
+    let mut sorted: Vec<_> = commands.iter().collect();
+    sorted.sort_by_key(|(name, _)| *name);
+    for (name, cfg) in sorted {
+        let _ = writeln!(
+            out,
+            "- {name}: {}",
+            cfg.description.as_deref().unwrap_or(&cfg.command)
+        );
+    }
+    out
 }

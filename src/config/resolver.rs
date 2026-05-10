@@ -1,7 +1,9 @@
 use super::loader::get_providers_data;
 use super::types::{PieConfig, ProviderBaseUrl, ProviderConfig, ProviderEndpoint};
 use crate::Cli;
+use crate::hook::{CommandHook, Hook};
 use crate::output::OutputFormat;
+use crate::plugin::{AgentsMdHook, KnownCommandsPromptHook, SkillsAndAgentsHook, StaticPlugin};
 use anyhow::Context;
 use figment::providers::Format;
 use p1e_sandbox::SandboxConfig;
@@ -24,7 +26,7 @@ pub struct ResolvedConfig {
     pub output_format: OutputFormat,
     pub log_level: String,
     pub debug: bool,
-    pub hooks: crate::hook::HooksManager,
+    pub plugins: crate::hook::PluginManager,
     pub known_commands: HashMap<String, super::types::CliConfig>,
 }
 
@@ -43,7 +45,7 @@ impl std::fmt::Debug for ResolvedConfig {
         if self.debug {
             s.field("debug", &self.debug);
         }
-        s.field("hooks", &self.hooks);
+        s.field("plugins", &self.plugins);
         if !self.known_commands.is_empty() {
             s.field("known_commands", &self.known_commands);
         }
@@ -236,10 +238,37 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
         let model_tiers = resolve_model_tiers(&pie, providers_data);
 
         let log_level = if cli.debug { "debug" } else { pie.log_level() }.to_string();
-        let hooks = crate::hook::HooksManager::new(
-            pie.hooks.into_iter().map(crate::hook::Hook::from).collect(),
-            pie.hooks_timeout_ms,
-        );
+
+        let (mut plugins, _) = crate::plugin::scan_plugins();
+
+        // Wrap pie.toml hooks in a static plugin
+        if !pie.hooks.is_empty() {
+            let hooks: Vec<Arc<dyn Hook>> = pie
+                .hooks
+                .into_iter()
+                .map(CommandHook::from)
+                .map(|h| {
+                    let h: Arc<dyn Hook> = Arc::new(h);
+                    h
+                })
+                .collect();
+            plugins.push(Arc::new(StaticPlugin {
+                name: "config".to_string(),
+                hooks,
+            }));
+        }
+
+        plugins.push(Arc::new(StaticPlugin {
+            name: "builtin".to_string(),
+            hooks: vec![
+                Arc::new(KnownCommandsPromptHook::new()),
+                Arc::new(SkillsAndAgentsHook::new()),
+                Arc::new(AgentsMdHook::new()),
+            ],
+        }));
+
+        plugins.push(Arc::new(crate::plugin::ConversationModePlugin::new()));
+        let hooks = crate::hook::PluginManager::new(plugins, pie.hooks_timeout_ms);
 
         let known_commands = load_cli_config()?;
         Ok(Self {
@@ -249,7 +278,7 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
             output_format,
             log_level,
             debug: cli.debug,
-            hooks,
+            plugins: hooks,
             known_commands,
         })
     }

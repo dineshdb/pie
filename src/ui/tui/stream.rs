@@ -1,4 +1,4 @@
-use crate::agent::{AgentConfig, AgentEvent, Interactivity, PieAgent};
+use crate::agent::{AgentConfig, AgentEvent, OutputMode, PieAgent};
 use crate::providers::Model;
 use crate::session::{Session, SessionId};
 use crate::ui::tui::components::input::InputComponent;
@@ -94,7 +94,7 @@ pub async fn spawn_stream(
     });
 
     if let Err(e) = agent
-        .stream(&query, Interactivity::Interactive, agent_tx, &mut abort_rx)
+        .stream(&query, OutputMode::Interactive, agent_tx, &mut abort_rx)
         .await
     {
         let _ = event_tx.send(StreamEvent::Error(e.to_string()));

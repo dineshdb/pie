@@ -7,6 +7,6 @@ pub use loader::{
 };
 pub use resolver::{ResolvedConfig, ResolvedProvider, build_sandbox};
 use std::sync::OnceLock;
-pub use types::{PieConfig, ProviderConfig};
+pub use types::{CliConfig, PieConfig, ProviderConfig};
 
 pub static CONFIG: OnceLock<ResolvedConfig> = OnceLock::new();

@@ -5,40 +5,105 @@ use include_dir::Dir;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::PathBuf;
-use strum::{AsRefStr, EnumString};
+use strum::{AsRefStr, Display, EnumString};
 
 /// Embedded agents directory (from .pie/agents/ in the crate root).
 pub fn embedded_agents_dir() -> Option<&'static Dir<'static>> {
     EMBEDDED_PIE_DIR.get_dir("agents")
 }
 
-/// Controls whether and how an agent may ask the user questions.
+/// Controls the format and level of interactivity for the agent's output.
 #[derive(
     Debug,
+    Default,
     Clone,
     Copy,
-    Default,
     PartialEq,
     Eq,
     serde::Serialize,
     serde::Deserialize,
     AsRefStr,
+    Display,
     EnumString,
 )]
 #[serde(rename_all = "lowercase")]
 #[strum(serialize_all = "lowercase")]
-pub enum Interactivity {
+pub enum OutputMode {
     #[default]
-    None,
-    Minimal,
+    Md,
+    Json,
     Interactive,
 }
+
+impl OutputMode {
+    pub fn prompt(self) -> String {
+        match self {
+            OutputMode::Md => {
+                format!("{NON_CONVERSATIONAL_VIBE}\n{OUTPUT_MODE_SYSTEM_PROMPT}")
+            }
+            OutputMode::Json => {
+                format!("{JSON_MODE}\n{NON_CONVERSATIONAL_VIBE}")
+            }
+            OutputMode::Interactive => {
+                format!("{CONVERSATIONAL_VIBE}\n{OUTPUT_MODE_SYSTEM_PROMPT}")
+            }
+        }
+    }
+}
+
+const JSON_MODE: &str = r"
+## JSON Output Mode
+Respond with ONLY valid JSON in the format and fields requested by the user.
+Do not include any text outside the JSON block.
+";
+
+const NON_CONVERSATIONAL_VIBE: &str = r"
+## Non-Conversational Mode (CLI)
+
+### Core Mandates
+- **Direct Action**: Provide solutions immediately without preamble or chatter.
+- **Zero Follow-ups**: Do not ask the user for clarification or permission. Use your tools to resolve all unknowns autonomously.
+- **Information Density**: Deliver technical details concisely.
+- **Finality**: Assume each interaction is your last. Complete the task entirely in one go.
+";
+
+const CONVERSATIONAL_VIBE: &str = r#"
+## Interactivity & Collaboration (Conversational)
+
+### Proactive Clarification
+- If a task is underspecified, do not guess. Ask for clarification with a few options.
+- Before starting a multi-step execution phase, summarize your plan and ask if it aligns with the user's expectations.
+
+### Collaborative Check-ins
+- After completing a significant sub-task, briefly state what was done and ask if the user wants to proceed or adjust the next steps.
+- Use phrases like "Does this approach look right to you?" or "Should I continue with [Next Step]?"
+
+### Feedback Integration
+- Actively seek feedback on the quality of the solutions provided.
+- If the user provides a hint or correction, acknowledge it and explain how it changes your approach.
+"#;
+
+const OUTPUT_MODE_SYSTEM_PROMPT: &str = r#"
+## Output Aesthetic (Senior Peer Vibe)
+
+### Visual Hierarchy
+- Use bold headers and bullet points to create a clear structure.
+- Use code blocks for all technical snippets, including single-line commands.
+
+### Tone & Style
+- Maintain a professional yet helpful "senior peer" vibe.
+- Use subtle emojis to categorize information (e.g., 🛠️ for implementation, ✅ for verification, 🔍 for research, 💡 for suggestions).
+
+### Information Density
+- Keep technical explanations concise but thorough.
+- Avoid large walls of text; use spacing and lists to make information digestible.
+"#;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Agent {
     pub name: String,
     pub description: String,
-    pub interactivity: Interactivity,
+    pub output_mode: OutputMode,
     pub model: Option<String>,
     pub temperature: Option<f32>,
     pub content: String,
@@ -50,7 +115,8 @@ pub struct Agent {
 struct AgentFrontmatter {
     name: Option<String>,
     description: Option<String>,
-    interactivity: Interactivity,
+    #[serde(alias = "interactivity")]
+    output_mode: OutputMode,
     model: Option<String>,
     temperature: Option<f32>,
 }
@@ -101,7 +167,7 @@ fn parse_agent(raw: &str, filename: &str) -> Option<Agent> {
     Some(Agent {
         name,
         description,
-        interactivity: meta.interactivity,
+        output_mode: meta.output_mode,
         model: meta.model,
         temperature: meta.temperature,
         content,
@@ -210,12 +276,12 @@ mod tests {
 
     #[test]
     fn parse_agent_full() -> Result<()> {
-        let raw = "---\nname: reviewer\ndescription: code reviewer\ninteractivity: minimal\nmodel: llama3\ntemperature: 0.3\n---\nBe direct and thorough.";
+        let raw = "---\nname: reviewer\ndescription: code reviewer\noutput_mode: interactive\nmodel: llama3\ntemperature: 0.3\n---\nBe direct and thorough.";
         let agent =
             parse_agent(raw, "reviewer.md").ok_or_else(|| anyhow::anyhow!("parse failed"))?;
         assert_eq!(agent.name, "reviewer");
         assert_eq!(agent.description, "code reviewer");
-        assert_eq!(agent.interactivity, Interactivity::Minimal);
+        assert_eq!(agent.output_mode, OutputMode::Interactive);
         assert_eq!(agent.model.as_deref(), Some("llama3"));
         let temp = agent
             .temperature
@@ -226,16 +292,16 @@ mod tests {
     }
 
     #[test]
-    fn parse_agent_interactivity_values() -> Result<()> {
+    fn parse_agent_output_mode_values() -> Result<()> {
         for (val, expected) in [
-            ("none", Interactivity::None),
-            ("minimal", Interactivity::Minimal),
-            ("interactive", Interactivity::Interactive),
+            ("md", OutputMode::Md),
+            ("json", OutputMode::Json),
+            ("interactive", OutputMode::Interactive),
         ] {
-            let raw = format!("---\nname: t\ninteractivity: {val}\n---\ncontent");
+            let raw = format!("---\nname: t\noutput_mode: {val}\n---\ncontent");
             let agent = parse_agent(&raw, "t.md")
                 .ok_or_else(|| anyhow::anyhow!("parse failed for {val}"))?;
-            assert_eq!(agent.interactivity, expected, "failed for {val}");
+            assert_eq!(agent.output_mode, expected, "failed for {val}");
         }
         Ok(())
     }
@@ -247,7 +313,7 @@ mod tests {
             parse_agent(raw, "explore.md").ok_or_else(|| anyhow::anyhow!("parse failed"))?;
         assert_eq!(agent.name, "explore");
         assert_eq!(agent.description, "You are a codebase analyst.");
-        assert_eq!(agent.interactivity, Interactivity::None);
+        assert_eq!(agent.output_mode, OutputMode::Md);
         assert_eq!(
             agent.content,
             "You are a codebase analyst.\nReport findings concisely."
@@ -261,7 +327,7 @@ mod tests {
             Agent {
                 name: "reviewer".into(),
                 description: "reviews code".into(),
-                interactivity: Interactivity::Minimal,
+                output_mode: OutputMode::Interactive,
                 model: None,
                 temperature: None,
                 content: "Be thorough.".into(),
@@ -269,7 +335,7 @@ mod tests {
             Agent {
                 name: "planner".into(),
                 description: "manages plans".into(),
-                interactivity: Interactivity::Interactive,
+                output_mode: OutputMode::Interactive,
                 model: None,
                 temperature: None,
                 content: "Think step by step.".into(),
@@ -293,7 +359,7 @@ mod tests {
         let agents = vec![Agent {
             name: "reviewer".into(),
             description: "reviews".into(),
-            interactivity: Interactivity::None,
+            output_mode: OutputMode::Md,
             model: None,
             temperature: None,
             content: String::new(),
@@ -308,7 +374,7 @@ mod tests {
         let agents = vec![Agent {
             name: "howto".into(),
             description: "howto guide".into(),
-            interactivity: Interactivity::None,
+            output_mode: OutputMode::Md,
             model: None,
             temperature: None,
             content: String::new(),

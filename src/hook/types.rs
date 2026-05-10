@@ -1,5 +1,6 @@
+use crate::{agent::OutputMode, plugin::Plugin};
 use anyhow::Result;
-use futures::future::join_all;
+use futures::future::{BoxFuture, join_all};
 use serde::{Deserialize, Serialize};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -30,6 +31,28 @@ pub enum HookEvent {
     #[serde(rename = "completion.post")]
     #[strum(serialize = "completion.post")]
     PostCompletion,
+}
+
+/// Internal plugin that can listen for hooks and transform data.
+#[allow(clippy::unnecessary_literal_bound)]
+pub trait Hook: Send + Sync + std::fmt::Debug {
+    fn name(&self) -> &str;
+
+    fn event(&self) -> HookEvent;
+
+    fn strategy(&self) -> ExecutionStrategy {
+        ExecutionStrategy::Sequential
+    }
+
+    fn scope(&self) -> HookScope {
+        HookScope::Transform
+    }
+
+    fn matches(&self, _context: &HookContext) -> bool {
+        true
+    }
+
+    fn on<'a>(&'a self, context: &'a HookContext) -> BoxFuture<'a, Result<HookOutcome>>;
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default, Display)]
@@ -121,7 +144,7 @@ struct CmdEnv {
 
 /// Runtime hook with an pre-computed environment.
 /// Built from [`HookDef`] via [`From<HookDef>`].
-pub struct Hook {
+pub struct CommandHook {
     pub name: String,
     pub event: HookEvent,
     pub matcher: Option<HookMatcher>,
@@ -133,7 +156,7 @@ pub struct Hook {
     cmd_env: CmdEnv,
 }
 
-impl Clone for Hook {
+impl Clone for CommandHook {
     fn clone(&self) -> Self {
         Self {
             name: self.name.clone(),
@@ -150,7 +173,7 @@ impl Clone for Hook {
 }
 
 // Forward Debug manually — closures don't impl Debug.
-impl std::fmt::Debug for Hook {
+impl std::fmt::Debug for CommandHook {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("Hook");
         s.field("name", &self.name);
@@ -171,7 +194,7 @@ impl std::fmt::Debug for Hook {
     }
 }
 
-impl From<HookDef> for Hook {
+impl From<HookDef> for CommandHook {
     fn from(def: HookDef) -> Self {
         let plugin_dir = def.plugin_dir.clone();
         let cmd_env = Self::build_cmd_env(&def, plugin_dir.as_deref());
@@ -190,7 +213,58 @@ impl From<HookDef> for Hook {
     }
 }
 
-impl Hook {
+impl Hook for CommandHook {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn event(&self) -> HookEvent {
+        self.event
+    }
+
+    fn strategy(&self) -> ExecutionStrategy {
+        self.strategy
+    }
+
+    fn scope(&self) -> HookScope {
+        self.scope
+    }
+
+    fn matches(&self, context: &HookContext) -> bool {
+        let Some(matcher) = &self.matcher else {
+            return true;
+        };
+
+        if let Some(tools) = &matcher.tools {
+            let Some(tool) = context.tool_name() else {
+                return false;
+            };
+            if !tools.iter().any(|t| t == tool) {
+                return false;
+            }
+        }
+
+        if let Some(pattern) = &matcher.file_pattern {
+            let data = context.data_json();
+            let path = data
+                .get("path")
+                .or_else(|| data.get("input").and_then(|i| i.get("path")))
+                .and_then(|v| v.as_str());
+
+            if !path.is_some_and(|p| Self::glob_match(pattern, p)) {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn on<'a>(&'a self, context: &'a HookContext) -> BoxFuture<'a, Result<HookOutcome>> {
+        Box::pin(self.execute_cmd(context))
+    }
+}
+
+impl CommandHook {
     fn build_cmd_env(def: &HookDef, plugin_dir: Option<&str>) -> CmdEnv {
         let mut env_vars = vec![(
             "PIE_DATABASE_PATH".to_string(),
@@ -239,6 +313,7 @@ impl Hook {
             .env("PIE_HOOK_SCOPE", format!("{:?}", self.scope))
             .env("PIE_CWD", &*context.cwd)
             .env("PIE_SESSION_ID", &*context.session_id)
+            .env("PIE_OUTPUT_MODE", context.output_mode.to_string())
             .env("PIE_INPUT", &input_json);
 
         for (key, val) in &self.cmd_env.env_vars {
@@ -288,85 +363,6 @@ impl Hook {
         ))
     }
 
-    pub async fn execute(
-        &self,
-        context: &HookContext,
-        global_timeout_ms: u64,
-    ) -> Result<HookOutcome> {
-        let start = std::time::Instant::now();
-        tracing::trace!(event = %context.event, scope = ?self.scope, hook = %self.name, "HOOK START");
-        let timeout_ms = self.timeout_ms.unwrap_or(global_timeout_ms);
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(timeout_ms),
-            self.execute_cmd(context),
-        )
-        .await;
-
-        let duration = start.elapsed();
-
-        match result {
-            Ok(Ok(outcome)) => {
-                tracing::trace!(hook = %self.name,?duration,"HOOK");
-                tracing::trace!(hook = %self.name, ?outcome,"HOOK");
-                Ok(outcome)
-            }
-            Ok(Err(e)) => {
-                tracing::warn!(
-                    hook = %self.name,
-                    duration = ?duration,
-                    error = %e,
-                    "HOOK FAILED"
-                );
-                Ok(HookOutcome::Warning {
-                    name: self.name.clone(),
-                    exit_code: None,
-                    message: e.to_string(),
-                })
-            }
-            Err(_) => {
-                tracing::warn!(
-                    hook = %self.name,
-                    duration = ?duration,
-                    "HOOK TIMED OUT"
-                );
-                Ok(HookOutcome::Warning {
-                    name: self.name.clone(),
-                    exit_code: None,
-                    message: "hook timed out".to_string(),
-                })
-            }
-        }
-    }
-
-    pub fn matches(&self, context: &HookContext) -> bool {
-        let Some(matcher) = &self.matcher else {
-            return true;
-        };
-
-        if let Some(tools) = &matcher.tools {
-            let Some(tool) = context.tool_name() else {
-                return false;
-            };
-            if !tools.contains(&tool.to_string()) {
-                return false;
-            }
-        }
-
-        if let Some(pattern) = &matcher.file_pattern {
-            let data = context.data_json();
-            let path = data
-                .get("path")
-                .or_else(|| data.get("input").and_then(|i| i.get("path")))
-                .and_then(|v| v.as_str());
-
-            if !path.is_some_and(|p| Self::glob_match(pattern, p)) {
-                return false;
-            }
-        }
-
-        true
-    }
-
     fn glob_match(pattern: &str, path: &str) -> bool {
         glob::Pattern::new(pattern).is_ok_and(|g| g.matches(path))
     }
@@ -379,6 +375,7 @@ pub struct HookContext {
     pub event: HookEvent,
     pub cwd: Arc<str>,
     pub session_id: Arc<str>,
+    pub output_mode: OutputMode,
     pub data: HookContextData,
 }
 
@@ -464,11 +461,18 @@ impl HookContextData {
 }
 
 impl HookContext {
-    pub fn new(event: HookEvent, cwd: String, session_id: String, data: HookContextData) -> Self {
+    pub fn new(
+        event: HookEvent,
+        cwd: String,
+        session_id: String,
+        output_mode: OutputMode,
+        data: HookContextData,
+    ) -> Self {
         Self {
             event,
             cwd: cwd.into(),
             session_id: session_id.into(),
+            output_mode,
             data,
         }
     }
@@ -655,28 +659,30 @@ impl HookOutcome {
 
 // ── Manager ───────────────────────────────────────────────────────────
 
+const DEFAULT_HOOK_TIMEOUT_MS: u64 = 30_000;
+
 #[derive(Default)]
-pub struct HooksManager {
-    pub hooks: Vec<Hook>,
+pub struct PluginManager {
+    pub plugins: Vec<Arc<dyn Plugin>>,
     pub timeout_ms: u64,
 }
 
-impl std::fmt::Debug for HooksManager {
+impl std::fmt::Debug for PluginManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut s = f.debug_struct("HooksManager");
-        s.field("hooks", &self.hooks);
-        if self.timeout_ms != 30000 {
+        let mut s = f.debug_struct("PluginManager");
+        s.field("plugins", &self.plugins);
+        if self.timeout_ms != DEFAULT_HOOK_TIMEOUT_MS {
             s.field("timeout_ms", &self.timeout_ms);
         }
         s.finish()
     }
 }
 
-impl HooksManager {
-    pub fn new(hooks: Vec<Hook>, timeout_ms: Option<u64>) -> Self {
+impl PluginManager {
+    pub fn new(plugins: Vec<Arc<dyn Plugin>>, timeout_ms: Option<u64>) -> Self {
         Self {
-            hooks,
-            timeout_ms: timeout_ms.unwrap_or(30000),
+            plugins,
+            timeout_ms: timeout_ms.unwrap_or(DEFAULT_HOOK_TIMEOUT_MS),
         }
     }
 
@@ -685,29 +691,34 @@ impl HooksManager {
         event: HookEvent,
         context: &HookContext,
     ) -> Result<(Vec<HookOutcome>, HookContextData)> {
-        let applicable: Vec<&Hook> = self
-            .hooks
-            .iter()
-            .filter(|h| h.event == event && h.matches(context))
-            .collect();
+        let mut applicable_hooks = Vec::new();
 
-        if applicable.is_empty() {
+        for plugin in &self.plugins {
+            if !plugin.is_enabled(context) {
+                continue;
+            }
+
+            for hook in plugin.hooks() {
+                if hook.event() == event && hook.matches(context) {
+                    applicable_hooks.push(hook);
+                }
+            }
+        }
+
+        if applicable_hooks.is_empty() {
             return Ok((Vec::new(), context.data.clone()));
         }
 
         let mut all_outcomes = Vec::new();
         let mut current_data = context.data.clone();
 
-        let (validations, transforms): (Vec<_>, Vec<_>) = applicable
+        let (validations, transforms): (Vec<_>, Vec<_>) = applicable_hooks
             .into_iter()
-            .partition(|h| h.scope == HookScope::Validation);
+            .partition(|h| h.scope() == HookScope::Validation);
 
         // Validation hooks run in parallel — any error stops the pipeline.
         if !validations.is_empty() {
-            let futures: Vec<_> = validations
-                .iter()
-                .map(|h| h.execute(context, self.timeout_ms))
-                .collect();
+            let futures: Vec<_> = validations.iter().map(|h| h.on(context)).collect();
             let results = join_all(futures).await;
             for result in results {
                 all_outcomes.push(result?);
@@ -724,13 +735,12 @@ impl HooksManager {
         // Transform hooks: sequential or parallel batches.
         let mut i = 0;
         while i < transforms.len() {
-            let strategy = transforms.get(i).map(|h| h.strategy).unwrap_or_default();
-
+            let strategy = transforms.get(i).map(|h| h.strategy()).unwrap_or_default();
             if strategy == ExecutionStrategy::Sequential {
                 if let Some(hook) = transforms.get(i) {
                     let transform_context =
                         Self::build_transform_context(event, context, &current_data);
-                    let outcome = hook.execute(&transform_context, self.timeout_ms).await?;
+                    let outcome = hook.on(&transform_context).await?;
                     if let HookOutcome::Transformed { data, .. } = &outcome {
                         current_data.merge(data.clone());
                     }
@@ -740,10 +750,10 @@ impl HooksManager {
             } else {
                 let mut batch = Vec::new();
                 while i < transforms.len()
-                    && transforms.get(i).map(|h| h.strategy) == Some(ExecutionStrategy::Parallel)
+                    && transforms.get(i).map(|h| h.strategy()) == Some(ExecutionStrategy::Parallel)
                 {
                     if let Some(hook) = transforms.get(i) {
-                        batch.push(*hook);
+                        batch.push(hook);
                     }
                     i += 1;
                 }
@@ -751,10 +761,7 @@ impl HooksManager {
                 let transform_context =
                     Self::build_transform_context(event, context, &current_data);
 
-                let futures: Vec<_> = batch
-                    .iter()
-                    .map(|h| h.execute(&transform_context, self.timeout_ms))
-                    .collect();
+                let futures: Vec<_> = batch.iter().map(|h| h.on(&transform_context)).collect();
                 let results = join_all(futures).await;
 
                 for outcome_res in results {
@@ -786,6 +793,7 @@ impl HooksManager {
             event,
             cwd: base_ctx.cwd.clone(),
             session_id: base_ctx.session_id.clone(),
+            output_mode: base_ctx.output_mode,
             data: current_data.clone(),
         }
     }

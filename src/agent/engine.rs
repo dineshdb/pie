@@ -1,6 +1,7 @@
-use crate::agent::{Interactivity, find_subsume_candidate};
+use crate::agent::{OutputMode, find_subsume_candidate};
 use crate::config::CONFIG;
 use crate::db::DbPool;
+use crate::hook::{HookContext, HookContextData, HookEvent, PromptData};
 use crate::instructions::Instructions;
 use crate::prompt::SystemPrompt;
 use crate::providers::{Model, strip_control_tokens};
@@ -113,11 +114,7 @@ impl PieAgent {
         }
     }
 
-    async fn prepare_system_prompt(
-        &self,
-        query: &Instructions,
-        interactivity: Interactivity,
-    ) -> Result<String> {
+    async fn prepare_system_prompt(&self, query: &Instructions) -> Result<String> {
         let mut query_mentions = query.clone();
 
         if self.config.history_limit > 0 {
@@ -137,24 +134,25 @@ impl PieAgent {
         )
         .with_plan(self.pool.clone(), self.session.id.to_string())
         .with_agent(self.config.agent_name.as_deref())
-        .resolve(&query_mentions)
-        .with_interactivity(interactivity);
+        .resolve(&query_mentions);
 
         sp.render().await
     }
 
     fn make_hook_ctx(
         &self,
-        event: crate::hook::HookEvent,
-        data: crate::hook::HookContextData,
-    ) -> crate::hook::HookContext {
-        crate::hook::HookContext::new(
+        event: HookEvent,
+        data: HookContextData,
+        output_mode: OutputMode,
+    ) -> HookContext {
+        HookContext::new(
             event,
             std::env::current_dir()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string(),
             self.session.id.to_string(),
+            output_mode,
             data,
         )
     }
@@ -163,20 +161,22 @@ impl PieAgent {
         &self,
         system: &str,
         query: &str,
+        output_mode: OutputMode,
     ) -> Result<(Option<String>, Option<String>)> {
         let Some(cfg) = CONFIG.get() else {
             return Ok((None, None));
         };
         let ctx = self.make_hook_ctx(
-            crate::hook::HookEvent::PrePrompt,
-            crate::hook::HookContextData::Prompt(crate::hook::PromptData {
+            HookEvent::PrePrompt,
+            HookContextData::Prompt(PromptData {
                 system: Some(system.to_string()),
                 query: Some(query.to_string()),
             }),
+            output_mode,
         );
-        match cfg.hooks.run(crate::hook::HookEvent::PrePrompt, &ctx).await {
+        match cfg.plugins.run(HookEvent::PrePrompt, &ctx).await {
             Ok((_, transformed_data)) => {
-                if let crate::hook::HookContextData::Prompt(p) = transformed_data {
+                if let HookContextData::Prompt(p) = transformed_data {
                     return Ok((p.system, p.query));
                 }
                 Ok((None, None))
@@ -188,44 +188,48 @@ impl PieAgent {
         }
     }
 
-    pub async fn run_post_prompt_hooks(&self, system: &str, query: &str) {
+    pub async fn run_post_prompt_hooks(
+        &self,
+        system: &str,
+        query: &str,
+        output_mode: OutputMode,
+    ) -> Result<()> {
         let Some(cfg) = CONFIG.get() else {
-            return;
+            return Ok(());
         };
         let ctx = self.make_hook_ctx(
-            crate::hook::HookEvent::PostPrompt,
-            crate::hook::HookContextData::Prompt(crate::hook::PromptData {
+            HookEvent::PostPrompt,
+            HookContextData::Prompt(PromptData {
                 system: Some(system.to_string()),
                 query: Some(query.to_string()),
             }),
+            output_mode,
         );
-        if let Err(e) = cfg
-            .hooks
-            .run(crate::hook::HookEvent::PostPrompt, &ctx)
-            .await
-        {
+        if let Err(e) = cfg.plugins.run(HookEvent::PostPrompt, &ctx).await {
             tracing::warn!("prompt.post hook failure: {}", e);
         }
+        Ok(())
     }
 
-    pub async fn run_pre_completion_hooks(&self, output: &str) -> Result<Option<String>> {
+    pub async fn run_pre_completion_hooks(
+        &self,
+        output: &str,
+        output_mode: OutputMode,
+    ) -> Result<Option<String>> {
         let Some(cfg) = CONFIG.get() else {
             return Ok(None);
         };
         let ctx = self.make_hook_ctx(
-            crate::hook::HookEvent::PreCompletion,
-            crate::hook::HookContextData::Prompt(crate::hook::PromptData {
+            HookEvent::PreCompletion,
+            HookContextData::Prompt(PromptData {
                 system: None,
                 query: Some(output.to_string()),
             }),
+            output_mode,
         );
-        match cfg
-            .hooks
-            .run(crate::hook::HookEvent::PreCompletion, &ctx)
-            .await
-        {
+        match cfg.plugins.run(HookEvent::PreCompletion, &ctx).await {
             Ok((_, transformed_data)) => {
-                if let crate::hook::HookContextData::Prompt(p) = transformed_data
+                if let HookContextData::Prompt(p) = transformed_data
                     && let Some(feedback) = p.query
                     && feedback != output
                 {
@@ -240,27 +244,24 @@ impl PieAgent {
         }
     }
 
-    pub async fn run_post_completion_hooks(&self, output: &str) {
+    pub async fn run_post_completion_hooks(&self, output: &str, output_mode: OutputMode) {
         let Some(cfg) = CONFIG.get() else {
             return;
         };
         let ctx = self.make_hook_ctx(
-            crate::hook::HookEvent::PostCompletion,
-            crate::hook::HookContextData::Prompt(crate::hook::PromptData {
+            HookEvent::PostCompletion,
+            HookContextData::Prompt(PromptData {
                 system: None,
                 query: Some(output.to_string()),
             }),
+            output_mode,
         );
-        if let Err(e) = cfg
-            .hooks
-            .run(crate::hook::HookEvent::PostCompletion, &ctx)
-            .await
-        {
+        if let Err(e) = cfg.plugins.run(HookEvent::PostCompletion, &ctx).await {
             tracing::warn!("completion.post hook failure: {}", e);
         }
     }
 
-    fn build_tools(&self) -> Result<Vec<agentsdk::core::tools::Tool>> {
+    fn build_tools(&self, output_mode: OutputMode) -> Result<Vec<agentsdk::core::tools::Tool>> {
         let session_id = self.session.id.to_string();
         let mut tools = vec![
             read_file_tool(),
@@ -287,7 +288,11 @@ impl PieAgent {
             tools.push(tool);
         }
 
-        Ok(crate::tools::wrap_tools_with_hooks(tools, &session_id))
+        Ok(crate::tools::wrap_tools_with_hooks(
+            tools,
+            &session_id,
+            output_mode,
+        ))
     }
 
     fn build_messages(&self, query: &Instructions) -> Vec<Message> {
@@ -389,7 +394,7 @@ impl PieAgent {
             };
 
             let res = self
-                .stream(&query, Interactivity::None, event_tx, &mut abort_rx)
+                .stream(&query, OutputMode::Md, event_tx, &mut abort_rx)
                 .await;
 
             // Explicitly keep abort_tx alive until the stream is done
@@ -401,7 +406,7 @@ impl PieAgent {
     pub fn stream<'a>(
         &'a mut self,
         query_str: &'a str,
-        interactivity: Interactivity,
+        output_mode: OutputMode,
         event_tx: UnboundedSender<AgentEvent>,
         abort_rx: &'a mut UnboundedReceiver<()>,
     ) -> BoxFuture<'a, Result<String>> {
@@ -414,7 +419,7 @@ impl PieAgent {
             {
                 let mut subagent = self.spawn_subagent(Some(agent_name)).await;
                 return subagent
-                    .stream(query_str, interactivity, event_tx, abort_rx)
+                    .stream(query_str, output_mode, event_tx, abort_rx)
                     .await;
             }
 
@@ -432,11 +437,12 @@ impl PieAgent {
                     let agent = agent_clone.clone();
                     let query = query_inner.clone();
                     async move {
-                        let mut system = agent.prepare_system_prompt(&query, interactivity).await?;
+                        let mut system = agent.prepare_system_prompt(&query).await?;
                         let mut query_text = query.raw.clone();
 
-                        let (new_system, new_query) =
-                            agent.run_pre_prompt_hooks(&system, &query_text).await?;
+                        let (new_system, new_query) = agent
+                            .run_pre_prompt_hooks(&system, &query_text, output_mode)
+                            .await?;
                         if let Some(s) = new_system {
                             system = s;
                         }
@@ -444,10 +450,12 @@ impl PieAgent {
                             query_text = q;
                         }
 
-                        agent.run_post_prompt_hooks(&system, &query_text).await;
+                        let _ = agent
+                            .run_post_prompt_hooks(&system, &query_text, output_mode)
+                            .await;
 
                         let messages = agent.build_messages(&Instructions::new(query_text));
-                        let tools = agent.build_tools()?;
+                        let tools = agent.build_tools(output_mode)?;
 
                         let mut builder = LanguageModelRequest::builder()
                             .model(agent.model.clone())
@@ -477,7 +485,8 @@ impl PieAgent {
                 let output = strip_control_tokens(&output);
 
                 if loop_count < self.config.max_retries
-                    && let Some(feedback) = self.run_pre_completion_hooks(&output).await?
+                    && let Some(feedback) =
+                        self.run_pre_completion_hooks(&output, output_mode).await?
                 {
                     tracing::info!("PreCompletion hook triggered, re-running LLM with feedback");
                     let assistant_text = response.text().await.unwrap_or_default();
@@ -491,7 +500,7 @@ impl PieAgent {
                     self.session.add_assistant(&output).await?;
                 }
                 let _ = event_tx.send(AgentEvent::Done(output.clone()));
-                self.run_post_completion_hooks(&output).await;
+                self.run_post_completion_hooks(&output, output_mode).await;
                 return Ok(output);
             }
         })

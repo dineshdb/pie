@@ -1,8 +1,9 @@
 use crate::agent::{Agent, get_all_agents};
+use crate::cmd::BuiltinCommand;
 use crate::skill::{Skill, get_all_skills};
-use crate::ui::tui::command::BuiltinCommand;
+use figment::providers::Format;
 use serde::Deserialize;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use strum::IntoEnumIterator;
 
 /// Kind of completion item — used for visual differentiation in the popup.
@@ -34,7 +35,7 @@ pub struct CompletionItem {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct Plugin {
+pub struct PluginMetadata {
     pub name: String,
     #[allow(dead_code)]
     pub version: Option<String>,
@@ -43,26 +44,12 @@ pub struct Plugin {
     pub system_prompt: Option<String>,
 }
 
-impl Plugin {
-    /// Load a plugin from a directory containing a `plugin.toml`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - The `plugin.toml` file cannot be read or parsed.
-    pub fn load_from_dir(path: &std::path::Path) -> anyhow::Result<Self> {
-        let plugin_toml = path.join("plugin.toml");
-        let content = std::fs::read_to_string(&plugin_toml)?;
-        let mut plugin: Plugin = serde_yaml::from_str(&content)?;
-
-        // Load SYSTEM.md if it exists
-        let system_md = path.join("SYSTEM.md");
-        if system_md.exists()
-            && let Ok(system_content) = std::fs::read_to_string(&system_md)
-        {
-            plugin.system_prompt = Some(system_content);
-        }
-
+impl PluginMetadata {
+    /// Parse plugin metadata from a TOML string.
+    pub fn from_toml_str(content: &str) -> anyhow::Result<Self> {
+        let plugin: PluginMetadata = figment::Figment::new()
+            .merge(figment::providers::Toml::string(content))
+            .extract()?;
         Ok(plugin)
     }
 }
@@ -71,11 +58,17 @@ impl Plugin {
 pub struct Registry {
     pub agents: Vec<Agent>,
     pub skills: Vec<Skill>,
-    pub plugins: Vec<Plugin>,
+    pub plugins: Vec<PluginMetadata>,
     pub completions: Vec<CompletionItem>,
 }
 
+static REGISTRY: OnceLock<Arc<Registry>> = OnceLock::new();
+
 impl Registry {
+    pub fn get() -> Option<Arc<Self>> {
+        REGISTRY.get().cloned()
+    }
+
     pub fn load() -> Arc<Self> {
         let agents = get_all_agents();
         let skills = get_all_skills();
@@ -120,11 +113,14 @@ impl Registry {
 
         completions.sort_by_key(|c| c.kind);
 
-        Arc::new(Self {
+        let registry = Arc::new(Self {
             agents,
             skills,
             plugins,
             completions,
-        })
+        });
+
+        let _ = REGISTRY.set(registry.clone());
+        registry
     }
 }
