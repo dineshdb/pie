@@ -163,7 +163,7 @@ pub(crate) mod platform {
 
     pub(crate) fn build(program: &str, args: &[String], cfg: &SandboxConfig) -> Command {
         let profile = generate_profile(cfg);
-        tracing::debug!(%program, ?args, "sandbox-exec:");
+        tracing::trace!(%program, ?args, BINARY);
         let mut c = Command::new(BINARY);
         c.arg("-p").arg(&profile).arg(program).args(args);
         c

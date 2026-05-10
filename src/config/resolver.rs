@@ -9,7 +9,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use url::Url;
 
-#[derive(Debug)]
 pub struct ResolvedConfig {
     pub provider: ResolvedProvider,
     pub model_tiers: HashMap<String, ResolvedProvider>,
@@ -18,6 +17,26 @@ pub struct ResolvedConfig {
     pub log_level: String,
     pub debug: bool,
     pub hooks: crate::hook::HooksManager,
+}
+
+impl std::fmt::Debug for ResolvedConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("ResolvedConfig");
+        s.field("provider", &self.provider);
+        if !self.model_tiers.is_empty() {
+            s.field("model_tiers", &self.model_tiers);
+        }
+        if self.max_steps != 25 {
+            s.field("max_steps", &self.max_steps);
+        }
+        s.field("output_format", &self.output_format);
+        s.field("log_level", &self.log_level);
+        if self.debug {
+            s.field("debug", &self.debug);
+        }
+        s.field("hooks", &self.hooks);
+        s.finish()
+    }
 }
 
 impl ResolvedConfig {
@@ -42,7 +61,7 @@ impl ResolvedConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ResolvedProvider {
     pub name: String,
     pub model: String,
@@ -51,6 +70,23 @@ pub struct ResolvedProvider {
     pub api_key: Secret<String>,
     #[allow(dead_code)]
     pub temperature: Option<f32>,
+}
+
+impl std::fmt::Debug for ResolvedProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("ResolvedProvider");
+        s.field("name", &self.name);
+        s.field("model", &self.model);
+        if let Some(ref url) = self.anthropic_url {
+            s.field("anthropic_url", &url.to_string());
+        }
+        s.field("openai_url", &self.openai_url.to_string());
+        s.field("api_key", &"[REDACTED]".to_string());
+        if let Some(t) = self.temperature {
+            s.field("temperature", &t);
+        }
+        s.finish()
+    }
 }
 
 impl ResolvedProvider {

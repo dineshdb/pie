@@ -161,10 +161,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_run_hooks_parallel_pre_prompt_concatenation() {
+    async fn test_run_hooks_parallel_post_prompt() {
         let hook1 = Hook::from(HookDef {
             name: "p1".into(),
-            event: HookEvent::PrePrompt,
+            event: HookEvent::PostPrompt,
             kind: HookType::Cmd,
             handler: r#"printf '{"system": "P1"}'"#.into(),
             matcher: None,
@@ -176,7 +176,7 @@ mod tests {
         });
         let hook2 = Hook::from(HookDef {
             name: "p2".into(),
-            event: HookEvent::PrePrompt,
+            event: HookEvent::PostPrompt,
             kind: HookType::Cmd,
             handler: r#"printf '{"system": "P2"}'"#.into(),
             matcher: None,
@@ -188,7 +188,7 @@ mod tests {
         });
 
         let ctx = HookContext::new(
-            HookEvent::PrePrompt,
+            HookEvent::PostPrompt,
             "/".into(),
             "123".into(),
             HookContextData::Prompt(PromptData {
@@ -198,7 +198,7 @@ mod tests {
         );
 
         let manager = HooksManager::new(vec![hook1, hook2], None);
-        let result = manager.run(HookEvent::PrePrompt, &ctx).await;
+        let result = manager.run(HookEvent::PostPrompt, &ctx).await;
 
         match result {
             Ok((outcomes, data)) => {

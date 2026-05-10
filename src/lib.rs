@@ -35,7 +35,7 @@ use clap::Parser;
 use core::option::Option::Some;
 use std::io::{self, IsTerminal, Read};
 use std::sync::Arc;
-use tracing::debug;
+use tracing::trace;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Clone)]
@@ -292,7 +292,7 @@ async fn run_single_shot(
     registry: Arc<registry::Registry>,
 ) -> anyhow::Result<()> {
     let sandbox_settings = build_sandbox(pie_config);
-    debug!(config = ?config, "config");
+    trace!(config = ?config, "config");
     let model = providers::build_from_resolved(&config.provider)?;
     let piped_stdin = read_piped_stdin();
 

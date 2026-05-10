@@ -1,0 +1,45 @@
+name = "debug"
+version = "0.1.0"
+description = "Writes debug information to ~/.pie/debug/"
+
+[[hooks]]
+name = "debug-prompt-pre"
+event = "prompt.pre"
+type = "cmd"
+handler = "debug.sh"
+strategy = "parallel"
+
+[[hooks]]
+name = "debug-prompt-post"
+event = "prompt.post"
+type = "cmd"
+handler = "debug.sh"
+strategy = "parallel"
+
+[[hooks]]
+name = "debug-tool-pre"
+event = "tool.pre"
+type = "cmd"
+handler = "debug.sh"
+strategy = "parallel"
+
+[[hooks]]
+name = "debug-tool-post"
+event = "tool.post"
+type = "cmd"
+handler = "debug.sh"
+strategy = "parallel"
+
+[[hooks]]
+name = "debug-completion-pre"
+event = "completion.pre"
+type = "cmd"
+handler = "debug.sh"
+strategy = "parallel"
+
+[[hooks]]
+name = "debug-completion-post"
+event = "completion.post"
+type = "cmd"
+handler = "debug.sh"
+strategy = "parallel"

@@ -15,6 +15,9 @@ pub enum HookEvent {
     #[serde(rename = "prompt.pre")]
     #[strum(serialize = "prompt.pre")]
     PrePrompt,
+    #[serde(rename = "prompt.post")]
+    #[strum(serialize = "prompt.post")]
+    PostPrompt,
     #[serde(rename = "tool.pre")]
     #[strum(serialize = "tool.pre")]
     PreToolUse,
@@ -66,10 +69,23 @@ pub enum ExecutionStrategy {
     Parallel,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Clone, Deserialize, Serialize, Default)]
 pub struct HookMatcher {
     pub tools: Option<Vec<String>>,
     pub file_pattern: Option<String>,
+}
+
+impl std::fmt::Debug for HookMatcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("HookMatcher");
+        if let Some(ref tools) = self.tools {
+            s.field("tools", tools);
+        }
+        if let Some(ref p) = self.file_pattern {
+            s.field("file_pattern", p);
+        }
+        s.finish()
+    }
 }
 
 /// Raw hook definition deserialized from TOML config.
@@ -136,16 +152,22 @@ impl Clone for Hook {
 // Forward Debug manually — closures don't impl Debug.
 impl std::fmt::Debug for Hook {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Hook")
-            .field("name", &self.name)
-            .field("event", &self.event)
-            .field("matcher", &self.matcher)
-            .field("on_failure", &self.on_failure)
-            .field("timeout_ms", &self.timeout_ms)
-            .field("scope", &self.scope)
-            .field("strategy", &self.strategy)
-            .field("kind", &self.kind)
-            .finish_non_exhaustive()
+        let mut s = f.debug_struct("Hook");
+        s.field("name", &self.name);
+        s.field("event", &self.event);
+        if let Some(ref m) = self.matcher {
+            s.field("matcher", m);
+        }
+        s.field("on_failure", &self.on_failure);
+        if let Some(t) = self.timeout_ms {
+            s.field("timeout_ms", &t);
+        }
+        s.field("scope", &self.scope);
+        if self.strategy != ExecutionStrategy::default() {
+            s.field("strategy", &self.strategy);
+        }
+        s.field("kind", &self.kind);
+        s.finish_non_exhaustive()
     }
 }
 
@@ -272,8 +294,7 @@ impl Hook {
         global_timeout_ms: u64,
     ) -> Result<HookOutcome> {
         let start = std::time::Instant::now();
-        tracing::debug!(event = %context.event, scope = ?self.scope, hook = %self.name, "HOOK STARTING");
-
+        tracing::trace!(event = %context.event, scope = ?self.scope, hook = %self.name, "HOOK START");
         let timeout_ms = self.timeout_ms.unwrap_or(global_timeout_ms);
         let result = tokio::time::timeout(
             std::time::Duration::from_millis(timeout_ms),
@@ -638,10 +659,21 @@ impl HookOutcome {
 
 // ── Manager ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct HooksManager {
     pub hooks: Vec<Hook>,
     pub timeout_ms: u64,
+}
+
+impl std::fmt::Debug for HooksManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("HooksManager");
+        s.field("hooks", &self.hooks);
+        if self.timeout_ms != 30000 {
+            s.field("timeout_ms", &self.timeout_ms);
+        }
+        s.finish()
+    }
 }
 
 impl HooksManager {
