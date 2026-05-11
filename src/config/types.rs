@@ -141,6 +141,8 @@ pub struct PieConfig {
     #[serde(default)]
     pub provider: HashMap<String, ProviderConfig>,
     #[serde(default)]
+    pub secrets: HashMap<String, Secret<String>>,
+    #[serde(default)]
     pub model: HashMap<String, ModelTier>,
     pub agent: Option<GlobalAgentConfig>,
     pub sandbox: Option<SandboxConfig>,

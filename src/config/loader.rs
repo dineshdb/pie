@@ -51,19 +51,32 @@ fn load_providers_data() -> anyhow::Result<HashMap<String, ProviderBaseUrl>> {
 pub fn load_config() -> anyhow::Result<PieConfig> {
     let global_home = pie_home();
     let global = global_home.join("pie.toml");
+    let secrets = global_home.join("secrets.toml");
     let project_root = git_repo_root().map(PathBuf::from);
     let project_pie = project_root
         .as_ref()
         .map(|root| root.join(".pie").join("pie.toml"));
 
     let mut figment = Figment::new().merge(Toml::file_exact(global));
+    if secrets.exists() {
+        figment = figment.merge(Toml::file_exact(secrets));
+    }
     if let Some(p) = project_pie.filter(|p| p.exists()) {
         figment = figment.merge(Toml::file_exact(p));
     }
 
-    let pie_config: PieConfig = figment
+    let mut pie_config: PieConfig = figment
         .extract()
         .map_err(|e| anyhow::anyhow!("config parse error: {e}"))?;
+
+    for provider in pie_config.provider.values_mut() {
+        if let Some(ref api_key) = provider.api_key {
+            let secret_str = api_key.expose_secret();
+            if let Some(val) = pie_config.secrets.get(secret_str) {
+                provider.api_key = Some(val.clone());
+            }
+        }
+    }
 
     Ok(pie_config)
 }

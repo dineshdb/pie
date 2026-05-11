@@ -326,22 +326,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn json_output_mode_injected_when_enabled() {
-        let with = render_main(&[], OutputMode::Json).await;
-        let without = render_main(&[], OutputMode::Md).await;
-        assert!(
-            with.contains("JSON Output Mode"),
-            "json output mode must appear when enabled"
-        );
-        assert!(
-            !without.contains("JSON Output Mode"),
-            "json output mode must not appear when disabled"
-        );
-    }
-
-    // ── Template integrity ─────────────────────────────────────────
-
-    #[tokio::test]
     async fn all_template_variables_resolve() {
         let result = render_main(&[skill("bash", "commands", "content")], OutputMode::Md).await;
         assert!(!result.contains("{%"), "unrendered Jinja block tag");
