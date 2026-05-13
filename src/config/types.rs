@@ -12,11 +12,11 @@ pub struct ProviderEndpoint {
     pub name: Option<String>,
 
     /// OpenAI-compatible base URL
-    #[arg(long, alias = "openai-url", alias = "base-url")]
+    #[arg(long, alias = "openai-url", alias = "base-url", global = true)]
     pub openai: Option<String>,
 
     /// Anthropic API base URL
-    #[arg(long, alias = "anthropic-url")]
+    #[arg(long, alias = "anthropic-url", global = true)]
     pub anthropic: Option<String>,
 }
 
@@ -92,7 +92,7 @@ pub struct ProviderBaseUrl {
 #[derive(Debug, Clone, Default, Deserialize, Args)]
 #[serde(default)]
 pub struct ProviderConfig {
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     pub model: Option<String>,
 
     #[command(flatten)]
@@ -100,7 +100,7 @@ pub struct ProviderConfig {
     pub endpoint: ProviderEndpoint,
 
     /// API key for the provider
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub api_key: Option<Secret<String>>,
 
     /// Sampling temperature (config file only)

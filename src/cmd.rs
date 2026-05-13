@@ -1,5 +1,7 @@
 use crate::config::{CliConfig, ResolvedConfig};
+use crate::output::OutputFormat;
 use crate::registry::Registry;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::sync::Arc;
@@ -60,7 +62,70 @@ impl BuiltinCommand {
     }
 }
 
+#[derive(Serialize)]
+struct StatusOutput<'a> {
+    provider: &'a crate::config::ResolvedProvider,
+    log_level: &'a str,
+    output_format: OutputFormat,
+    max_steps: u32,
+    plugins: Vec<PluginStatus>,
+    skills: Vec<String>,
+    agents: Vec<String>,
+    known_commands: &'a HashMap<String, CliConfig>,
+}
+
+#[derive(Serialize)]
+struct PluginStatus {
+    name: String,
+    hooks: Vec<HookStatus>,
+}
+
+#[derive(Serialize)]
+struct HookStatus {
+    name: String,
+    event: String,
+    scope: String,
+    strategy: String,
+}
+
 pub fn handle_status(config: &ResolvedConfig, registry: &Arc<Registry>) {
+    if config.output_format == OutputFormat::Json {
+        let plugins = config
+            .plugins
+            .plugins
+            .iter()
+            .map(|p| PluginStatus {
+                name: p.name().to_string(),
+                hooks: p
+                    .hooks()
+                    .iter()
+                    .map(|h| HookStatus {
+                        name: h.name().to_string(),
+                        event: h.event().to_string(),
+                        scope: format!("{:?}", h.scope()),
+                        strategy: format!("{:?}", h.strategy()),
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        let status = StatusOutput {
+            provider: &config.provider,
+            log_level: &config.log_level,
+            output_format: config.output_format,
+            max_steps: config.max_steps,
+            plugins,
+            skills: registry.skills.iter().map(|s| s.name.clone()).collect(),
+            agents: registry.agents.iter().map(|a| a.name.clone()).collect(),
+            known_commands: &config.known_commands,
+        };
+
+        if let Ok(json) = serde_json::to_string_pretty(&status) {
+            println!("{json}");
+            return;
+        }
+    }
+
     println!("Provider:    {}", config.provider.name);
     println!("Model:       {}", config.provider.model);
     println!("Base URL:    {}", config.provider.openai_url);
@@ -103,7 +168,45 @@ pub fn handle_status(config: &ResolvedConfig, registry: &Arc<Registry>) {
     }
 }
 
-pub fn handle_skills(registry: &Arc<Registry>) {
+#[derive(Serialize)]
+struct SkillsOutput {
+    skills: Vec<SkillInfo>,
+    agents: Vec<SkillInfo>,
+}
+
+#[derive(Serialize)]
+struct SkillInfo {
+    name: String,
+    description: String,
+}
+
+pub fn handle_skills(config: &ResolvedConfig, registry: &Arc<Registry>) {
+    if config.output_format == OutputFormat::Json {
+        let output = SkillsOutput {
+            skills: registry
+                .skills
+                .iter()
+                .map(|s| SkillInfo {
+                    name: s.name.clone(),
+                    description: s.description.clone(),
+                })
+                .collect(),
+            agents: registry
+                .agents
+                .iter()
+                .map(|a| SkillInfo {
+                    name: a.name.clone(),
+                    description: a.description.clone(),
+                })
+                .collect(),
+        };
+
+        if let Ok(json) = serde_json::to_string_pretty(&output) {
+            println!("{json}");
+            return;
+        }
+    }
+
     let skills = &registry.skills;
     let agents = &registry.agents;
 

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Output format requested by the user.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OutputFormat {
     #[default]
     Default,

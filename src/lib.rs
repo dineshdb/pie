@@ -26,9 +26,10 @@ mod tools;
 mod ui;
 mod utils;
 
-use crate::config::{ResolvedConfig, build_sandbox, load_config};
+use crate::config::{PieConfig, ResolvedConfig, build_sandbox, load_config};
 use crate::instructions::Instructions;
 use crate::output::OutputFormat;
+use crate::registry::Registry;
 use crate::{db::DbPool, session::Session};
 use anyhow::Context;
 use clap::Parser;
@@ -49,26 +50,26 @@ struct Cli {
     #[command(flatten)]
     provider_config: config::ProviderConfig,
 
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     debug: bool,
 
     /// Output response in JSON format
-    #[arg(long)]
+    #[arg(long, global = true)]
     json: bool,
 
     /// Output response in Markdown format
-    #[arg(long)]
+    #[arg(long, global = true)]
     md: bool,
 
     /// Config provider name (from ~/.pie/pie.toml or .pie/pie.toml)
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     provider: Option<String>,
 
     /// Query to process
     query: Vec<String>,
 
     /// Continue the last session for this directory
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     resume: bool,
 }
 
@@ -80,10 +81,9 @@ enum Commands {
     Skills,
     /// Launch another agent with current provider environment
     Launch {
-        /// Command to execute (e.g., "claude", "gptme")
-        command: String,
-        /// Arguments for the command
-        args: Vec<String>,
+        /// Command and arguments to execute
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        all_args: Vec<String>,
         /// Do not sandbox the command
         #[arg(short = 'S', long)]
         no_sandbox: bool,
@@ -133,9 +133,9 @@ pub async fn run() -> anyhow::Result<()> {
 
     let config = config::CONFIG.get().context("config should be set")?;
 
-    let registry = registry::Registry::load();
+    let registry = Registry::load();
     if let Some(cmd) = cli.command {
-        return handle_command(cmd, config, &registry, &pie_config);
+        return handle_command(cmd, config, &registry);
     }
 
     let session = resolve_session(pool.clone(), cli.resume).await?;
@@ -151,8 +151,7 @@ pub async fn run() -> anyhow::Result<()> {
 fn handle_command(
     cmd: Commands,
     config: &ResolvedConfig,
-    registry: &Arc<registry::Registry>,
-    _pie_config: &config::PieConfig,
+    registry: &Arc<Registry>,
 ) -> anyhow::Result<()> {
     match cmd {
         Commands::Status => {
@@ -162,115 +161,125 @@ fn handle_command(
         }
         Commands::Skills => {
             init_stderr_subscriber(config.debug, &config.log_level);
-            cmd::handle_skills(registry);
+            cmd::handle_skills(config, registry);
             Ok(())
         }
         Commands::Launch {
-            command,
-            args,
+            all_args,
             no_sandbox,
-        } => {
-            if config.debug {
-                init_stderr_subscriber(config.debug, &config.log_level);
-            }
+        } => handle_launch(config, &all_args, no_sandbox),
+    }
+}
 
-            if command == "claude" && config.provider.anthropic_url.is_none() {
-                anyhow::bail!(
-                    "launching 'claude' is only supported on providers with an anthropic endpoint (e.g., 'anthropic', 'openrouter', 'ollama', 'zai')"
-                );
-            }
+fn handle_launch(
+    config: &ResolvedConfig,
+    all_args: &[String],
+    no_sandbox: bool,
+) -> anyhow::Result<()> {
+    if config.debug {
+        init_stderr_subscriber(config.debug, &config.log_level);
+    }
 
-            let env = config.provider.env_vars();
-            let launch_configs = config::load_launch_config()?;
+    let (command, args) = if let Some((cmd, rest)) = all_args.split_first() {
+        (cmd.clone(), rest.to_vec())
+    } else {
+        anyhow::bail!("no command provided to launch");
+    };
 
-            // Resolve alias
-            let (actual_command, launch_cfg) = if let Some(cfg) = launch_configs.get(&command) {
-                (command.clone(), Some(cfg))
-            } else if let Some((name, cfg)) = launch_configs
-                .iter()
-                .find(|(_, cfg)| cfg.aliases.contains(&command))
-            {
-                (name.clone(), Some(cfg))
-            } else {
-                (command.clone(), None)
-            };
+    if command == "claude" && config.provider.anthropic_url.is_none() {
+        anyhow::bail!(
+            "launching 'claude' is only supported on providers with an anthropic endpoint (e.g., 'anthropic', 'openrouter', 'ollama', 'zai')"
+        );
+    }
 
-            let mut final_args = args;
-            if let Some(cfg) = launch_cfg
-                && final_args.is_empty()
-            {
-                final_args.clone_from(&cfg.args);
-            }
+    let env = config.provider.env_vars();
+    let launch_configs = config::load_launch_config()?;
 
-            // If the command itself contains spaces and no args were provided, split it.
-            // This handles cases like `pie launch "claude --version"`.
-            let (actual_command, extra_args) =
-                if actual_command.contains(' ') && final_args.is_empty() {
-                    let parts: Vec<String> = actual_command
-                        .split_whitespace()
-                        .map(String::from)
-                        .collect();
-                    if let (Some(cmd), Some(args)) = (parts.first(), parts.get(1..)) {
-                        (cmd.clone(), args.to_vec())
-                    } else {
-                        (actual_command, Vec::new())
-                    }
-                } else {
-                    (actual_command, Vec::new())
-                };
-            if !extra_args.is_empty() {
-                final_args = extra_args;
-            }
+    // Resolve alias
+    let (actual_command, launch_cfg) = if let Some(cfg) = launch_configs.get(&command) {
+        (command.clone(), Some(cfg))
+    } else if let Some((name, cfg)) = launch_configs
+        .iter()
+        .find(|(_, cfg)| cfg.aliases.contains(&command))
+    {
+        (name.clone(), Some(cfg))
+    } else {
+        (command.clone(), None)
+    };
 
-            let mut cmd = if no_sandbox {
-                let mut c = std::process::Command::new(&actual_command);
-                c.args(&final_args);
-                c
-            } else if let Some(cfg) = launch_cfg
-                && let Some(sandbox) = &cfg.sandbox
-            {
-                p1e_sandbox::build_command(&actual_command, &final_args, sandbox)
-            } else {
-                let mut c = std::process::Command::new(&actual_command);
-                c.args(&final_args);
-                c
-            };
+    let mut final_args = args;
+    if let Some(cfg) = launch_cfg
+        && final_args.is_empty()
+    {
+        final_args.clone_from(&cfg.args);
+    }
 
-            // Explicitly inherit stdio for interaction
-            cmd.stdin(std::process::Stdio::inherit());
-            cmd.stdout(std::process::Stdio::inherit());
-            cmd.stderr(std::process::Stdio::inherit());
-
-            // 1. Provider env vars
-            for (k, v) in env {
-                cmd.env(k, v);
-            }
-
-            // 2. Extra env vars from launch.toml
-            if let Some(cfg) = launch_cfg {
-                for (k, v) in &cfg.env {
-                    cmd.env(k, v);
-                }
-            }
-
-            // Process Handoff (Unix):
-            // On Unix-like systems, we use `execvp` to replace the current `pie` process with the target command.
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::CommandExt;
-                let err = cmd.exec();
-                anyhow::bail!("failed to launch command: {err}");
-            }
-
-            // Fallback (Non-Unix):
-            // Spawning is used where process replacement is not supported (e.g., Windows).
-            #[cfg(not(unix))]
-            {
-                let mut child = cmd.spawn().context("failed to launch command")?;
-                let status = child.wait().context("failed to wait for child")?;
-                std::process::exit(status.code().unwrap_or(0));
-            }
+    // If the command itself contains spaces and no args were provided, split it.
+    // This handles cases like `pie launch "claude --version"`.
+    let (actual_command, extra_args) = if actual_command.contains(' ') && final_args.is_empty() {
+        let parts: Vec<String> = actual_command
+            .split_whitespace()
+            .map(String::from)
+            .collect();
+        if let (Some(cmd), Some(args)) = (parts.first(), parts.get(1..)) {
+            (cmd.clone(), args.to_vec())
+        } else {
+            (actual_command, Vec::new())
         }
+    } else {
+        (actual_command, Vec::new())
+    };
+    if !extra_args.is_empty() {
+        final_args = extra_args;
+    }
+
+    let mut cmd = if no_sandbox {
+        let mut c = std::process::Command::new(&actual_command);
+        c.args(&final_args);
+        c
+    } else if let Some(cfg) = launch_cfg
+        && let Some(sandbox) = &cfg.sandbox
+    {
+        p1e_sandbox::build_command(&actual_command, &final_args, sandbox)
+    } else {
+        let mut c = std::process::Command::new(&actual_command);
+        c.args(&final_args);
+        c
+    };
+
+    // Explicitly inherit stdio for interaction
+    cmd.stdin(std::process::Stdio::inherit());
+    cmd.stdout(std::process::Stdio::inherit());
+    cmd.stderr(std::process::Stdio::inherit());
+
+    // 1. Provider env vars
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+
+    // 2. Extra env vars from launch.toml
+    if let Some(cfg) = launch_cfg {
+        for (k, v) in &cfg.env {
+            cmd.env(k, v);
+        }
+    }
+
+    // Process Handoff (Unix):
+    // On Unix-like systems, we use `execvp` to replace the current `pie` process with the target command.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = cmd.exec();
+        anyhow::bail!("failed to launch command: {err}");
+    }
+
+    // Fallback (Non-Unix):
+    // Spawning is used where process replacement is not supported (e.g., Windows).
+    #[cfg(not(unix))]
+    {
+        let mut child = cmd.spawn().context("failed to launch command")?;
+        let status = child.wait().context("failed to wait for child")?;
+        std::process::exit(status.code().unwrap_or(0));
     }
 }
 
@@ -279,8 +288,8 @@ async fn run_single_shot(
     config: &ResolvedConfig,
     session: Session,
     format: OutputFormat,
-    pie_config: &config::PieConfig,
-    registry: Arc<registry::Registry>,
+    pie_config: &PieConfig,
+    registry: Arc<Registry>,
 ) -> anyhow::Result<()> {
     let sandbox_settings = build_sandbox(pie_config);
     trace!(config = ?config, "config");
@@ -324,8 +333,8 @@ async fn run_single_shot(
 async fn run_interactive(
     config: &ResolvedConfig,
     session: Session,
-    pie_config: &config::PieConfig,
-    registry: Arc<registry::Registry>,
+    pie_config: &PieConfig,
+    registry: Arc<Registry>,
 ) -> anyhow::Result<()> {
     let sandbox_settings = build_sandbox(pie_config);
     let model = providers::build_from_resolved(&config.provider)?;

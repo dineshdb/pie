@@ -86,6 +86,23 @@ pub struct ResolvedProvider {
     pub temperature: Option<f32>,
 }
 
+impl serde::Serialize for ResolvedProvider {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("ResolvedProvider", 6)?;
+        state.serialize_field("name", &self.name)?;
+        state.serialize_field("model", &self.model)?;
+        state.serialize_field("anthropic_url", &self.anthropic_url)?;
+        state.serialize_field("openai_url", &self.openai_url)?;
+        state.serialize_field("api_key", "[REDACTED]")?;
+        state.serialize_field("temperature", &self.temperature)?;
+        state.end()
+    }
+}
+
 impl std::fmt::Debug for ResolvedProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut s = f.debug_struct("ResolvedProvider");

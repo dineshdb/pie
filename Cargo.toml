@@ -46,7 +46,7 @@ tachyonfx = "0.25"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "sync"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tui-textarea-2 = "0.10"
+tui-textarea-2 = "0.11"
 tuirealm = { version = "4.0", features = ["termion"] }
 unicode-width = "0.2"
 uuid = { version = "1", features = ["v7"] }
