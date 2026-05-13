@@ -1,7 +1,7 @@
 use crate::agent::{OutputMode, find_subsume_candidate};
 use crate::config::CONFIG;
 use crate::db::DbPool;
-use crate::hook::{HookContext, HookContextData, HookEvent, PromptData};
+use crate::hook::{HookContext, HookContextData, HookEvent, HookOutcome, PromptData};
 use crate::instructions::Instructions;
 use crate::prompt::SystemPrompt;
 use crate::providers::{Model, strip_control_tokens};
@@ -157,30 +157,35 @@ impl PieAgent {
         )
     }
 
+    async fn run_hook(
+        &self,
+        event: HookEvent,
+        data: HookContextData,
+        output_mode: OutputMode,
+    ) -> Result<(Vec<HookOutcome>, HookContextData)> {
+        let Some(cfg) = CONFIG.get() else {
+            return Ok((vec![], data));
+        };
+        let ctx = self.make_hook_ctx(event, data, output_mode);
+        cfg.plugins
+            .run(event, &ctx)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))
+    }
+
     pub async fn run_pre_prompt_hooks(
         &self,
         system: &str,
         query: &str,
         output_mode: OutputMode,
     ) -> Result<(Option<String>, Option<String>)> {
-        let Some(cfg) = CONFIG.get() else {
-            return Ok((None, None));
-        };
-        let ctx = self.make_hook_ctx(
-            HookEvent::PrePrompt,
-            HookContextData::Prompt(PromptData {
-                system: Some(system.to_string()),
-                query: Some(query.to_string()),
-            }),
-            output_mode,
-        );
-        match cfg.plugins.run(HookEvent::PrePrompt, &ctx).await {
-            Ok((_, transformed_data)) => {
-                if let HookContextData::Prompt(p) = transformed_data {
-                    return Ok((p.system, p.query));
-                }
-                Ok((None, None))
-            }
+        let data = HookContextData::Prompt(PromptData {
+            system: Some(system.to_string()),
+            query: Some(query.to_string()),
+        });
+        match self.run_hook(HookEvent::PrePrompt, data, output_mode).await {
+            Ok((_, HookContextData::Prompt(p))) => Ok((p.system, p.query)),
+            Ok(_) => Ok((None, None)),
             Err(e) => {
                 tracing::warn!("prompt.pre infrastructure failure: {}", e);
                 Ok((None, None))
@@ -194,18 +199,14 @@ impl PieAgent {
         query: &str,
         output_mode: OutputMode,
     ) -> Result<()> {
-        let Some(cfg) = CONFIG.get() else {
-            return Ok(());
-        };
-        let ctx = self.make_hook_ctx(
-            HookEvent::PostPrompt,
-            HookContextData::Prompt(PromptData {
-                system: Some(system.to_string()),
-                query: Some(query.to_string()),
-            }),
-            output_mode,
-        );
-        if let Err(e) = cfg.plugins.run(HookEvent::PostPrompt, &ctx).await {
+        let data = HookContextData::Prompt(PromptData {
+            system: Some(system.to_string()),
+            query: Some(query.to_string()),
+        });
+        if let Err(e) = self
+            .run_hook(HookEvent::PostPrompt, data, output_mode)
+            .await
+        {
             tracing::warn!("prompt.post hook failure: {}", e);
         }
         Ok(())
@@ -216,27 +217,23 @@ impl PieAgent {
         output: &str,
         output_mode: OutputMode,
     ) -> Result<Option<String>> {
-        let Some(cfg) = CONFIG.get() else {
-            return Ok(None);
-        };
-        let ctx = self.make_hook_ctx(
-            HookEvent::PreCompletion,
-            HookContextData::Prompt(PromptData {
-                system: None,
-                query: Some(output.to_string()),
-            }),
-            output_mode,
-        );
-        match cfg.plugins.run(HookEvent::PreCompletion, &ctx).await {
-            Ok((_, transformed_data)) => {
-                if let HookContextData::Prompt(p) = transformed_data
-                    && let Some(feedback) = p.query
+        let data = HookContextData::Prompt(PromptData {
+            system: None,
+            query: Some(output.to_string()),
+        });
+        match self
+            .run_hook(HookEvent::PreCompletion, data, output_mode)
+            .await
+        {
+            Ok((_, HookContextData::Prompt(p))) => {
+                if let Some(feedback) = p.query
                     && feedback != output
                 {
                     return Ok(Some(feedback));
                 }
                 Ok(None)
             }
+            Ok(_) => Ok(None),
             Err(e) => {
                 tracing::warn!("completion.pre infrastructure failure: {}", e);
                 Ok(None)
@@ -245,18 +242,14 @@ impl PieAgent {
     }
 
     pub async fn run_post_completion_hooks(&self, output: &str, output_mode: OutputMode) {
-        let Some(cfg) = CONFIG.get() else {
-            return;
-        };
-        let ctx = self.make_hook_ctx(
-            HookEvent::PostCompletion,
-            HookContextData::Prompt(PromptData {
-                system: None,
-                query: Some(output.to_string()),
-            }),
-            output_mode,
-        );
-        if let Err(e) = cfg.plugins.run(HookEvent::PostCompletion, &ctx).await {
+        let data = HookContextData::Prompt(PromptData {
+            system: None,
+            query: Some(output.to_string()),
+        });
+        if let Err(e) = self
+            .run_hook(HookEvent::PostCompletion, data, output_mode)
+            .await
+        {
             tracing::warn!("completion.post hook failure: {}", e);
         }
     }
@@ -296,65 +289,7 @@ impl PieAgent {
     }
 
     fn build_messages(&self, query: &Instructions) -> Vec<Message> {
-        let mut merged_mentions = query.clone();
-        if self.config.history_limit > 0 {
-            self.session
-                .history_entries()
-                .iter()
-                .rev()
-                .take(self.config.history_limit as usize)
-                .filter_map(HistoryEntry::user)
-                .for_each(|e| merged_mentions.merge_mentions(&e.content()));
-        }
-
-        let mentions: Vec<String> = merged_mentions.mentions.iter().cloned().collect();
-        let resolved = Skill::resolve(&self.registry.skills, &mentions);
-
-        let mut skill_messages: Vec<Message> = Vec::new();
-        if !resolved.is_empty() {
-            {
-                let mut loaded = self
-                    .loaded_skills
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                for skill in &resolved {
-                    loaded.insert(skill.name.clone());
-                }
-            }
-
-            let call_id = uuid::Uuid::now_v7();
-            let names: Vec<String> = resolved.iter().map(|s| s.name.clone()).collect();
-
-            let tool_call_info = ToolCallInfo {
-                call_id,
-                tool: ToolDetails {
-                    name: "load_skills".to_string(),
-                    id: String::new(),
-                },
-                input: serde_json::json!({ "skills": names }),
-                extensions: Extensions::default(),
-            };
-
-            skill_messages.push(Message::Assistant(AssistantMessage::new(
-                LanguageModelResponseContentType::ToolCall(tool_call_info),
-                None,
-            )));
-
-            let mut content = String::new();
-            for skill in &resolved {
-                write!(
-                    content,
-                    "## Skill: {}\n{}\n---\n",
-                    skill.name, skill.content
-                )
-                .ok();
-            }
-
-            let mut tool_result = ToolResultInfo::new("load_skills");
-            tool_result.call_id = call_id;
-            tool_result.output(serde_json::Value::String(content));
-            skill_messages.push(Message::Tool(tool_result));
-        }
+        let skill_messages = self.build_skill_messages(query);
 
         if self.config.history_limit == 0 {
             let mut msgs = skill_messages;
@@ -362,21 +297,128 @@ impl PieAgent {
             return msgs;
         }
 
+        let mut messages = self.build_history_messages();
+
+        let already_has_query = messages.last().is_some_and(|m| {
+            if let Message::User(u) = m {
+                u.content == query.raw
+            } else {
+                false
+            }
+        });
+
+        messages.extend(skill_messages);
+
+        if !already_has_query {
+            messages.push(Message::User(UserMessage::new(&query.raw)));
+        }
+
+        messages
+    }
+
+    fn build_skill_messages(&self, query: &Instructions) -> Vec<Message> {
+        let mut merged_mentions = query.clone();
+        self.session
+            .history_entries()
+            .iter()
+            .rev()
+            .take(self.config.history_limit as usize)
+            .filter_map(HistoryEntry::user)
+            .for_each(|e| merged_mentions.merge_mentions(&e.content()));
+
+        let mentions: Vec<String> = merged_mentions.mentions.iter().cloned().collect();
+        let resolved = Skill::resolve(&self.registry.skills, &mentions);
+
+        if resolved.is_empty() {
+            return Vec::new();
+        }
+
+        {
+            let mut loaded = self
+                .loaded_skills
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            for skill in &resolved {
+                loaded.insert(skill.name.clone());
+            }
+        }
+
+        let call_id = uuid::Uuid::now_v7();
+        let names: Vec<String> = resolved.iter().map(|s| s.name.clone()).collect();
+
+        let tool_call_info = ToolCallInfo {
+            call_id,
+            tool: ToolDetails {
+                name: "load_skills".to_string(),
+                id: String::new(),
+            },
+            input: serde_json::json!({ "skills": names }),
+            extensions: Extensions::default(),
+        };
+
+        let mut content = String::new();
+        for skill in &resolved {
+            write!(
+                content,
+                "## Skill: {}\n{}\n---\n",
+                skill.name, skill.content
+            )
+            .ok();
+        }
+
+        let mut tool_result = ToolResultInfo::new("load_skills");
+        tool_result.call_id = call_id;
+        tool_result.output(serde_json::Value::String(content));
+
+        vec![
+            Message::Assistant(AssistantMessage::new(
+                LanguageModelResponseContentType::ToolCall(tool_call_info),
+                None,
+            )),
+            Message::Tool(tool_result),
+        ]
+    }
+
+    fn build_history_messages(&self) -> Vec<Message> {
         self.session
             .history_entries()
             .iter()
             .rev()
             .take(self.config.history_limit as usize)
             .rev()
-            .filter_map(|entry| match entry.role() {
-                Role::User => Some(Message::User(UserMessage::new(entry.content()))),
-                Role::Assistant => {
-                    Some(Message::Assistant(AssistantMessage::from(entry.content())))
+            .flat_map(|entry| match entry {
+                HistoryEntry::User(c) => vec![Message::User(UserMessage::new(c))],
+                HistoryEntry::Assistant(c) => {
+                    vec![Message::Assistant(AssistantMessage::from(c.clone()))]
                 }
-                _ => None,
+                HistoryEntry::Tool(tc) => {
+                    let mut msgs = Vec::new();
+                    let tool_call_info = ToolCallInfo {
+                        call_id: tc.call_id,
+                        tool: ToolDetails {
+                            name: tc.tool_name.clone(),
+                            id: String::new(),
+                        },
+                        input: tc.params.clone(),
+                        extensions: Extensions::default(),
+                    };
+                    msgs.push(Message::Assistant(AssistantMessage::new(
+                        LanguageModelResponseContentType::ToolCall(tool_call_info),
+                        None,
+                    )));
+
+                    if let Some(res) = &tc.output {
+                        let mut tool_result = ToolResultInfo::new(&tc.tool_name);
+                        tool_result.call_id = tc.call_id;
+                        match res {
+                            Ok(v) | Err(v) => tool_result.output(v.clone()),
+                        }
+                        msgs.push(Message::Tool(tool_result));
+                    }
+                    msgs
+                }
+                HistoryEntry::System(_) => vec![],
             })
-            .chain(skill_messages)
-            .chain(std::iter::once(Message::User(UserMessage::new(&query.raw))))
             .collect()
     }
 
@@ -427,6 +469,12 @@ impl PieAgent {
             let mut loop_count = 0;
 
             loop {
+                // Add a second delay between requests to mitigate 429 errors.
+                if loop_count > 0 {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+                loop_count += 1;
+
                 let current_query = Instructions::new(current_query_raw.clone());
                 self.session.add_user(&current_query.raw).await?;
 
@@ -484,7 +532,7 @@ impl PieAgent {
                 let output = extract_output_text(&processor.accumulated, results.as_deref());
                 let output = strip_control_tokens(&output);
 
-                if loop_count < self.config.max_retries
+                if loop_count <= self.config.max_retries
                     && let Some(feedback) =
                         self.run_pre_completion_hooks(&output, output_mode).await?
                 {
@@ -492,7 +540,6 @@ impl PieAgent {
                     let assistant_text = response.text().await.unwrap_or_default();
                     self.session.add_assistant(&assistant_text).await?;
                     current_query_raw = feedback;
-                    loop_count += 1;
                     continue;
                 }
 
