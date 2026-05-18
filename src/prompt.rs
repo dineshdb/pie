@@ -9,9 +9,20 @@ use anyhow::{Context, Result};
 use minijinja::Environment;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../.pie/SYSTEM.md");
+
+static TEMPLATE_ENV: OnceLock<Environment<'static>> = OnceLock::new();
+
+fn template_env() -> &'static Environment<'static> {
+    TEMPLATE_ENV.get_or_init(|| {
+        let mut env = Environment::new();
+        env.add_template("system_prompt", SYSTEM_PROMPT_TEMPLATE)
+            .expect("invalid system prompt template");
+        env
+    })
+}
 
 /// Context for static project and environment metadata.
 #[derive(Debug, Serialize)]
@@ -189,7 +200,7 @@ impl<'a> SystemPrompt<'a> {
             steps,
             ..SystemPromptCtx::from(self)
         };
-        render_template("system_prompt", SYSTEM_PROMPT_TEMPLATE, &ctx)
+        render_template(&ctx)
     }
 
     pub fn env_vars() -> (String, String, String, String, String) {
@@ -212,14 +223,11 @@ impl<'a> SystemPrompt<'a> {
 }
 
 /// Render a `MiniJinja` template with context.
-#[allow(clippy::expect_used)]
-fn render_template<T: Serialize>(template_name: &str, template: &str, ctx: &T) -> Result<String> {
-    let mut env = Environment::new();
-    env.add_template(template_name, template)
-        .context("invalid template")?;
+fn render_template<T: Serialize>(ctx: &T) -> Result<String> {
+    let env = template_env();
     let template_obj = env
-        .get_template(template_name)
-        .context("template just added")?;
+        .get_template("system_prompt")
+        .context("system prompt template missing")?;
 
     template_obj
         .render(ctx)

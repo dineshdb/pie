@@ -4,7 +4,6 @@
 //! Only `ChatComponent` is the active tuirealm component.
 
 use crate::config::{ProviderConfig, ResolvedProvider, pie_home};
-use crate::providers::Model;
 use crate::registry::Registry;
 use crate::session::{Session, SessionId};
 use crate::tools::plan::{PlanRepo, StepStatus};
@@ -39,7 +38,7 @@ pub struct InputComponent {
     pub last_tick: Instant,
     pub spinner_frame: usize,
     stream_effect_active: bool,
-    pub model: Model,
+    pub model: agentsdk::OpenAI,
     pub provider: ResolvedProvider,
     pub available_providers: HashMap<String, ProviderConfig>,
     pub session_id: SessionId,
@@ -53,7 +52,7 @@ pub struct InputComponent {
 
 impl InputComponent {
     pub fn new(
-        model: Model,
+        model: agentsdk::OpenAI,
         provider: ResolvedProvider,
         session: &Session,
         sandbox_settings: Arc<SandboxConfig>,
@@ -345,12 +344,10 @@ impl InputComponent {
     }
 
     pub fn start_stream(&mut self, query: &str, tx: &mpsc::UnboundedSender<StreamEvent>) {
-        let (abort_tx, abort_rx) = mpsc::unbounded_channel::<()>();
-        self.stream_abort = Some(abort_tx);
         self.last_query = Some(query.to_string());
 
         let ctx = StreamContext::from(&*self);
-        tokio::spawn(spawn_stream(ctx, query.to_string(), tx.clone(), abort_rx));
+        tokio::spawn(spawn_stream(ctx, query.to_string(), tx.clone()));
     }
 
     pub fn take_abort_handle(&mut self) -> Option<mpsc::UnboundedSender<()>> {

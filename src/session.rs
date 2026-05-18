@@ -55,13 +55,6 @@ impl HistoryEntry {
         }
     }
 
-    pub fn user(&self) -> Option<&Self> {
-        match self {
-            Self::User(_) => Some(self),
-            _ => None,
-        }
-    }
-
     pub fn content(&self) -> String {
         match self {
             Self::User(c) | Self::Assistant(c) | Self::System(c) => c.clone(),

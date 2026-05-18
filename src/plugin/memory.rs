@@ -43,12 +43,7 @@ impl Hook for AgentsMdHook {
                 parts.push(format!("### Project Agents Configuration\n\n{local}"));
             }
 
-            Ok(HookOutcome::Transformed {
-                name: self.name().to_string(),
-                data: serde_json::json!({
-                    "system": parts.join("\n\n---\n\n")
-                }),
-            })
+            Ok(HookOutcome::system_transform(self.name(), parts.join("\n\n---\n\n")))
         })
     }
 }

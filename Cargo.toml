@@ -17,7 +17,7 @@ serde_json = "1"
 tracing = "0.1"
 
 [dependencies]
-agentsdk = { version = "0.7.0", features = ["openaicompatible", "openai"] }
+agentsdk = { path = "../agentsdk" }
 anyhow = "1"
 arboard = "3"
 async-trait = "0.1"
@@ -32,7 +32,6 @@ minijinja = { version = "2", features = ["json"] }
 p1e-sandbox = { path = "crates/p1e-sandbox", version = "0.2.0" }
 pulldown-cmark = "0.13"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate"] }
-retry = "2"
 itertools = "0.14"
 tokio-stream = { version = "0.1", features = ["sync"] }
 
@@ -49,7 +48,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tui-textarea-2 = "0.11"
 tuirealm = { version = "4.0", features = ["termion"] }
 unicode-width = "0.2"
-uuid = { version = "1", features = ["v7"] }
+uuid = { version = "1", features = ["v7", "serde"] }
 hostname = "0.4.2"
 lexiclean = "0.0.1"
 redact = { version = "0.1.11", features = ["serde"] }

@@ -139,7 +139,8 @@ pub async fn run() -> anyhow::Result<()> {
     }
 
     let session = resolve_session(pool.clone(), cli.resume).await?;
-    if format.is_explicit() {
+    let has_query = !cli.query.is_empty() || !io::stdin().is_terminal();
+    if format.is_explicit() || has_query {
         init_stderr_subscriber(cli.debug, &config.log_level);
         run_single_shot(cli, config, session, format, &pie_config, registry).await
     } else {

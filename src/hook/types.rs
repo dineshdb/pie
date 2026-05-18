@@ -13,21 +13,48 @@ use tokio::process::Command;
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum HookEvent {
+    /// When a user sends a query, this hook can be used to
+    /// - transform user query
+    /// - gather extra context
+    #[serde(rename = "userquery.post")]
+    #[strum(serialize = "userquery.post")]
+    PostUserQuery,
+
+    /// Hook to run before creating a system prompt
     #[serde(rename = "prompt.pre")]
     #[strum(serialize = "prompt.pre")]
     PrePrompt,
+
+    /// After the system prompt has been configured
+    /// - validate the prompt
+    /// - process the whole prompt in one go
     #[serde(rename = "prompt.post")]
     #[strum(serialize = "prompt.post")]
     PostPrompt,
+
+    /// Just before tool use
+    /// - validate tools
+    /// - transform tools
     #[serde(rename = "tool.pre")]
     #[strum(serialize = "tool.pre")]
     PreToolUse,
+
+    /// After tool use
     #[serde(rename = "tool.post")]
     #[strum(serialize = "tool.post")]
     PostToolUse,
+
+    /// Just before completion
+    /// - Run tests
+    /// - Check if the output is satisfactory
+    /// - You can ask for another loop of the agent
     #[serde(rename = "completion.pre")]
     #[strum(serialize = "completion.pre")]
     PreCompletion,
+
+    /// After completion
+    /// - send notifications
+    /// - logging
     #[serde(rename = "completion.post")]
     #[strum(serialize = "completion.post")]
     PostCompletion,
@@ -510,6 +537,15 @@ pub enum HookOutcome {
     },
 }
 
+impl HookOutcome {
+    pub fn system_transform(name: &str, system: String) -> Self {
+        Self::Transformed {
+            name: name.to_string(),
+            data: serde_json::json!({ "system": system }),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ActionDecision {
@@ -535,12 +571,10 @@ impl HookOutcome {
         context: &HookContext,
         on_failure: OnFailure,
     ) -> Self {
-        // Try parsing stdout as structured action output.
         if let Some(outcome) = Self::parse_action_response(name, exit_code, stdout, context) {
             return outcome;
         }
 
-        // Exit-code based fallback.
         if exit_code == Some(0) {
             return HookOutcome::Success;
         }
@@ -578,7 +612,6 @@ impl HookOutcome {
         let json_val: serde_json::Value = serde_json::from_str(stdout).ok()?;
         let action: ActionOutput = serde_json::from_value(json_val.clone()).ok()?;
 
-        // Decision-based handling.
         if let Some(ref decision) = action.decision {
             match decision {
                 ActionDecision::Block | ActionDecision::Deny => {
@@ -604,7 +637,6 @@ impl HookOutcome {
             }
         }
 
-        // Explicit data transform takes priority.
         if let Some(data) = action.updated_input {
             return Some(HookOutcome::Transformed {
                 name: name.to_string(),
@@ -612,7 +644,6 @@ impl HookOutcome {
             });
         }
 
-        // Return raw JSON as delta for tool contexts or when no decision was made.
         if context.data.is_tool() || action.decision.is_none() {
             return Some(HookOutcome::Transformed {
                 name: name.to_string(),
@@ -716,7 +747,6 @@ impl PluginManager {
             .into_iter()
             .partition(|h| h.scope() == HookScope::Validation);
 
-        // Validation hooks run in parallel — any error stops the pipeline.
         if !validations.is_empty() {
             let futures: Vec<_> = validations.iter().map(|h| h.on(context)).collect();
             let results = join_all(futures).await;
@@ -732,7 +762,6 @@ impl PluginManager {
             }
         }
 
-        // Transform hooks: sequential or parallel batches.
         let mut i = 0;
         while i < transforms.len() {
             let strategy = transforms.get(i).map(|h| h.strategy()).unwrap_or_default();

@@ -1,7 +1,7 @@
 use crate::agent::OutputMode;
 use crate::config::CONFIG;
 use crate::hook::{HookContext, HookContextData, HookEvent, HookOutcome, ToolData};
-use agentsdk::core::tools::{Tool, ToolExecute};
+use agentsdk::core::tools::{Tool, ToolDefinition, ToolExecute};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -15,16 +15,21 @@ pub fn wrap_tools_with_hooks(
     tools
         .into_iter()
         .map(|t| {
-            let name = t.name.clone();
-            let description = t.description.clone();
-            let input_schema = t.input_schema.clone();
+            let name = t.name().to_string();
+            let description = t.description().to_string();
+            let input_schema = t.input_schema().clone();
             let inner_tool = Arc::new(t);
             let sid = session_id.to_string();
 
             Tool::builder()
-                .name(&name)
-                .description(&description)
-                .input_schema(input_schema)
+                .definition(
+                    ToolDefinition::builder()
+                        .name(&name)
+                        .description(&description)
+                        .input_schema(input_schema)
+                        .build()
+                        .expect("failed to build tool definition"),
+                )
                 .execute(ToolExecute::from_async(move |ctx, params| {
                     let inner = inner_tool.clone();
                     let session_id = sid.clone();
@@ -34,30 +39,37 @@ pub fn wrap_tools_with_hooks(
                             .to_string_lossy()
                             .to_string();
 
-                        let (tool_name, params, mut warnings) =
-                            run_pre_tool_hooks(&session_id, &cwd, &inner.name, params, output_mode)
-                                .await?;
+                        let (tool_name, params, mut warnings) = run_pre_tool_hooks(
+                            &session_id,
+                            &cwd,
+                            inner.name(),
+                            params,
+                            output_mode,
+                        )
+                        .await?;
 
                         // Execute the actual tool
-                        let mut result = inner
-                            .execute
-                            .call(ctx, params.clone())
-                            .await
-                            .map_err(|e| e.to_string());
+                        let mut result = inner.execute.call(ctx, params.clone()).await;
 
                         if let Ok(output) = &result {
+                            let output_str = if let Value::String(s) = output {
+                                s.clone()
+                            } else {
+                                output.to_string()
+                            };
+
                             let (new_output, post_warnings) = run_post_tool_hooks(
                                 &session_id,
                                 &cwd,
                                 &tool_name,
                                 params,
-                                output,
+                                &output_str,
                                 output_mode,
                             )
                             .await;
 
                             if let Some(new_output) = new_output {
-                                result = Ok(new_output);
+                                result = Ok(Value::String(new_output));
                             }
                             warnings.extend(post_warnings);
                         }
@@ -67,10 +79,15 @@ pub fn wrap_tools_with_hooks(
                             && !warnings.is_empty()
                         {
                             let warnings_str = warnings.join("\n");
-                            *output = format!("{warnings_str}\n\n{output}");
+                            let output_str = if let Value::String(s) = output {
+                                s.clone()
+                            } else {
+                                output.to_string()
+                            };
+                            *output = Value::String(format!("{warnings_str}\n\n{output_str}"));
                         }
 
-                        result
+                        result.map_err(|e| e.clone())
                     }
                 }))
                 .build()

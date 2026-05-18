@@ -54,13 +54,13 @@ impl std::fmt::Debug for ResolvedConfig {
 }
 
 impl ResolvedConfig {
-    /// Resolve a model tier name (from agent frontmatter) to a concrete `Model`.
+    /// Resolve a model tier name (from agent frontmatter) to a concrete `OpenAI` client.
     /// Falls back to the provided `fallback` if the tier is unset or unresolvable.
     pub fn resolve_model(
         &self,
         tier: Option<&str>,
-        fallback: &crate::providers::Model,
-    ) -> crate::providers::Model {
+        fallback: &agentsdk::OpenAI,
+    ) -> agentsdk::OpenAI {
         let Some(tier_name) = tier else {
             return fallback.clone();
         };
@@ -281,6 +281,7 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
                 Arc::new(KnownCommandsPromptHook::new()),
                 Arc::new(SkillsAndAgentsHook::new()),
                 Arc::new(AgentsMdHook::new()),
+                Arc::new(crate::plugin::QueryRefinementPlugin::new()),
             ],
         }));
 

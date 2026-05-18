@@ -1,16 +1,15 @@
 use crate::agent::{AgentConfig, AgentEvent, OutputMode, PieAgent};
-use crate::providers::Model;
 use crate::session::{Session, SessionId};
 use crate::ui::tui::components::input::InputComponent;
 use crate::ui::tui::realm::StreamEvent;
 use p1e_sandbox::SandboxConfig;
 use std::sync::Arc;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{self, UnboundedSender};
 
 /// Environment shared across stream invocations — held by [`InputComponent`].
 #[derive(Clone)]
 pub struct StreamContext {
-    pub model: Model,
+    pub model: agentsdk::OpenAI,
     pub sandbox: Arc<SandboxConfig>,
     pub session_id: SessionId,
     pub pool: Arc<crate::db::DbPool>,
@@ -35,7 +34,6 @@ pub async fn spawn_stream(
     ctx: StreamContext,
     query: String,
     event_tx: UnboundedSender<StreamEvent>,
-    mut abort_rx: UnboundedReceiver<()>,
 ) {
     let session = match Session::load(ctx.pool.clone(), ctx.session_id).await {
         Ok(s) => s,
@@ -94,7 +92,7 @@ pub async fn spawn_stream(
     });
 
     if let Err(e) = agent
-        .stream(&query, OutputMode::Interactive, agent_tx, &mut abort_rx)
+        .stream(&query, OutputMode::Interactive, agent_tx)
         .await
     {
         let _ = event_tx.send(StreamEvent::Error(e.to_string()));

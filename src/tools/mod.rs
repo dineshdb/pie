@@ -16,7 +16,17 @@ pub use subagent::subagent_tool;
 pub use websearch::websearch;
 
 /// Typed tool names for stringly-typed comparisons across the codebase.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::Display, strum::EnumString)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    strum::AsRefStr,
+    strum::Display,
+    strum::EnumString,
+    strum::EnumIter,
+)]
 pub enum ToolName {
     #[strum(serialize = "shell")]
     Shell,
@@ -46,16 +56,6 @@ pub enum ToolName {
     PlanStepUpdate,
     #[strum(serialize = "plan_show")]
     PlanShow,
-}
-
-impl ToolName {
-    pub fn from_str_lossy(s: &str) -> Option<Self> {
-        s.parse().ok()
-    }
-
-    pub fn is_plan_tool(self) -> bool {
-        matches!(self, Self::PlanSet | Self::PlanStepUpdate)
-    }
 }
 
 /// Lock a mutex, recovering from poison instead of panicking.

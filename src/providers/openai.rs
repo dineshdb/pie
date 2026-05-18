@@ -1,89 +1,16 @@
-use super::tool_compat::post_process_response;
 use crate::config::ResolvedProvider;
-use crate::utils::execute_with_retry;
-use agentsdk::core::DynamicModel;
-use agentsdk::core::capabilities::{
-    AudioInputSupport, AudioOutputSupport, ImageInputSupport, ImageOutputSupport, ReasoningSupport,
-    StructuredOutputSupport, TextInputSupport, TextOutputSupport, ToolCallSupport,
-    VideoInputSupport, VideoOutputSupport,
-};
-use agentsdk::core::language_model::{
-    LanguageModel, LanguageModelOptions, LanguageModelResponse, LanguageModelResponseContentType,
-    ProviderStream,
-};
-use agentsdk::providers::OpenAICompatible;
+use agentsdk::{ModelConfig, OpenAI};
 use anyhow::{Context, Result};
-use async_trait::async_trait;
 use itertools::Itertools;
 
-/// Resolved model provider (OpenAI-compatible).
-#[derive(Debug, Clone)]
-pub struct Model {
-    inner: OpenAICompatible<DynamicModel>,
-}
-
-// Delegate capability marker traits
-macro_rules! impl_capability {
-    ($($trait:ident),* $(,)?) => { $( impl $trait for Model {} )* }
-}
-impl_capability!(
-    TextInputSupport,
-    TextOutputSupport,
-    ToolCallSupport,
-    StructuredOutputSupport,
-    ReasoningSupport,
-    ImageInputSupport,
-    ImageOutputSupport,
-    VideoInputSupport,
-    AudioInputSupport,
-    AudioOutputSupport,
-    VideoOutputSupport,
-);
-
-#[async_trait]
-impl LanguageModel for Model {
-    fn name(&self) -> String {
-        self.inner.name()
-    }
-
-    async fn generate_text(
-        &mut self,
-        options: LanguageModelOptions,
-    ) -> agentsdk::error::Result<LanguageModelResponse> {
-        let response = self.inner.generate_text(options).await?;
-        for content in &response.contents {
-            match content {
-                LanguageModelResponseContentType::Text(t) => {
-                    tracing::trace!(text = %t, "raw model response text");
-                }
-                LanguageModelResponseContentType::ToolCall(info) => {
-                    tracing::trace!(tool = %info.tool.name, input = ?info.input, "raw model tool call");
-                }
-                other => {
-                    tracing::debug!(?other, "raw model response other");
-                }
-            }
-        }
-        Ok(post_process_response(response))
-    }
-
-    async fn stream_text(
-        &mut self,
-        options: LanguageModelOptions,
-    ) -> agentsdk::error::Result<ProviderStream> {
-        self.inner.stream_text(options).await
-    }
-}
-
 /// Build a model from a fully resolved provider config.
-pub fn build_from_resolved(provider: &ResolvedProvider) -> Result<Model> {
-    let inner = OpenAICompatible::<DynamicModel>::builder()
-        .model_name(&provider.model)
-        .base_url(provider.openai_url.as_str())
-        .api_key(provider.api_key.expose_secret())
-        .build()
-        .context("failed to build OpenAI-compatible provider")?;
-    Ok(Model { inner })
+pub fn build_from_resolved(provider: &ResolvedProvider) -> Result<OpenAI> {
+    let config = ModelConfig {
+        base_url: provider.openai_url.as_str().to_string(),
+        api_key: provider.api_key.expose_secret().to_string(),
+        model: provider.model.clone(),
+    };
+    Ok(OpenAI::new(config))
 }
 
 /// Fetch available models from the provider.
@@ -98,37 +25,22 @@ pub async fn fetch_models(provider: &ResolvedProvider) -> Result<Vec<String>> {
     let api_key_owned = provider.api_key.clone();
 
     tracing::info!(url = %url, "fetching models from API");
-    let response = execute_with_retry("fetch_models", move || {
-        let client = client.clone();
-        let url = url.clone();
-        let api_key = api_key_owned.clone();
 
-        async move {
-            let mut request = client.get(&url);
-            let secret = api_key.expose_secret();
-            if !secret.is_empty() {
-                request = request.header("Authorization", format!("Bearer {secret}"));
-            }
+    let mut request = client.get(&url);
+    let secret = api_key_owned.expose_secret();
+    if !secret.is_empty() {
+        request = request.header("Authorization", format!("Bearer {secret}"));
+    }
 
-            let res = request.send().await;
-            match res {
-                Ok(r) if r.status().is_success() => Ok(r),
-                Ok(r) if crate::utils::is_retriable_status(r.status().as_u16()) => {
-                    Err(anyhow::anyhow!("API error {}", r.status()))
-                }
-                Ok(r) => {
-                    let status = r.status();
-                    let error_text = r
-                        .text()
-                        .await
-                        .unwrap_or_else(|_| "no error body".to_string());
-                    Err(anyhow::anyhow!("API error {status}: {error_text}"))
-                }
-                Err(e) => Err(anyhow::anyhow!(e).context("failed to fetch models")),
-            }
-        }
-    })
-    .await?;
+    let response = request.send().await.context("failed to fetch models")?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "no error body".to_string());
+        anyhow::bail!("API error {status}: {error_text}");
+    }
 
     let data: serde_json::Value = response
         .json()

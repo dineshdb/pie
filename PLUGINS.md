@@ -43,6 +43,7 @@ matcher = { tools = ["shell"] } # Optional tool filter
 | Event | Description |
 | :--- | :--- |
 | `prompt.pre` | Fires before the system prompt is rendered. Used for grounding. |
+| `userquery.post` | Fires after user enters a query. Used for query refinement/transformation. |
 | `tool.pre` | Fires before a tool is executed. Used for safety/validation. |
 | `tool.post` | Fires after a tool executes. Used for verification/feedback. |
 

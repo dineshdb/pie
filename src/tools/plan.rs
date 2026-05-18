@@ -1,9 +1,9 @@
 use crate::db::DbPool;
-use agentsdk::core::tools::{Tool, ToolExecute};
-use anyhow::Context;
-use schemars::JsonSchema;
+use agentsdk::core::tools::{Tool, ToolDefinition, ToolExecute};
+use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::future::Future;
 use std::sync::Arc;
 use strum::{AsRefStr, Display, EnumString};
 
@@ -126,13 +126,11 @@ struct StepRow {
     status: String,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-struct StepListInput {
+#[derive(JsonSchema, Deserialize, Serialize)]
+struct PlanSetInput {
+    /// List of steps for the plan.
     pub steps: Vec<Step>,
 }
-
-#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-struct GetStepsInput {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StepUpdate {
@@ -140,89 +138,92 @@ pub struct StepUpdate {
     pub status: StepStatus,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct StepUpdateList {
+#[derive(JsonSchema, Deserialize, Serialize)]
+struct PlanStepUpdateInput {
+    /// List of updates to apply to the plan steps.
     pub updates: Vec<StepUpdate>,
 }
 
-// ── Tool builders ──────────────────────────────────────────────────
-
-fn build_plan_set(pool: Arc<DbPool>, session_id: String) -> anyhow::Result<Tool> {
-    Tool::builder()
-        .name("plan_set")
-        .description(
-            r#"CRITICAL: Planning phase. Call this FIRST to define the plan steps. Input: {"steps": [{"name": "..."}]}"#,
-        )
-        .input_schema(schemars::schema_for!(StepListInput))
-        .execute(ToolExecute::from_async(move |_ctx, params| {
-            let pool = pool.clone();
-            let session_id = session_id.clone();
-            async move {
-                let input: StepListInput = serde_json::from_value(params.clone())
-                    .map_err(|e| format!("Invalid input: {e}"))?;
-
-                for t in input.steps {
-                    let _ = pool.save_step(&session_id, &t).await;
-                }
-
-                Ok(json!({ "status": "ok" }).to_string())
-            }
-        }))
-        .build()
-        .context("failed to build plan_set tool")
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanContext {
+    pub session_id: String,
 }
 
-fn build_plan_step_update(pool: Arc<DbPool>, session_id: String) -> anyhow::Result<Tool> {
+/// CRITICAL: Planning phase. Call this FIRST to define the plan steps.
+#[allow(clippy::unwrap_used)]
+pub fn plan_set_tool() -> Tool {
     Tool::builder()
-        .name("plan_step_update")
-        .description(
-            r#"MANDATORY: Update a plan step status. Input: {"updates": [{"name": "...", "status": "completed"}]}"#,
+        .definition(
+            ToolDefinition::builder()
+                .name("plan_set")
+                .description("CRITICAL: Planning phase. Call this FIRST to define the plan steps")
+                .input_schema(schema_for!(PlanSetInput))
+                .build()
+                .unwrap(),
         )
-        .input_schema(schemars::schema_for!(StepUpdateList))
-        .execute(ToolExecute::from_async(move |_ctx, params| {
-            let pool = pool.clone();
-            let session_id = session_id.clone();
-            async move {
-                let input: StepUpdateList = serde_json::from_value(params.clone())
-                    .map_err(|e| format!("Invalid input: {e}"))?;
+        .execute(ToolExecute::from_async(|ctx, params| async move {
+            let input: PlanSetInput = serde_json::from_value(params).map_err(|e| e.to_string())?;
+            let pool = ctx
+                .options
+                .extensions
+                .get::<Arc<DbPool>>()
+                .ok_or_else(|| "DbPool not found in extensions".to_string())?;
+            let plan_ctx = ctx
+                .options
+                .extensions
+                .get::<PlanContext>()
+                .ok_or_else(|| "PlanContext not found in extensions".to_string())?;
 
-                for update in input.updates {
-                    let _ = pool.update_step_status(&session_id, &update.name, update.status).await;
-                }
-
-                Ok(json!({ "status": "ok" }).to_string())
+            for t in input.steps {
+                let _ = pool.save_step(&plan_ctx.session_id, &t).await;
             }
+
+            Ok(json!({ "status": "ok" }))
         }))
         .build()
-        .context("failed to build plan_step_update tool")
+        .unwrap()
 }
 
-fn build_plan_show(pool: Arc<DbPool>, session_id: String) -> anyhow::Result<Tool> {
+/// MANDATORY: Update a plan step status.
+#[allow(clippy::unwrap_used)]
+pub fn plan_step_update_tool() -> Tool {
     Tool::builder()
-        .name("plan_show")
-        .description("List the current plan steps and their status.")
-        .input_schema(schemars::schema_for!(GetStepsInput))
-        .execute(ToolExecute::from_async(move |_ctx, _params| {
-            let pool = pool.clone();
-            let session_id = session_id.clone();
-            async move {
-                let steps = pool.load_steps(&session_id).await.unwrap_or_default();
-                Ok(json!({ "steps": steps }).to_string())
+        .definition(
+            ToolDefinition::builder()
+                .name("plan_step_update")
+                .description("MANDATORY: Update a plan step status")
+                .input_schema(schema_for!(PlanStepUpdateInput))
+                .build()
+                .unwrap(),
+        )
+        .execute(ToolExecute::from_async(|ctx, params| async move {
+            let input: PlanStepUpdateInput =
+                serde_json::from_value(params).map_err(|e| e.to_string())?;
+            let pool = ctx
+                .options
+                .extensions
+                .get::<Arc<DbPool>>()
+                .ok_or_else(|| "DbPool not found in extensions".to_string())?;
+            let plan_ctx = ctx
+                .options
+                .extensions
+                .get::<PlanContext>()
+                .ok_or_else(|| "PlanContext not found in extensions".to_string())?;
+
+            for update in input.updates {
+                let _ = pool
+                    .update_step_status(&plan_ctx.session_id, &update.name, update.status)
+                    .await;
             }
+
+            Ok(json!({ "status": "ok" }))
         }))
         .build()
-        .context("failed to build plan_show tool")
+        .unwrap()
 }
 
 /// Build the plan-related tools.
-///
-/// # Errors
-///
-/// Returns an error if any of the tools cannot be built.
-pub fn plan_tools(pool: Arc<DbPool>, session_id: String) -> anyhow::Result<Vec<Tool>> {
-    Ok(vec![
-        build_plan_set(pool.clone(), session_id.clone())?,
-        build_plan_step_update(pool.clone(), session_id.clone())?,
-        build_plan_show(pool, session_id)?,
-    ])
+#[allow(clippy::unwrap_used)]
+pub fn plan_tools() -> Vec<Tool> {
+    vec![plan_set_tool(), plan_step_update_tool()]
 }

@@ -9,7 +9,7 @@
 //! Each frame: drain all events, merge them, then render once.
 
 use crate::config::{PieConfig, ResolvedProvider, get_providers_data};
-use crate::providers::{Model, fetch_models};
+use crate::providers::fetch_models;
 use crate::session::{Role, Session};
 use crate::ui::tui::command::{Command, CommandAction};
 use crate::ui::tui::components::chat::{ActiveDialog, ChatComponent};
@@ -300,7 +300,7 @@ fn execute_shell_direct(
 }
 
 pub async fn run_tui(
-    model: Model,
+    model: agentsdk::OpenAI,
     provider: ResolvedProvider,
     session: Session,
     sandbox_settings: Arc<SandboxConfig>,

@@ -1,9 +1,7 @@
 use crate::agent::{AgentConfig, PieAgent};
 use crate::instructions::Instructions;
 use crate::output::{JsonResponse, OutputFormat};
-use crate::providers::Model;
 use crate::session::Session;
-use agentsdk::core::LanguageModel;
 use anyhow::Result;
 use p1e_sandbox::SandboxConfig;
 use std::sync::Arc;
@@ -13,7 +11,7 @@ fn output_response(
     output: &str,
     session_id: &str,
     format: OutputFormat,
-    model: &Model,
+    model: &agentsdk::OpenAI,
 ) -> Result<()> {
     if output.is_empty() {
         return Ok(());
@@ -22,7 +20,7 @@ fn output_response(
         let json_resp = JsonResponse::new(
             output.to_string(),
             Some(session_id.to_string()),
-            Some(model.name()),
+            Some(model.config.model.clone()),
         );
         println!("{}", serde_json::to_string(&json_resp)?);
     } else {
@@ -32,7 +30,7 @@ fn output_response(
 }
 
 pub async fn handle_query(
-    model: Model,
+    model: agentsdk::OpenAI,
     query: &Instructions,
     session: Session,
     format: OutputFormat,

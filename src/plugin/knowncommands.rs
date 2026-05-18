@@ -38,12 +38,7 @@ impl Hook for KnownCommandsPromptHook {
                 String::new()
             };
 
-            Ok(HookOutcome::Transformed {
-                name: self.name().to_string(),
-                data: serde_json::json!({
-                    "system": help
-                }),
-            })
+            Ok(HookOutcome::system_transform(self.name(), help))
         })
     }
 }

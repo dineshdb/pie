@@ -1,11 +1,7 @@
 pub mod path;
 pub use path::*;
 
-use retry::delay::Fibonacci;
-use retry::{OperationResult, retry};
-use std::future::Future;
 use std::ops::ControlFlow;
-use std::time::{Duration, Instant};
 
 pub fn load_file(path: impl AsRef<std::path::Path>) -> Option<String> {
     std::fs::read_to_string(path).ok()
@@ -31,67 +27,6 @@ pub fn merge_by_name<T, F>(
             items.push(item);
         }
     }
-}
-
-/// Check if an HTTP status code is retriable (429, 500, 502, 503, 504).
-pub fn is_retriable_status(status: u16) -> bool {
-    matches!(status, 429 | 500 | 502 | 503 | 504)
-}
-
-/// Check if an error is retriable (e.g., network timeout, 429, 5xx).
-pub fn is_retriable_error(err: &impl std::fmt::Display) -> bool {
-    let msg = err.to_string().to_lowercase();
-
-    // Check for explicit status codes in the error message
-    for code in ["429", "500", "502", "503", "504"] {
-        if msg.contains(code) {
-            return true;
-        }
-    }
-
-    msg.contains("timeout")
-        || msg.contains("connection reset")
-        || msg.contains("broken pipe")
-        || msg.contains("connection refused")
-        || msg.contains("dns error")
-}
-
-/// Execute an operation with 8-minute exponential retry logic using the `retry` crate.
-/// Wraps the synchronous retry loop in `spawn_blocking` to avoid blocking the async executor.
-pub async fn execute_with_retry<T, F, Fut>(label: &str, mut make_op: F) -> anyhow::Result<T>
-where
-    F: FnMut() -> Fut + Send + 'static,
-    Fut: Future<Output = anyhow::Result<T>> + Send,
-    T: Send + 'static,
-{
-    let handle = tokio::runtime::Handle::current();
-    let label = label.to_string();
-
-    tokio::task::spawn_blocking(move || {
-        let start = Instant::now();
-        let max_duration = Duration::from_mins(8);
-        let strategy = Fibonacci::from_millis(2000).take_while(|_| start.elapsed() < max_duration);
-
-        retry(strategy, || match handle.block_on(make_op()) {
-            Ok(r) => OperationResult::Ok(r),
-            Err(e) if is_retriable_error(&e) => {
-                if start.elapsed() >= max_duration {
-                    OperationResult::Err(e)
-                } else {
-                    tracing::warn!(
-                        operation = %label,
-                        error = %e,
-                        elapsed = ?start.elapsed(),
-                        "retrying"
-                    );
-                    OperationResult::Retry(e)
-                }
-            }
-            Err(e) => OperationResult::Err(e),
-        })
-        .map_err(|e| e.error)
-    })
-    .await?
 }
 
 /// Walk from cwd upward, calling `check` on each directory.
@@ -188,26 +123,5 @@ mod tests {
         let mut names = std::collections::HashSet::from(["a".to_string()]);
         merge_by_name::<String, _>(&mut items, &mut names, vec![], |s| s);
         assert_eq!(items, vec!["a"]);
-    }
-
-    #[test]
-    fn test_is_retriable_status() {
-        assert!(is_retriable_status(429));
-        assert!(is_retriable_status(500));
-        assert!(is_retriable_status(503));
-        assert!(!is_retriable_status(401));
-        assert!(!is_retriable_status(404));
-        assert!(!is_retriable_status(200));
-    }
-
-    #[test]
-    fn test_is_retriable_error() {
-        assert!(is_retriable_error(&"timeout".to_string()));
-        assert!(is_retriable_error(&"429 Too Many Requests".to_string()));
-        assert!(is_retriable_error(&"502 Bad Gateway".to_string()));
-        assert!(is_retriable_error(&"Connection reset by peer".to_string()));
-        assert!(is_retriable_error(&"dns error".to_string()));
-        assert!(!is_retriable_error(&"401 Unauthorized".to_string()));
-        assert!(!is_retriable_error(&"404 Not Found".to_string()));
     }
 }
