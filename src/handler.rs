@@ -1,4 +1,5 @@
 use crate::agent::{AgentConfig, PieAgent};
+use crate::config::RetryConfig;
 use crate::instructions::Instructions;
 use crate::session::Session;
 use crate::utils::output::{JsonResponse, OutputFormat};
@@ -36,10 +37,12 @@ pub async fn handle_query(
     format: OutputFormat,
     sandbox_settings: Arc<SandboxConfig>,
     max_steps: u32,
+    retry: RetryConfig,
     registry: Arc<crate::registry::Registry>,
 ) -> Result<()> {
     let config = AgentConfig {
         max_steps,
+        retry,
         ..AgentConfig::default()
     };
 

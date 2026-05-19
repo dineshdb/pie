@@ -23,6 +23,7 @@ pub struct ResolvedConfig {
     pub provider: ResolvedProvider,
     pub model_tiers: HashMap<String, ResolvedProvider>,
     pub max_steps: u32,
+    pub retry: super::types::RetryConfig,
     pub output_format: OutputFormat,
     pub log_level: String,
     pub debug: bool,
@@ -39,6 +40,13 @@ impl std::fmt::Debug for ResolvedConfig {
         }
         if self.max_steps != 25 {
             s.field("max_steps", &self.max_steps);
+        }
+        let default_retry = super::types::RetryConfig::default();
+        if self.retry.rate_limit != default_retry.rate_limit {
+            s.field("retry.rate_limit", &self.retry.rate_limit);
+        }
+        if self.retry.api_error != default_retry.api_error {
+            s.field("retry.api_error", &self.retry.api_error);
         }
         s.field("output_format", &self.output_format);
         s.field("log_level", &self.log_level);
@@ -286,10 +294,16 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
         let hooks = crate::hook::PluginManager::new(plugins, pie.hooks_timeout_ms);
 
         let known_commands = load_cli_config()?;
+        let retry = pie
+            .agent
+            .as_ref()
+            .map(|a| a.retry.clone())
+            .unwrap_or_default();
         Ok(Self {
             provider: resolved_provider,
             model_tiers,
             max_steps: pie.agent.as_ref().and_then(|a| a.max_steps).unwrap_or(25),
+            retry,
             output_format,
             log_level,
             debug: cli.debug,

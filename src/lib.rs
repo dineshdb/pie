@@ -325,6 +325,7 @@ async fn run_single_shot(
         format,
         sandbox_settings,
         config.max_steps,
+        config.retry.clone(),
         registry,
     )
     .await

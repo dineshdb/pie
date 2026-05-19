@@ -184,7 +184,59 @@ impl PieConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct GlobalAgentConfig {
+    #[serde(default)]
     pub max_steps: Option<u32>,
+    #[serde(default)]
+    pub retry: RetryConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct RetryConfig {
+    #[serde(default)]
+    pub rate_limit: RateLimitConfig,
+    #[serde(default)]
+    pub api_error: ApiErrorConfig,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            rate_limit: RateLimitConfig::default(),
+            api_error: ApiErrorConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct RateLimitConfig {
+    pub max_errors: u32,
+    pub retry_delay_secs: u64,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            max_errors: 5,
+            retry_delay_secs: 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct ApiErrorConfig {
+    pub max_errors: u32,
+    pub retry_delay_secs: u64,
+}
+
+impl Default for ApiErrorConfig {
+    fn default() -> Self {
+        Self {
+            max_errors: 10,
+            retry_delay_secs: 10,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

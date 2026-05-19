@@ -13,7 +13,9 @@ use crate::tools::{
     load_skills_tool, read_file_tool, replace_tool, shell, subagent_tool, websearch,
     write_file_tool,
 };
+use agentsdk::core::retry::RetryAction;
 use agentsdk::core::tools::Tool;
+use agentsdk::error::AgentSdkError;
 use agentsdk::openai::api::ChatCompletionRequestUserMessageContent;
 use agentsdk::{
     Agent as SdkAgent, AgentListener, CompletionAction, Extensions, Message, Messages,
@@ -67,6 +69,7 @@ pub struct AgentConfig {
     pub max_steps: u32,
     pub depth: u32,
     pub max_retries: u32,
+    pub retry: crate::config::RetryConfig,
 }
 
 impl Default for AgentConfig {
@@ -77,6 +80,7 @@ impl Default for AgentConfig {
             max_steps: 20,
             depth: 0,
             max_retries: 3,
+            retry: crate::config::RetryConfig::default(),
         }
     }
 }
@@ -88,7 +92,7 @@ impl AgentConfig {
             history_limit: 10,
             max_steps: 10,
             depth,
-            max_retries: 3,
+            ..Self::default()
         }
     }
 }
@@ -504,6 +508,9 @@ impl PieAgent {
                     system_prompt: system.clone(),
                     event_tx: event_tx.clone(),
                     session: self.session.clone(),
+                    api_error_count: 0,
+                    rate_limit_count: 0,
+                    retry: self.config.retry.clone(),
                 };
 
                 let history = sdk_agent.run(&mut handler).await?;
@@ -643,6 +650,9 @@ struct StreamHandler {
     system_prompt: String,
     event_tx: UnboundedSender<AgentEvent>,
     session: Session,
+    api_error_count: u32,
+    rate_limit_count: u32,
+    retry: crate::config::RetryConfig,
 }
 
 #[async_trait]
@@ -724,6 +734,41 @@ impl AgentListener for StreamHandler {
             .event_tx
             .send(AgentEvent::Error(format!("Tool {name} failed: {error}")));
         ToolErrorAction::Continue(None)
+    }
+
+    async fn on_api_error(&mut self, error: &AgentSdkError) -> RetryAction {
+        self.api_error_count += 1;
+
+        if let Some(status) = error.status_code() {
+            if status == 429 {
+                self.rate_limit_count += 1;
+                if self.rate_limit_count > self.retry.rate_limit.max_errors {
+                    let _ = self.event_tx.send(AgentEvent::Error(
+                        "Too many rate limit errors, aborting".to_string(),
+                    ));
+                    return RetryAction::DoNotRetry;
+                }
+                tracing::warn!(status = %status, "rate limited, retrying");
+                return RetryAction::Retry(std::time::Duration::from_secs(
+                    self.retry.rate_limit.retry_delay_secs,
+                ));
+            }
+
+            if status.is_server_error() {
+                if self.api_error_count > self.retry.api_error.max_errors {
+                    let _ = self.event_tx.send(AgentEvent::Error(
+                        "Too many API errors, aborting".to_string(),
+                    ));
+                    return RetryAction::DoNotRetry;
+                }
+                tracing::warn!(status = %status, count = self.api_error_count, "server error, retrying");
+                return RetryAction::Retry(std::time::Duration::from_secs(
+                    self.retry.api_error.retry_delay_secs,
+                ));
+            }
+        }
+
+        RetryAction::DoNotRetry
     }
 
     async fn on_completion(&mut self, _text: String) -> CompletionAction {
