@@ -35,7 +35,7 @@ pub enum Role {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolCall {
-    pub call_id: Uuid,
+    pub call_id: String,
     pub tool_name: String,
     pub params: serde_json::Value,
     pub output: Option<Result<serde_json::Value, serde_json::Value>>,
@@ -309,7 +309,7 @@ impl Session {
                 HistoryEntry::Assistant(c) => vec![messages::assistant(c)],
                 HistoryEntry::Tool(tc) => {
                     let mut msgs = Vec::new();
-                    let call_id = tc.call_id.to_string();
+                    let call_id = tc.call_id.clone();
                     msgs.push(messages::assistant_tool_call(
                         &tc.tool_name,
                         &call_id,
@@ -360,8 +360,7 @@ impl HistoryStore for Session {
                     if let Some(calls) = a.tool_calls {
                         for call in calls {
                             let tc = ToolCall {
-                                call_id: Uuid::parse_str(&call.id)
-                                    .unwrap_or_else(|_| Uuid::now_v7()),
+                                call_id: call.id,
                                 tool_name: call.function.name,
                                 params: serde_json::from_str(&call.function.arguments)
                                     .unwrap_or(serde_json::Value::Null),
