@@ -9,7 +9,7 @@
 //! Each frame: drain all events, merge them, then render once.
 
 use crate::config::{PieConfig, ResolvedProvider, get_providers_data};
-use crate::providers::fetch_models;
+use crate::provider::fetch_models;
 use crate::session::{Role, Session};
 use crate::ui::tui::command::{Command, CommandAction};
 use crate::ui::tui::components::chat::{ActiveDialog, ChatComponent};

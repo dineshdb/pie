@@ -1,7 +1,7 @@
 use crate::agent::{AgentConfig, PieAgent};
 use crate::instructions::Instructions;
-use crate::output::{JsonResponse, OutputFormat};
 use crate::session::Session;
+use crate::utils::output::{JsonResponse, OutputFormat};
 use anyhow::Result;
 use p1e_sandbox::SandboxConfig;
 use std::sync::Arc;

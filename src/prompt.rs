@@ -18,8 +18,9 @@ static TEMPLATE_ENV: OnceLock<Environment<'static>> = OnceLock::new();
 fn template_env() -> &'static Environment<'static> {
     TEMPLATE_ENV.get_or_init(|| {
         let mut env = Environment::new();
-        env.add_template("system_prompt", SYSTEM_PROMPT_TEMPLATE)
-            .expect("invalid system prompt template");
+        if let Err(e) = env.add_template("system_prompt", SYSTEM_PROMPT_TEMPLATE) {
+            tracing::error!("invalid system prompt template: {e}");
+        }
         env
     })
 }

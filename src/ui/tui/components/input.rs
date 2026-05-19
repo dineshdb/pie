@@ -366,16 +366,12 @@ impl InputComponent {
 
     pub fn set_model(&mut self, model_name: &str) {
         self.provider.model = model_name.to_string();
-        if let Ok(new_model) = crate::providers::build_from_resolved(&self.provider) {
-            self.model = new_model;
-        }
+        self.model = crate::provider::build_from_resolved(&self.provider);
     }
 
     pub fn set_provider(&mut self, provider: ResolvedProvider) {
         self.provider = provider;
-        if let Ok(new_model) = crate::providers::build_from_resolved(&self.provider) {
-            self.model = new_model;
-        }
+        self.model = crate::provider::build_from_resolved(&self.provider);
     }
 
     pub fn active_steps(&self, is_streaming: bool) -> Vec<String> {

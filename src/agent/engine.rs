@@ -432,6 +432,7 @@ impl PieAgent {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn stream<'a>(
         &'a mut self,
         query_str: &'a str,

@@ -538,6 +538,7 @@ pub enum HookOutcome {
 }
 
 impl HookOutcome {
+    #[allow(clippy::needless_pass_by_value)]
     pub fn system_transform(name: &str, system: String) -> Self {
         Self::Transformed {
             name: name.to_string(),

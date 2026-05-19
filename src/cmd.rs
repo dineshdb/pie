@@ -1,6 +1,6 @@
 use crate::config::{CliConfig, ResolvedConfig};
-use crate::output::OutputFormat;
 use crate::registry::Registry;
+use crate::utils::output::OutputFormat;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fmt::Write;

@@ -43,7 +43,10 @@ impl Hook for AgentsMdHook {
                 parts.push(format!("### Project Agents Configuration\n\n{local}"));
             }
 
-            Ok(HookOutcome::system_transform(self.name(), parts.join("\n\n---\n\n")))
+            Ok(HookOutcome::system_transform(
+                self.name(),
+                parts.join("\n\n---\n\n"),
+            ))
         })
     }
 }

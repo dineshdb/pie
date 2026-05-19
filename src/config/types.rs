@@ -1,4 +1,4 @@
-use crate::output::OutputFormat;
+use crate::utils::output::OutputFormat;
 use clap::Args;
 use p1e_sandbox::SandboxConfig;
 use redact::Secret;

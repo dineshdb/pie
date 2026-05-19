@@ -2,8 +2,8 @@ use super::loader::get_providers_data;
 use super::types::{PieConfig, ProviderBaseUrl, ProviderConfig, ProviderEndpoint};
 use crate::Cli;
 use crate::hook::{CommandHook, Hook};
-use crate::output::OutputFormat;
 use crate::plugin::{AgentsMdHook, KnownCommandsPromptHook, SkillsAndAgentsHook, StaticPlugin};
+use crate::utils::output::OutputFormat;
 use anyhow::Context;
 use figment::providers::Format;
 use p1e_sandbox::SandboxConfig;
@@ -68,10 +68,7 @@ impl ResolvedConfig {
             tracing::warn!("model tier '{tier_name}' not found in config, using default");
             return fallback.clone();
         };
-        crate::providers::build_from_resolved(provider).unwrap_or_else(|e| {
-            tracing::warn!("failed to build model for tier '{tier_name}': {e}");
-            fallback.clone()
-        })
+        crate::provider::build_from_resolved(provider)
     }
 }
 

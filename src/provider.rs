@@ -4,13 +4,13 @@ use anyhow::{Context, Result};
 use itertools::Itertools;
 
 /// Build a model from a fully resolved provider config.
-pub fn build_from_resolved(provider: &ResolvedProvider) -> Result<OpenAI> {
+pub fn build_from_resolved(provider: &ResolvedProvider) -> OpenAI {
     let config = ModelConfig {
         base_url: provider.openai_url.as_str().to_string(),
-        api_key: provider.api_key.expose_secret().to_string(),
+        api_key: provider.api_key.expose_secret().clone(),
         model: provider.model.clone(),
     };
-    Ok(OpenAI::new(config))
+    OpenAI::new(config)
 }
 
 /// Fetch available models from the provider.

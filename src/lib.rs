@@ -15,10 +15,9 @@ mod db;
 mod handler;
 mod hook;
 mod instructions;
-mod output;
 mod plugin;
 mod prompt;
-mod providers;
+mod provider;
 mod registry;
 mod session;
 mod skill;
@@ -28,8 +27,8 @@ mod utils;
 
 use crate::config::{PieConfig, ResolvedConfig, build_sandbox, load_config};
 use crate::instructions::Instructions;
-use crate::output::OutputFormat;
 use crate::registry::Registry;
+use crate::utils::output::OutputFormat;
 use crate::{db::DbPool, session::Session};
 use anyhow::Context;
 use clap::Parser;
@@ -294,7 +293,7 @@ async fn run_single_shot(
 ) -> anyhow::Result<()> {
     let sandbox_settings = build_sandbox(pie_config);
     trace!(config = ?config, "config");
-    let model = providers::build_from_resolved(&config.provider)?;
+    let model = provider::build_from_resolved(&config.provider);
     let piped_stdin = read_piped_stdin();
 
     let cli_query = cli.query.join(" ");
@@ -338,7 +337,7 @@ async fn run_interactive(
     registry: Arc<Registry>,
 ) -> anyhow::Result<()> {
     let sandbox_settings = build_sandbox(pie_config);
-    let model = providers::build_from_resolved(&config.provider)?;
+    let model = provider::build_from_resolved(&config.provider);
 
     ui::tui::run_tui(
         model,
