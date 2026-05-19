@@ -240,47 +240,6 @@ impl Session {
             .await
     }
 
-    async fn add_tool(&mut self, info: ToolCall) -> anyhow::Result<()> {
-        self.add_entry(HistoryEntry::Tool(info)).await
-    }
-
-    pub async fn record_tool_call(&mut self, info: ToolCall) -> anyhow::Result<ToolCall> {
-        // Try to find an existing entry with the same call_id.
-        let Some(existing) = self.cache.iter_mut().rev().find_map(|e| match e {
-            HistoryEntry::Tool(t) if t.call_id == info.call_id => Some(t),
-            _ => None,
-        }) else {
-            // New tool call — persist and return.
-            let merged = info.clone();
-            self.add_tool(info).await?;
-            return Ok(merged);
-        };
-
-        // Merge fields into the existing entry.
-        if !info.params.is_null() {
-            existing.params = info.params;
-        }
-        if info.output.is_some() {
-            existing.output = info.output;
-        }
-
-        let sid = self.id.to_string();
-        let entry = HistoryEntry::Tool(existing.clone());
-        let content = entry.content();
-        let call_id_str = existing.call_id.to_string();
-
-        sqlx::query!(
-            "UPDATE messages SET content = ? WHERE session_id = ? AND role = 'tool' AND json_extract(content, '$.call_id') = ?",
-            content,
-            sid,
-            call_id_str
-        )
-        .execute(&*self.pool)
-        .await?;
-
-        Ok(existing.clone())
-    }
-
     pub async fn rebuild_cache(&mut self) -> anyhow::Result<()> {
         let sid = self.id.to_string();
         let rows = sqlx::query_as::<_, HistoryEntry>(
@@ -291,6 +250,61 @@ impl Session {
         .await?;
 
         self.cache = rows;
+        Ok(())
+    }
+
+    async fn insert_message(
+        &self,
+        session_id: &str,
+        role: &str,
+        content: &str,
+    ) -> Result<(), AgentSdkError> {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let ts = now_ms * 1000;
+        sqlx::query!(
+            "INSERT INTO messages (session_id, ts, role, content) VALUES (?, ?, ?, ?)",
+            session_id,
+            ts,
+            role,
+            content,
+        )
+        .execute(&*self.pool)
+        .await
+        .map_err(|e| AgentSdkError::IoError(std::io::Error::other(e.to_string())))?;
+        Ok(())
+    }
+
+    async fn update_tool_output(
+        &self,
+        session_id: &str,
+        call_id: &str,
+        output: String,
+    ) -> Result<(), AgentSdkError> {
+        // Find existing ToolCall row
+        let row = sqlx::query!(
+            "SELECT content FROM messages WHERE session_id = ? AND role = 'tool' AND json_extract(content, '$.call_id') = ?",
+            session_id,
+            call_id
+        )
+        .fetch_optional(&*self.pool)
+        .await
+        .map_err(|e| AgentSdkError::IoError(std::io::Error::other(e.to_string())))?;
+
+        if let Some(row) = row
+            && let Ok(mut tc) = serde_json::from_str::<ToolCall>(&row.content)
+        {
+            tc.output = Some(Ok(serde_json::Value::String(output)));
+            let new_content = serde_json::to_string(&tc).unwrap_or(row.content);
+            sqlx::query!(
+                "UPDATE messages SET content = ? WHERE session_id = ? AND role = 'tool' AND json_extract(content, '$.call_id') = ?",
+                new_content,
+                session_id,
+                call_id
+            )
+            .execute(&*self.pool)
+            .await
+            .map_err(|e| AgentSdkError::IoError(std::io::Error::other(e.to_string())))?;
+        }
         Ok(())
     }
 
@@ -330,73 +344,53 @@ impl HistoryStore for Session {
     }
 
     async fn push(&self, id: &str, message: Message) -> agentsdk::error::Result<()> {
-        // Session is behind Arc<...> in practice, but HistoryStore requires &self.
-        // We use the pool directly to append.
         let pool = self.pool.clone();
-        let role_str = match &message {
-            Message::SystemMessage(_) => "system",
-            Message::UserMessage(_) => "user",
-            Message::AssistantMessage(a) if a.tool_calls.is_some() => "tool",
-            Message::AssistantMessage(_) | Message::FunctionMessage(_) => "assistant",
-            Message::ToolMessage(_) => "tool",
-        };
-        let content = match &message {
-            Message::SystemMessage(s) => s.content.clone().unwrap_or_default(),
-            Message::UserMessage(u) => match &u.content {
-                Some(ChatCompletionRequestUserMessageContent::String(s)) => s.clone(),
-                _ => String::new(),
-            },
+        let id_str = id.to_string();
+
+        match message {
+            Message::SystemMessage(s) => {
+                let content = s.content.unwrap_or_default();
+                self.insert_message(&id_str, "system", &content).await?;
+            }
+            Message::UserMessage(u) => {
+                let content = match u.content {
+                    Some(ChatCompletionRequestUserMessageContent::String(s)) => s,
+                    _ => String::new(),
+                };
+                self.insert_message(&id_str, "user", &content).await?;
+            }
             Message::AssistantMessage(a) => {
-                if a.tool_calls.is_some() {
-                    // Serialize tool call info for the tool HistoryEntry
-                    let tc = ToolCall {
-                        call_id: Uuid::parse_str(
-                            a.tool_calls
-                                .as_ref()
-                                .and_then(|calls| calls.first().map(|c| c.id.as_str()))
-                                .unwrap_or_default(),
-                        )
-                        .unwrap_or_else(|_| Uuid::now_v7()),
-                        tool_name: a
-                            .tool_calls
-                            .as_ref()
-                            .and_then(|calls| calls.first().map(|c| c.function.name.clone()))
-                            .unwrap_or_default(),
-                        params: a
-                            .tool_calls
-                            .as_ref()
-                            .and_then(|calls| {
-                                calls
-                                    .first()
-                                    .and_then(|c| serde_json::from_str(&c.function.arguments).ok())
-                            })
-                            .unwrap_or(serde_json::Value::Null),
-                        output: None,
-                    };
-                    serde_json::to_string(&tc).unwrap_or_default()
-                } else {
-                    a.content.clone().unwrap_or_default()
+                if let Some(content) = &a.content
+                    && !content.is_empty()
+                {
+                    self.insert_message(&id_str, "assistant", content).await?;
+                }
+                if let Some(calls) = a.tool_calls {
+                    for call in calls {
+                        let tc = ToolCall {
+                            call_id: Uuid::parse_str(&call.id).unwrap_or_else(|_| Uuid::now_v7()),
+                            tool_name: call.function.name,
+                            params: serde_json::from_str(&call.function.arguments)
+                                .unwrap_or(serde_json::Value::Null),
+                            output: None,
+                        };
+                        let content = serde_json::to_string(&tc).unwrap_or_default();
+                        self.insert_message(&id_str, "tool", &content).await?;
+                    }
                 }
             }
-            Message::ToolMessage(t) => t.content.clone().unwrap_or_default(),
-            Message::FunctionMessage(_) => String::new(),
-        };
-        let now_ms = chrono::Utc::now().timestamp_millis();
-        let ts = now_ms * 1000;
-        sqlx::query!(
-            "INSERT INTO messages (session_id, ts, role, content) VALUES (?, ?, ?, ?)",
-            id,
-            ts,
-            role_str,
-            content,
-        )
-        .execute(&*pool)
-        .await
-        .map_err(|e| AgentSdkError::IoError(std::io::Error::other(e.to_string())))?;
+            Message::ToolMessage(t) => {
+                if let Some(content) = t.content {
+                    self.update_tool_output(&id_str, &t.tool_call_id, content)
+                        .await?;
+                }
+            }
+            Message::FunctionMessage(_) => {}
+        }
 
         sqlx::query!(
             "UPDATE sessions SET updated_at = unixepoch('subsec') * 1000 WHERE id = ?",
-            id,
+            id_str,
         )
         .execute(&*pool)
         .await

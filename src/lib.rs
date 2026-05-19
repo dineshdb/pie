@@ -17,7 +17,6 @@ mod hook;
 mod instructions;
 mod plugin;
 mod prompt;
-mod provider;
 mod registry;
 mod session;
 mod skill;
@@ -293,7 +292,7 @@ async fn run_single_shot(
 ) -> anyhow::Result<()> {
     let sandbox_settings = build_sandbox(pie_config);
     trace!(config = ?config, "config");
-    let model = provider::build_from_resolved(&config.provider);
+    let model = config.provider.build_client();
     let piped_stdin = read_piped_stdin();
 
     let cli_query = cli.query.join(" ");
@@ -338,7 +337,7 @@ async fn run_interactive(
     registry: Arc<Registry>,
 ) -> anyhow::Result<()> {
     let sandbox_settings = build_sandbox(pie_config);
-    let model = provider::build_from_resolved(&config.provider);
+    let model = config.provider.build_client();
 
     ui::tui::run_tui(
         model,

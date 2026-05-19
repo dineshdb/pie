@@ -4,7 +4,9 @@ use crate::Cli;
 use crate::hook::{CommandHook, Hook};
 use crate::plugin::{AgentsMdHook, KnownCommandsPromptHook, SkillsAndAgentsHook, StaticPlugin};
 use crate::utils::output::OutputFormat;
+use agentsdk::{ModelConfig, OpenAI};
 use anyhow::Context;
+use itertools::Itertools;
 use p1e_sandbox::SandboxConfig;
 use redact::Secret;
 use std::collections::HashMap;
@@ -63,11 +65,7 @@ impl std::fmt::Debug for ResolvedConfig {
 impl ResolvedConfig {
     /// Resolve a model tier name (from agent frontmatter) to a concrete `OpenAI` client.
     /// Falls back to the provided `fallback` if the tier is unset or unresolvable.
-    pub fn resolve_model(
-        &self,
-        tier: Option<&str>,
-        fallback: &agentsdk::OpenAI,
-    ) -> agentsdk::OpenAI {
+    pub fn resolve_model(&self, tier: Option<&str>, fallback: &OpenAI) -> OpenAI {
         let Some(tier_name) = tier else {
             return fallback.clone();
         };
@@ -75,7 +73,7 @@ impl ResolvedConfig {
             tracing::warn!("model tier '{tier_name}' not found in config, using default");
             return fallback.clone();
         };
-        crate::provider::build_from_resolved(provider)
+        provider.build_client()
     }
 }
 
@@ -141,6 +139,30 @@ impl ResolvedProvider {
         }
 
         env
+    }
+
+    /// Build an `OpenAI` client from this resolved provider.
+    pub fn build_client(&self) -> OpenAI {
+        let config = ModelConfig {
+            base_url: self.openai_url.as_str().to_string(),
+            api_key: self.api_key.expose_secret().clone(),
+            model: self.model.clone(),
+        };
+        OpenAI::new(config)
+    }
+
+    /// Fetch available models from this provider.
+    pub async fn fetch_models(&self) -> anyhow::Result<Vec<String>> {
+        let client = self.build_client();
+        let models = client.list_models().await?;
+
+        let models = models.into_iter().sorted().collect::<Vec<_>>();
+
+        if models.is_empty() {
+            anyhow::bail!("No models found in provider response");
+        }
+
+        Ok(models)
     }
 
     pub fn resolve(

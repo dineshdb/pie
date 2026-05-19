@@ -9,7 +9,6 @@
 //! Each frame: drain all events, merge them, then render once.
 
 use crate::config::{PieConfig, ResolvedProvider, get_providers_data};
-use crate::provider::fetch_models;
 use crate::session::{Role, Session};
 use crate::ui::tui::command::{Command, CommandAction};
 use crate::ui::tui::components::chat::{ActiveDialog, ChatComponent, ModelSelectorState};
@@ -117,7 +116,7 @@ fn process_msg(
                 resolved.name = provider_name;
                 let tx = tx.clone();
                 tokio::spawn(async move {
-                    match fetch_models(&resolved).await {
+                    match resolved.fetch_models().await {
                         Ok(models) => {
                             tracing::info!(count = models.len(), "fetched models");
                             let _ = tx.send(StreamEvent::ModelList(models));
@@ -255,7 +254,7 @@ fn handle_model_command(
         let tx = tx.clone();
         tokio::spawn(async move {
             tracing::info!(provider = %provider.name, "fetching initial model list");
-            match fetch_models(&provider).await {
+            match provider.fetch_models().await {
                 Ok(models) => {
                     tracing::info!(count = models.len(), "fetched initial models");
                     let _ = tx.send(StreamEvent::ModelList(models));

@@ -368,12 +368,12 @@ impl InputComponent {
 
     pub fn set_model(&mut self, model_name: &str) {
         self.provider.model = model_name.to_string();
-        self.model = crate::provider::build_from_resolved(&self.provider);
+        self.model = self.provider.build_client();
     }
 
     pub fn set_provider(&mut self, provider: ResolvedProvider) {
         self.provider = provider;
-        self.model = crate::provider::build_from_resolved(&self.provider);
+        self.model = self.provider.build_client();
     }
 
     pub fn active_steps(&self, is_streaming: bool) -> Vec<String> {

@@ -5,7 +5,7 @@ use crate::hook::{HookContext, HookContextData, HookEvent, HookOutcome, PromptDa
 use crate::instructions::Instructions;
 use crate::prompt::SystemPrompt;
 use crate::registry::Registry;
-use crate::session::{HistoryEntry, Session, ToolCall};
+use crate::session::{HistoryEntry, Session};
 use crate::tools::plan::{PlanContext, plan_tools};
 use crate::tools::{
     execute_skill_script_tool, glob_tool, list_directory_tool, load_references_tool,
@@ -489,18 +489,10 @@ impl AgentListener for StreamHandler {
 
     async fn on_tool_pre_execute(
         &mut self,
-        id: &str,
+        _id: &str,
         name: &str,
         arguments: &serde_json::Value,
     ) -> PreToolAction {
-        let tc = ToolCall {
-            call_id: uuid::Uuid::parse_str(id).unwrap_or_else(|_| uuid::Uuid::now_v7()),
-            tool_name: name.to_string(),
-            params: arguments.clone(),
-            output: None,
-        };
-        let _ = self.session.record_tool_call(tc).await;
-
         let _ = self.event_tx.send(AgentEvent::ToolCall {
             name: name.to_string(),
             display: format!("{name}({arguments})"),
@@ -512,7 +504,7 @@ impl AgentListener for StreamHandler {
 
     async fn on_tool_post_execute(
         &mut self,
-        id: &str,
+        _id: &str,
         name: &str,
         result: &serde_json::Value,
     ) -> PostToolAction {
@@ -521,14 +513,6 @@ impl AgentListener for StreamHandler {
         } else {
             result.to_string()
         };
-
-        let tc = ToolCall {
-            call_id: uuid::Uuid::parse_str(id).unwrap_or_else(|_| uuid::Uuid::now_v7()),
-            tool_name: name.to_string(),
-            params: serde_json::Value::Null,
-            output: Some(Ok(result.clone())),
-        };
-        let _ = self.session.record_tool_call(tc).await;
 
         let _ = self.event_tx.send(AgentEvent::ToolCall {
             name: name.to_string(),
@@ -542,14 +526,12 @@ impl AgentListener for StreamHandler {
         PostToolAction::Continue(None)
     }
 
-    async fn on_tool_error(&mut self, id: &str, name: &str, error: &str) -> ToolErrorAction {
-        let tc = ToolCall {
-            call_id: uuid::Uuid::parse_str(id).unwrap_or_else(|_| uuid::Uuid::now_v7()),
-            tool_name: name.to_string(),
-            params: serde_json::Value::Null,
-            output: Some(Err(serde_json::json!(error))),
-        };
-        let _ = self.session.record_tool_call(tc).await;
+    async fn on_tool_error(&mut self, _id: &str, name: &str, error: &str) -> ToolErrorAction {
+        let _ = self.event_tx.send(AgentEvent::ToolCall {
+            name: name.to_string(),
+            display: String::new(),
+            output: format!("Error: {error}"),
+        });
         let _ = self
             .event_tx
             .send(AgentEvent::Error(format!("Tool {name} failed: {error}")));

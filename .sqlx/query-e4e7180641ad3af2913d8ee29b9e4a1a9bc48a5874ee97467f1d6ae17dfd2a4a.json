@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT content FROM messages WHERE session_id = ? AND role = 'tool' AND json_extract(content, '$.call_id') = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "content",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e4e7180641ad3af2913d8ee29b9e4a1a9bc48a5874ee97467f1d6ae17dfd2a4a"
+}
