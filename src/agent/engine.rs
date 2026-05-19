@@ -1,6 +1,7 @@
 use crate::agent::{OutputMode, find_subsume_candidate};
 use crate::config::CONFIG;
 use crate::db::DbPool;
+use crate::error::{AppError, Result};
 use crate::hook::{HookContext, HookContextData, HookEvent, HookOutcome, PromptData};
 use crate::instructions::Instructions;
 use crate::prompt::SystemPrompt;
@@ -20,7 +21,6 @@ use agentsdk::{
     Agent as SdkAgent, AgentListener, CompletionAction, Extensions, Messages, PostToolAction,
     PreToolAction, ToolErrorAction,
 };
-use anyhow::{Context, Result};
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 use p1e_sandbox::SandboxConfig;
@@ -139,7 +139,7 @@ impl PieAgent {
         .with_agent(self.config.agent_name.as_deref())
         .resolve(&query_mentions);
 
-        sp.render().await
+        Ok(sp.render().await?)
     }
 
     fn make_hook_ctx(
@@ -173,7 +173,7 @@ impl PieAgent {
         cfg.plugins
             .run(event, &ctx)
             .await
-            .map_err(|e| anyhow::anyhow!(e))
+            .map_err(|e| AppError::Plugin(e.to_string()))
     }
 
     /// Run a prompt hook and extract (system, query) from the result.
@@ -274,7 +274,11 @@ impl PieAgent {
             tools.push(tool);
         }
 
-        crate::tools::wrap_tools_with_hooks(tools, &self.session.id.to_string(), output_mode)
+        Ok(crate::tools::wrap_tools_with_hooks(
+            tools,
+            &self.session.id.to_string(),
+            output_mode,
+        )?)
     }
 
     pub fn run<'a>(&'a mut self, query_str: &'a str) -> BoxFuture<'a, Result<String>> {
@@ -423,7 +427,8 @@ impl PieAgent {
                             .map(|t| (t.definition.name.clone(), t.execute.clone()))
                             .collect(),
                     ))
-                    .build()?,
+                    .build()
+                    .map_err(|e| AppError::Config(e.to_string()))?,
             )
             .build()
             .map_err(Into::into)
@@ -447,9 +452,7 @@ impl PieAgent {
             crate::session::SessionId::new()
         };
 
-        let sub_session = Session::create_with_id(self.pool.clone(), sub_id)
-            .await
-            .context("failed to create subagent session")?;
+        let sub_session = Session::create_with_id(self.pool.clone(), sub_id).await?;
         let config = AgentConfig::subagent(self.config.depth + 1, agent_name);
 
         Ok(PieAgent::new(

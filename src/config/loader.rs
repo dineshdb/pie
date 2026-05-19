@@ -1,6 +1,6 @@
 use super::types::{LaunchConfig, PieConfig, ProviderBaseUrl};
+use crate::error::{AppError, Result};
 use crate::utils::git_repo_root;
-use anyhow::Context;
 use figment::{
     Figment,
     providers::{Format, Toml},
@@ -25,7 +25,7 @@ pub fn logs_dir() -> PathBuf {
 
 static PROVIDERS_DATA: OnceLock<HashMap<String, ProviderBaseUrl>> = OnceLock::new();
 
-pub fn get_providers_data() -> anyhow::Result<&'static HashMap<String, ProviderBaseUrl>> {
+pub fn get_providers_data() -> Result<&'static HashMap<String, ProviderBaseUrl>> {
     if let Some(data) = PROVIDERS_DATA.get() {
         return Ok(data);
     }
@@ -33,22 +33,20 @@ pub fn get_providers_data() -> anyhow::Result<&'static HashMap<String, ProviderB
     Ok(PROVIDERS_DATA.get_or_init(|| data))
 }
 
-fn load_providers_data() -> anyhow::Result<HashMap<String, ProviderBaseUrl>> {
-    let file = EMBEDDED_PIE_DIR
-        .get_file("providers.toml")
-        .context("critical asset 'providers.toml' must exist in embedded dir")?;
-    let content = file
-        .contents_utf8()
-        .context("critical asset 'providers.toml' must be valid UTF-8")?;
-    let data: HashMap<String, ProviderBaseUrl> = Figment::new()
-        .merge(Toml::string(content))
-        .extract()
-        .context("failed to parse embedded 'providers.toml'")?;
+fn load_providers_data() -> Result<HashMap<String, ProviderBaseUrl>> {
+    let file = EMBEDDED_PIE_DIR.get_file("providers.toml").ok_or_else(|| {
+        AppError::Config("critical asset 'providers.toml' must exist in embedded dir".into())
+    })?;
+    let content = file.contents_utf8().ok_or_else(|| {
+        AppError::Config("critical asset 'providers.toml' must be valid UTF-8".into())
+    })?;
+    let data: HashMap<String, ProviderBaseUrl> =
+        Figment::new().merge(Toml::string(content)).extract()?;
     Ok(data)
 }
 
 /// Load the PIE configuration from global and project-specific paths.
-pub fn load_config() -> anyhow::Result<PieConfig> {
+pub fn load_config() -> Result<PieConfig> {
     let mut pie_config: PieConfig = load_toml_config(&["pie.toml", "secrets.toml"], false, true)?;
 
     for provider in pie_config.provider.values_mut() {
@@ -66,11 +64,7 @@ pub fn load_config() -> anyhow::Result<PieConfig> {
 /// A generic helper to load TOML configuration from multiple sources.
 /// Sources are merged in order: Embedded -> Global -> Project.
 /// Filenames are merged in order within each source.
-pub fn load_toml_config<T>(
-    filenames: &[&str],
-    use_embedded: bool,
-    use_local: bool,
-) -> anyhow::Result<T>
+pub fn load_toml_config<T>(filenames: &[&str], use_embedded: bool, use_local: bool) -> Result<T>
 where
     T: serde::de::DeserializeOwned,
 {
@@ -89,7 +83,7 @@ fn load_toml_config_impl<T>(
     use_embedded: bool,
     home_dir: &std::path::Path,
     project_root: Option<&std::path::Path>,
-) -> anyhow::Result<T>
+) -> Result<T>
 where
     T: serde::de::DeserializeOwned,
 {
@@ -101,7 +95,7 @@ where
             if let Some(file) = EMBEDDED_PIE_DIR.get_file(filename) {
                 let content = file
                     .contents_utf8()
-                    .context(format!("embedded {filename} is not UTF-8"))?;
+                    .ok_or_else(|| AppError::Config(format!("embedded {filename} is not UTF-8")))?;
                 figment = figment.merge(Toml::string(content));
             }
         }
@@ -125,13 +119,11 @@ where
         }
     }
 
-    figment
-        .extract()
-        .map_err(|e| anyhow::anyhow!("failed to parse configuration: {e}"))
+    figment.extract().map_err(Into::into)
 }
 
 /// Load launch configurations from embedded and global paths.
-pub fn load_launch_config() -> anyhow::Result<HashMap<String, LaunchConfig>> {
+pub fn load_launch_config() -> Result<HashMap<String, LaunchConfig>> {
     load_toml_config(&["launch.toml"], true, false)
 }
 
@@ -151,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn test_load_toml_config_merging() -> anyhow::Result<()> {
+    fn test_load_toml_config_merging() -> Result<()> {
         let temp = tempdir()?;
         let home = temp.path().join("home");
         let project = temp.path().join("project");
@@ -178,7 +170,7 @@ mod tests {
     }
 
     #[test]
-    fn test_load_toml_config_global_only() -> anyhow::Result<()> {
+    fn test_load_toml_config_global_only() -> Result<()> {
         let temp = tempdir()?;
         let home = temp.path().join("home");
         fs::create_dir_all(&home)?;

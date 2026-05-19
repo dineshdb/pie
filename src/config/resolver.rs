@@ -1,11 +1,11 @@
 use super::loader::get_providers_data;
 use super::types::{PieConfig, ProviderBaseUrl, ProviderConfig, ProviderEndpoint};
 use crate::Cli;
+use crate::error::{AppError, Result};
 use crate::hook::{CommandHook, Hook};
 use crate::plugin::{AgentsMdHook, KnownCommandsPromptHook, SkillsAndAgentsHook, StaticPlugin};
 use crate::utils::output::OutputFormat;
 use agentsdk::{ModelConfig, OpenAI};
-use anyhow::Context;
 use itertools::Itertools;
 use p1e_sandbox::SandboxConfig;
 use redact::Secret;
@@ -152,14 +152,16 @@ impl ResolvedProvider {
     }
 
     /// Fetch available models from this provider.
-    pub async fn fetch_models(&self) -> anyhow::Result<Vec<String>> {
+    pub async fn fetch_models(&self) -> Result<Vec<String>> {
         let client = self.build_client();
         let models = client.list_models().await?;
 
         let models = models.into_iter().sorted().collect::<Vec<_>>();
 
         if models.is_empty() {
-            anyhow::bail!("No models found in provider response");
+            return Err(AppError::Config(
+                "No models found in provider response".into(),
+            ));
         }
 
         Ok(models)
@@ -168,7 +170,7 @@ impl ResolvedProvider {
     pub fn resolve(
         provider: ProviderConfig,
         providers_data: &HashMap<String, ProviderBaseUrl>,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self> {
         let (name, known_data, custom_openai, custom_anthropic) =
             if provider.endpoint.openai.is_some() || provider.endpoint.anthropic.is_some() {
                 (
@@ -198,9 +200,11 @@ impl ResolvedProvider {
                     None
                 }
             })
-            .context(format!(
-                "provider '{name}' not found or has no valid base URL"
-            ))?;
+            .ok_or_else(|| {
+                AppError::Config(format!(
+                    "provider '{name}' not found or has no valid base URL"
+                ))
+            })?;
 
         let anthropic_url = custom_anthropic
             .as_ref()
@@ -218,9 +222,11 @@ impl ResolvedProvider {
 
         Ok(Self {
             name,
-            model: provider
-                .model
-                .context("model is required (set --model, OPENAI_MODEL, or config provider)")?,
+            model: provider.model.ok_or_else(|| {
+                AppError::Config(
+                    "model is required (set --model, OPENAI_MODEL, or config provider)".into(),
+                )
+            })?,
             openai_url,
             anthropic_url,
             api_key: provider
@@ -232,7 +238,7 @@ impl ResolvedProvider {
 }
 
 impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
-    type Error = anyhow::Error;
+    type Error = AppError;
 
     fn try_from((cli, pie): (Cli, PieConfig)) -> Result<Self, Self::Error> {
         let providers_data = get_providers_data()?;
@@ -242,7 +248,7 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
             pie.provider
                 .get(name)
                 .cloned()
-                .context(format!("provider '{name}' not found in config"))?
+                .ok_or_else(|| AppError::Config(format!("provider '{name}' not found in config")))?
         } else {
             let openai_env = std::env::var(ENV_OPENAI_BASE_URL).ok();
             let anthropic_env = std::env::var(ENV_ANTHROPIC_BASE_URL).ok();
@@ -334,7 +340,7 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
     }
 }
 
-fn load_cli_config() -> anyhow::Result<HashMap<String, super::types::CliConfig>> {
+fn load_cli_config() -> Result<HashMap<String, super::types::CliConfig>> {
     super::loader::load_toml_config(&["cli.toml"], true, true).or_else(|_| Ok(HashMap::new()))
 }
 

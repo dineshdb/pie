@@ -12,6 +12,7 @@ mod agent;
 mod cmd;
 mod config;
 mod db;
+pub mod error;
 mod handler;
 mod hook;
 mod instructions;
@@ -25,6 +26,7 @@ mod ui;
 mod utils;
 
 use crate::config::{PieConfig, ResolvedConfig, build_sandbox, load_config};
+use crate::error::Result;
 use crate::instructions::Instructions;
 use crate::registry::Registry;
 use crate::utils::output::OutputFormat;
@@ -98,7 +100,7 @@ impl Cli {
     }
 }
 
-async fn resolve_session(pool: Arc<DbPool>, resume: bool) -> anyhow::Result<Session> {
+async fn resolve_session(pool: Arc<DbPool>, resume: bool) -> Result<Session> {
     let cwd = std::env::current_dir()?.to_string_lossy().to_string();
     if resume && let Some(session) = Session::find_latest_for_cwd(pool.clone(), &cwd).await? {
         return Ok(session);

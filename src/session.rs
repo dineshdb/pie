@@ -1,5 +1,5 @@
 use crate::db::DbPool;
-use agentsdk::AgentSdkError;
+use crate::error::{AppError, Result};
 use agentsdk::core::history::HistoryStore;
 use agentsdk::core::messages::{self, Message, Messages};
 use agentsdk::openai::api::ChatCompletionRequestUserMessageContent;
@@ -138,12 +138,12 @@ pub struct Session {
 }
 
 impl Session {
-    pub async fn create(pool: Arc<DbPool>) -> anyhow::Result<Self> {
+    pub async fn create(pool: Arc<DbPool>) -> Result<Self> {
         let id = SessionId::new();
         Self::create_with_id(pool, id).await
     }
 
-    pub async fn create_with_id(pool: Arc<DbPool>, id: SessionId) -> anyhow::Result<Self> {
+    pub async fn create_with_id(pool: Arc<DbPool>, id: SessionId) -> Result<Self> {
         let cwd = std::env::current_dir()?.to_string_lossy().to_string();
         let id_str = id.to_string();
         sqlx::query!(
@@ -156,14 +156,14 @@ impl Session {
         Self::load(pool, id).await
     }
 
-    pub async fn load(pool: Arc<DbPool>, session_id: SessionId) -> anyhow::Result<Self> {
+    pub async fn load(pool: Arc<DbPool>, session_id: SessionId) -> Result<Self> {
         let sid = session_id.to_string();
         let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?)")
             .bind(&sid)
             .fetch_one(&*pool)
             .await?;
         if !exists {
-            anyhow::bail!("Session {sid} not found");
+            return Err(AppError::NotFound(session_id.to_string()));
         }
         let mut session = Self {
             id: session_id,
@@ -174,7 +174,7 @@ impl Session {
         Ok(session)
     }
 
-    pub async fn find_latest_for_cwd(pool: Arc<DbPool>, cwd: &str) -> anyhow::Result<Option<Self>> {
+    pub async fn find_latest_for_cwd(pool: Arc<DbPool>, cwd: &str) -> Result<Option<Self>> {
         let id_str: Option<String> = sqlx::query_scalar(
             "SELECT id FROM sessions WHERE cwd = ? ORDER BY updated_at DESC LIMIT 1",
         )
@@ -195,7 +195,7 @@ impl Session {
         &self.pool
     }
 
-    async fn add_entry(&mut self, entry: HistoryEntry) -> anyhow::Result<()> {
+    async fn add_entry(&mut self, entry: HistoryEntry) -> Result<()> {
         let now_ms = chrono::Utc::now().timestamp_millis();
         let sid = self.id.to_string();
         let ts = now_ms * 1000;
@@ -223,24 +223,24 @@ impl Session {
         Ok(())
     }
 
-    pub async fn add_user(&mut self, content: &str) -> anyhow::Result<()> {
+    pub async fn add_user(&mut self, content: &str) -> Result<()> {
         self.add_entry(HistoryEntry::User(content.to_string()))
             .await
     }
 
     #[allow(dead_code)]
-    pub async fn add_assistant(&mut self, content: &str) -> anyhow::Result<()> {
+    pub async fn add_assistant(&mut self, content: &str) -> Result<()> {
         self.add_entry(HistoryEntry::Assistant(content.to_string()))
             .await
     }
 
     #[allow(dead_code)]
-    pub async fn add_system(&mut self, content: &str) -> anyhow::Result<()> {
+    pub async fn add_system(&mut self, content: &str) -> Result<()> {
         self.add_entry(HistoryEntry::System(content.to_string()))
             .await
     }
 
-    pub async fn rebuild_cache(&mut self) -> anyhow::Result<()> {
+    pub async fn rebuild_cache(&mut self) -> Result<()> {
         let sid = self.id.to_string();
         let rows = sqlx::query_as::<_, HistoryEntry>(
             "SELECT role, content FROM messages WHERE session_id = ? AND compacted = 0 ORDER BY id",
@@ -253,12 +253,7 @@ impl Session {
         Ok(())
     }
 
-    async fn insert_message(
-        &self,
-        session_id: &str,
-        role: &str,
-        content: &str,
-    ) -> Result<(), AgentSdkError> {
+    async fn insert_message(&self, session_id: &str, role: &str, content: &str) -> Result<()> {
         let now_ms = chrono::Utc::now().timestamp_millis();
         let ts = now_ms * 1000;
         sqlx::query!(
@@ -269,8 +264,7 @@ impl Session {
             content,
         )
         .execute(&*self.pool)
-        .await
-        .map_err(|e| AgentSdkError::IoError(std::io::Error::other(e.to_string())))?;
+        .await?;
         Ok(())
     }
 
@@ -279,7 +273,7 @@ impl Session {
         session_id: &str,
         call_id: &str,
         output: String,
-    ) -> Result<(), AgentSdkError> {
+    ) -> Result<()> {
         // Find existing ToolCall row
         let row = sqlx::query!(
             "SELECT content FROM messages WHERE session_id = ? AND role = 'tool' AND json_extract(content, '$.call_id') = ?",
@@ -287,8 +281,7 @@ impl Session {
             call_id
         )
         .fetch_optional(&*self.pool)
-        .await
-        .map_err(|e| AgentSdkError::IoError(std::io::Error::other(e.to_string())))?;
+        .await?;
 
         if let Some(row) = row
             && let Ok(mut tc) = serde_json::from_str::<ToolCall>(&row.content)
@@ -302,8 +295,7 @@ impl Session {
                 call_id
             )
             .execute(&*self.pool)
-            .await
-            .map_err(|e| AgentSdkError::IoError(std::io::Error::other(e.to_string())))?;
+            .await?;
         }
         Ok(())
     }
@@ -344,59 +336,70 @@ impl HistoryStore for Session {
     }
 
     async fn push(&self, id: &str, message: Message) -> agentsdk::error::Result<()> {
-        let pool = self.pool.clone();
         let id_str = id.to_string();
 
-        match message {
-            Message::SystemMessage(s) => {
-                let content = s.content.unwrap_or_default();
-                self.insert_message(&id_str, "system", &content).await?;
-            }
-            Message::UserMessage(u) => {
-                let content = match u.content {
-                    Some(ChatCompletionRequestUserMessageContent::String(s)) => s,
-                    _ => String::new(),
-                };
-                self.insert_message(&id_str, "user", &content).await?;
-            }
-            Message::AssistantMessage(a) => {
-                if let Some(content) = &a.content
-                    && !content.is_empty()
-                {
-                    self.insert_message(&id_str, "assistant", content).await?;
+        let res: Result<()> = async {
+            match message {
+                Message::SystemMessage(s) => {
+                    let content = s.content.unwrap_or_default();
+                    self.insert_message(&id_str, "system", &content).await?;
                 }
-                if let Some(calls) = a.tool_calls {
-                    for call in calls {
-                        let tc = ToolCall {
-                            call_id: Uuid::parse_str(&call.id).unwrap_or_else(|_| Uuid::now_v7()),
-                            tool_name: call.function.name,
-                            params: serde_json::from_str(&call.function.arguments)
-                                .unwrap_or(serde_json::Value::Null),
-                            output: None,
-                        };
-                        let content = serde_json::to_string(&tc).unwrap_or_default();
-                        self.insert_message(&id_str, "tool", &content).await?;
+                Message::UserMessage(u) => {
+                    let content = match u.content {
+                        Some(ChatCompletionRequestUserMessageContent::String(s)) => s,
+                        _ => String::new(),
+                    };
+                    self.insert_message(&id_str, "user", &content).await?;
+                }
+                Message::AssistantMessage(a) => {
+                    if let Some(content) = &a.content
+                        && !content.is_empty()
+                    {
+                        self.insert_message(&id_str, "assistant", content).await?;
+                    }
+                    if let Some(calls) = a.tool_calls {
+                        for call in calls {
+                            let tc = ToolCall {
+                                call_id: Uuid::parse_str(&call.id)
+                                    .unwrap_or_else(|_| Uuid::now_v7()),
+                                tool_name: call.function.name,
+                                params: serde_json::from_str(&call.function.arguments)
+                                    .unwrap_or(serde_json::Value::Null),
+                                output: None,
+                            };
+                            let content = serde_json::to_string(&tc).unwrap_or_default();
+                            self.insert_message(&id_str, "tool", &content).await?;
+                        }
                     }
                 }
-            }
-            Message::ToolMessage(t) => {
-                if let Some(content) = t.content {
-                    self.update_tool_output(&id_str, &t.tool_call_id, content)
-                        .await?;
+                Message::ToolMessage(t) => {
+                    if let Some(content) = t.content {
+                        self.update_tool_output(&id_str, &t.tool_call_id, content)
+                            .await?;
+                    }
                 }
+                Message::FunctionMessage(_) => {}
             }
-            Message::FunctionMessage(_) => {}
+
+            sqlx::query!(
+                "UPDATE sessions SET updated_at = unixepoch('subsec') * 1000 WHERE id = ?",
+                id_str,
+            )
+            .execute(&*self.pool)
+            .await?;
+
+            Ok(())
         }
+        .await;
 
-        sqlx::query!(
-            "UPDATE sessions SET updated_at = unixepoch('subsec') * 1000 WHERE id = ?",
-            id_str,
-        )
-        .execute(&*pool)
-        .await
-        .map_err(|e| AgentSdkError::IoError(std::io::Error::other(e.to_string())))?;
-
-        Ok(())
+        res.map_err(|e| match e {
+            AppError::Api(ae) => *ae,
+            AppError::Io(e) => agentsdk::error::AgentSdkError::IoError(e),
+            AppError::Db(e) => {
+                agentsdk::error::AgentSdkError::IoError(std::io::Error::other(e.to_string()))
+            }
+            _ => agentsdk::error::AgentSdkError::IoError(std::io::Error::other(e.to_string())),
+        })
     }
 }
 
