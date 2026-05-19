@@ -12,7 +12,7 @@ struct ShellInput {
 }
 
 /// Execute a system command, bash tools, clis, etc. Requires plan.
-pub fn shell() -> anyhow::Result<Tool> {
+pub fn shell(sandbox: Arc<SandboxConfig>) -> anyhow::Result<Tool> {
     Ok(Tool::builder()
         .definition(
             ToolDefinition::builder()
@@ -21,28 +21,27 @@ pub fn shell() -> anyhow::Result<Tool> {
                 .input_schema(schema_for!(ShellInput))
                 .build()?,
         )
-        .execute(ToolExecute::from_async(|ctx, params| async move {
-            let input: ShellInput = serde_json::from_value(params).map_err(|e| e.to_string())?;
-            let sandbox = ctx
-                .options
-                .extensions
-                .get::<Arc<SandboxConfig>>()
-                .ok_or_else(|| "SandboxConfig not found in extensions".to_string())?;
+        .execute(ToolExecute::from_async(move |_ctx, params| {
+            let sandbox = sandbox.clone();
+            async move {
+                let input: ShellInput =
+                    serde_json::from_value(params).map_err(|e| e.to_string())?;
 
-            super::emit_tool_input("shell", &json!(input));
+                super::emit_tool_input("shell", &json!(input));
 
-            tracing::debug!(cmd = %input.command, "shell:");
-            let out = super::run_sandboxed_command(&input.command, &sandbox);
-            tracing::debug!(exit_code = out.exit_code, stdout_len = out.stdout.len(), out = %out.stdout, "shell:");
+                tracing::debug!(cmd = %input.command, "shell:");
+                let out = super::run_sandboxed_command(&input.command, &sandbox);
+                tracing::debug!(exit_code = out.exit_code, stdout_len = out.stdout.len(), out = %out.stdout, "shell:");
 
-            let result = json!({
-                "cmd": input.command,
-                "code": out.exit_code,
-                "stdout": out.stdout,
-                "stderr": out.stderr,
-            });
-            tracing::trace!(%result, "shell:");
-            Ok(result)
+                let result = json!({
+                    "cmd": input.command,
+                    "code": out.exit_code,
+                    "stdout": out.stdout,
+                    "stderr": out.stderr,
+                });
+                tracing::trace!(%result, "shell:");
+                Ok(result)
+            }
         }))
         .build()?)
 }

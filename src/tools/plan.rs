@@ -144,13 +144,7 @@ struct PlanStepUpdateInput {
     pub updates: Vec<StepUpdate>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlanContext {
-    pub session_id: String,
-}
-
-/// CRITICAL: Planning phase. Call this FIRST to define the plan steps.
-pub fn plan_set_tool() -> anyhow::Result<Tool> {
+pub fn plan_set_tool(pool: Arc<DbPool>, session_id: String) -> anyhow::Result<Tool> {
     Ok(Tool::builder()
         .definition(
             ToolDefinition::builder()
@@ -159,30 +153,25 @@ pub fn plan_set_tool() -> anyhow::Result<Tool> {
                 .input_schema(schema_for!(PlanSetInput))
                 .build()?,
         )
-        .execute(ToolExecute::from_async(|ctx, params| async move {
-            let input: PlanSetInput = serde_json::from_value(params).map_err(|e| e.to_string())?;
-            let pool = ctx
-                .options
-                .extensions
-                .get::<Arc<DbPool>>()
-                .ok_or_else(|| "DbPool not found in extensions".to_string())?;
-            let plan_ctx = ctx
-                .options
-                .extensions
-                .get::<PlanContext>()
-                .ok_or_else(|| "PlanContext not found in extensions".to_string())?;
+        .execute(ToolExecute::from_async(move |_ctx, params| {
+            let pool = pool.clone();
+            let session_id = session_id.clone();
+            async move {
+                let input: PlanSetInput =
+                    serde_json::from_value(params).map_err(|e| e.to_string())?;
 
-            for t in input.steps {
-                let _ = pool.save_step(&plan_ctx.session_id, &t).await;
+                for t in input.steps {
+                    let _ = pool.save_step(&session_id, &t).await;
+                }
+
+                Ok(json!({ "status": "ok" }))
             }
-
-            Ok(json!({ "status": "ok" }))
         }))
         .build()?)
 }
 
 /// MANDATORY: Update a plan step status.
-pub fn plan_step_update_tool() -> anyhow::Result<Tool> {
+pub fn plan_step_update_tool(pool: Arc<DbPool>, session_id: String) -> anyhow::Result<Tool> {
     Ok(Tool::builder()
         .definition(
             ToolDefinition::builder()
@@ -191,32 +180,30 @@ pub fn plan_step_update_tool() -> anyhow::Result<Tool> {
                 .input_schema(schema_for!(PlanStepUpdateInput))
                 .build()?,
         )
-        .execute(ToolExecute::from_async(|ctx, params| async move {
-            let input: PlanStepUpdateInput =
-                serde_json::from_value(params).map_err(|e| e.to_string())?;
-            let pool = ctx
-                .options
-                .extensions
-                .get::<Arc<DbPool>>()
-                .ok_or_else(|| "DbPool not found in extensions".to_string())?;
-            let plan_ctx = ctx
-                .options
-                .extensions
-                .get::<PlanContext>()
-                .ok_or_else(|| "PlanContext not found in extensions".to_string())?;
+        .execute(ToolExecute::from_async(move |_ctx, params| {
+            let pool = pool.clone();
+            let session_id = session_id.clone();
+            async move {
+                let input: PlanStepUpdateInput =
+                    serde_json::from_value(params).map_err(|e| e.to_string())?;
 
-            for update in input.updates {
-                let _ = pool
-                    .update_step_status(&plan_ctx.session_id, &update.name, update.status)
-                    .await;
+                for update in input.updates {
+                    let _ = pool
+                        .update_step_status(&session_id, &update.name, update.status)
+                        .await;
+                }
+
+                Ok(json!({ "status": "ok" }))
             }
-
-            Ok(json!({ "status": "ok" }))
         }))
         .build()?)
 }
 
 /// Build the plan-related tools.
-pub fn plan_tools() -> anyhow::Result<Vec<Tool>> {
-    Ok(vec![plan_set_tool()?, plan_step_update_tool()?])
+pub fn plan_tools(pool: Arc<DbPool>, session_id: &str) -> anyhow::Result<Vec<Tool>> {
+    let sid = session_id.to_string();
+    Ok(vec![
+        plan_set_tool(pool.clone(), sid.clone())?,
+        plan_step_update_tool(pool, sid)?,
+    ])
 }

@@ -7,26 +7,25 @@ use crate::instructions::Instructions;
 use crate::prompt::SystemPrompt;
 use crate::registry::Registry;
 use crate::session::{HistoryEntry, Session};
-use crate::tools::plan::{PlanContext, plan_tools};
+use crate::tools::plan::plan_tools;
 use crate::tools::{
     execute_skill_script_tool, glob_tool, list_directory_tool, load_references_tool,
     load_skills_tool, read_file_tool, replace_tool, shell, subagent_tool, websearch,
     write_file_tool,
 };
-use agentsdk::core::history::HistoryStore;
 use agentsdk::core::retry::RetryAction;
 use agentsdk::core::tools::Tool;
 use agentsdk::error::AgentSdkError;
 use agentsdk::{
-    Agent as SdkAgent, AgentListener, CompletionAction, Extensions, Messages, PostToolAction,
-    PreToolAction, ToolErrorAction,
+    Agent as SdkAgent, AgentPlugin, CompletionAction, MemoryHistoryPlugin, Message, Messages,
+    PluginContext, PostToolAction, PreToolAction, ToolErrorAction,
 };
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 use p1e_sandbox::SandboxConfig;
 use serde::Deserialize;
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -256,29 +255,55 @@ impl PieAgent {
     }
 
     fn build_tools(&self, output_mode: OutputMode) -> Result<Vec<Tool>> {
+        let sandbox = self.sandbox.clone();
+        let registry = self.registry.clone();
+        let pool = self.pool.clone();
+        let model = self.model.clone();
+        let loaded_skills = self.loaded_skills.clone();
+        let session_id = self.session.id.to_string();
+
         let mut tools = vec![
             read_file_tool()?,
             write_file_tool()?,
             replace_tool()?,
             list_directory_tool()?,
             glob_tool()?,
-            shell()?,
-            load_skills_tool()?,
-            load_references_tool()?,
-            execute_skill_script_tool()?,
-            websearch()?,
-            subagent_tool()?,
+            shell(sandbox.clone())?,
+            load_skills_tool(registry.clone(), loaded_skills.clone())?,
+            load_references_tool(loaded_skills)?,
+            execute_skill_script_tool(sandbox.clone())?,
+            subagent_tool(model, registry, sandbox.clone(), pool.clone())?,
+            websearch(sandbox)?,
         ];
 
-        for tool in plan_tools()? {
+        for tool in plan_tools(self.pool.clone(), &session_id)? {
             tools.push(tool);
         }
 
         Ok(crate::tools::wrap_tools_with_hooks(
             tools,
-            &self.session.id.to_string(),
+            &session_id,
             output_mode,
         )?)
+    }
+
+    fn build_sdk_agent(&self, output_mode: OutputMode) -> Result<agentsdk::AgentBuilder> {
+        let tools = self.build_tools(output_mode)?;
+        let mut defs = Vec::with_capacity(tools.len());
+        let mut execs = HashMap::with_capacity(tools.len());
+        for t in tools {
+            defs.push(t.definition.clone());
+            execs.insert(t.definition.name.clone(), t.execute);
+        }
+
+        Ok(SdkAgent::builder().client(self.model.clone()).options(
+            agentsdk::AgentOptions::builder()
+                .max_iterations(self.config.max_steps as usize)
+                .tool_definitions(Arc::new(defs))
+                .tool_executors(Arc::new(execs))
+                .build()
+                .map_err(|e| AppError::Config(e.to_string()))?,
+        ))
     }
 
     pub fn run<'a>(&'a mut self, query_str: &'a str) -> BoxFuture<'a, Result<String>> {
@@ -359,29 +384,38 @@ impl PieAgent {
             self.run_post_prompt_hooks(&system, &query, output_mode)
                 .await;
 
-            let sdk_agent = self.build_sdk_agent(output_mode)?;
+            let mut builder = self.build_sdk_agent(output_mode)?;
 
-            let mut handler = StreamHandler {
+            let history_plugin = MemoryHistoryPlugin::new();
+            for msg in self.session.to_messages() {
+                history_plugin.push(msg).await;
+            }
+            builder = builder.plugin(history_plugin.clone());
+
+            let stream_plugin = StreamPlugin {
                 system_prompt: system.clone(),
                 event_tx: event_tx.clone(),
-                session: self.session.clone(),
+                session_id: self.session.id.to_string(),
                 api_error_count: 0,
                 rate_limit_count: 0,
                 retry: self.config.retry.clone(),
                 output_mode,
             };
+            builder = builder.plugin(stream_plugin);
 
-            sdk_agent.run(&mut handler).await?;
-            self.session = handler.session;
-            self.session.rebuild_cache().await?;
+            let mut agent = builder
+                .build()
+                .map_err(|e| AppError::Config(e.to_string()))?;
+            let _output = agent.run().await?;
 
-            let final_text = self
-                .session
-                .history_entries()
+            let final_messages = history_plugin.messages().await;
+            self.session.sync_from_messages(&final_messages).await?;
+
+            let final_text = final_messages
                 .iter()
                 .rev()
-                .find_map(|e| match e {
-                    HistoryEntry::Assistant(c) => Some(c.clone()),
+                .find_map(|msg| match msg {
+                    Message::AssistantMessage(a) => a.content.clone(),
                     _ => None,
                 })
                 .unwrap_or_default();
@@ -392,46 +426,6 @@ impl PieAgent {
 
             Ok(final_text)
         })
-    }
-
-    fn build_sdk_agent(&self, output_mode: OutputMode) -> Result<SdkAgent> {
-        let tools = self.build_tools(output_mode)?;
-
-        let mut extensions = Extensions::new();
-        extensions.insert(self.pool.clone());
-        extensions.insert(self.sandbox.clone());
-        extensions.insert(self.registry.clone());
-        extensions.insert(self.loaded_skills.clone());
-        extensions.insert(self.model.clone());
-        extensions.insert(PlanContext {
-            session_id: self.session.id.to_string(),
-        });
-
-        SdkAgent::builder()
-            .client(self.model.clone())
-            .options(
-                agentsdk::AgentOptions::builder()
-                    .max_iterations(self.config.max_steps as usize)
-                    .history_store({
-                        let store: Arc<dyn HistoryStore> = Arc::new(self.session.clone());
-                        store
-                    })
-                    .session_id(self.session.id.to_string())
-                    .extensions(extensions)
-                    .tool_definitions(Arc::new(
-                        tools.iter().map(|t| t.definition.clone()).collect(),
-                    ))
-                    .tool_executors(Arc::new(
-                        tools
-                            .into_iter()
-                            .map(|t| (t.definition.name.clone(), t.execute.clone()))
-                            .collect(),
-                    ))
-                    .build()
-                    .map_err(|e| AppError::Config(e.to_string()))?,
-            )
-            .build()
-            .map_err(Into::into)
     }
 
     pub async fn spawn_subagent(&self, agent_name: Option<String>) -> Result<Self> {
@@ -466,12 +460,12 @@ impl PieAgent {
     }
 }
 
-// ── Stream Handler ──────────────────────────────────────────────────
+// ── Stream Plugin ──────────────────────────────────────────────────
 
-struct StreamHandler {
+struct StreamPlugin {
     system_prompt: String,
     event_tx: UnboundedSender<AgentEvent>,
-    session: Session,
+    session_id: String,
     api_error_count: u32,
     rate_limit_count: u32,
     retry: crate::config::RetryConfig,
@@ -479,12 +473,20 @@ struct StreamHandler {
 }
 
 #[async_trait]
-impl AgentListener for StreamHandler {
-    async fn prepare_system_prompt(&mut self, _history: &Messages) -> Option<Cow<'static, str>> {
+impl AgentPlugin for StreamPlugin {
+    fn name(&self) -> &'static str {
+        "stream"
+    }
+
+    async fn prepare_system_prompt(
+        &mut self,
+        _ctx: &PluginContext,
+        _history: &Messages,
+    ) -> Option<Cow<'static, str>> {
         Some(Cow::Owned(self.system_prompt.clone()))
     }
 
-    async fn on_text_delta(&mut self, text: &str) {
+    async fn on_text_delta(&mut self, _ctx: &PluginContext, text: &str) {
         if !text.is_empty() {
             let _ = self.event_tx.send(AgentEvent::Delta(text.to_string()));
         }
@@ -492,6 +494,7 @@ impl AgentListener for StreamHandler {
 
     async fn on_tool_pre_execute(
         &mut self,
+        _ctx: &PluginContext,
         _id: &str,
         name: &str,
         arguments: &serde_json::Value,
@@ -507,6 +510,7 @@ impl AgentListener for StreamHandler {
 
     async fn on_tool_post_execute(
         &mut self,
+        _ctx: &PluginContext,
         _id: &str,
         name: &str,
         result: &serde_json::Value,
@@ -529,7 +533,13 @@ impl AgentListener for StreamHandler {
         PostToolAction::Continue(None)
     }
 
-    async fn on_tool_error(&mut self, _id: &str, name: &str, error: &str) -> ToolErrorAction {
+    async fn on_tool_error(
+        &mut self,
+        _ctx: &PluginContext,
+        _id: &str,
+        name: &str,
+        error: &str,
+    ) -> ToolErrorAction {
         let _ = self.event_tx.send(AgentEvent::ToolCall {
             name: name.to_string(),
             display: String::new(),
@@ -541,7 +551,7 @@ impl AgentListener for StreamHandler {
         ToolErrorAction::Continue(None)
     }
 
-    async fn on_api_error(&mut self, error: &AgentSdkError) -> RetryAction {
+    async fn on_api_error(&mut self, _ctx: &PluginContext, error: &AgentSdkError) -> RetryAction {
         self.api_error_count += 1;
 
         if let Some(status) = error.status_code() {
@@ -576,7 +586,7 @@ impl AgentListener for StreamHandler {
         RetryAction::DoNotRetry
     }
 
-    async fn on_completion(&mut self, text: String) -> CompletionAction {
+    async fn on_completion(&mut self, _ctx: &PluginContext, text: String) -> CompletionAction {
         let Some(cfg) = CONFIG.get() else {
             return CompletionAction::Accept(None);
         };
@@ -591,7 +601,7 @@ impl AgentListener for StreamHandler {
                 .unwrap_or_else(|_| std::path::PathBuf::from("."))
                 .to_string_lossy()
                 .to_string(),
-            self.session.id.to_string(),
+            self.session_id.clone(),
             self.output_mode,
             data,
         );

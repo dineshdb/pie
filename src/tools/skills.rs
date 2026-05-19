@@ -17,7 +17,10 @@ struct LoadSkillsInput {
 }
 
 /// Load one or more skills by name. Auto-resolves `needs` dependencies.
-pub fn load_skills_tool() -> anyhow::Result<Tool> {
+pub fn load_skills_tool(
+    registry: Arc<Registry>,
+    loaded_skills: Arc<Mutex<HashSet<String>>>,
+) -> anyhow::Result<Tool> {
     Ok(Tool::builder()
         .definition(
             ToolDefinition::builder()
@@ -26,15 +29,9 @@ pub fn load_skills_tool() -> anyhow::Result<Tool> {
                 .input_schema(schema_for!(LoadSkillsInput))
                 .build()?,
         )
-        .execute(ToolExecute::from_sync(|ctx, params| {
+        .execute(ToolExecute::from_sync(move |_ctx, params| {
             let input: LoadSkillsInput =
                 serde_json::from_value(params).map_err(|e| e.to_string())?;
-            let registry = ctx
-                .options
-                .extensions
-                .get::<Arc<Registry>>()
-                .ok_or_else(|| "Registry not found in extensions".to_string())?;
-            let loaded = ctx.options.extensions.get::<Arc<Mutex<HashSet<String>>>>();
 
             super::emit_tool_input("load_skills", &json!(input));
 
@@ -45,19 +42,17 @@ pub fn load_skills_tool() -> anyhow::Result<Tool> {
 
             let mut output = String::new();
             for skill in &resolved {
-                if let Some(ref loaded) = loaded {
-                    let mut guard = super::safe_lock(loaded);
-                    if guard.contains(&skill.name) {
-                        writeln!(
-                            output,
-                            "Skill '{}' is already loaded — skipping.",
-                            skill.name
-                        )
-                        .ok();
-                        continue;
-                    }
-                    guard.insert(skill.name.clone());
+                let mut guard = super::safe_lock(&loaded_skills);
+                if guard.contains(&skill.name) {
+                    writeln!(
+                        output,
+                        "Skill '{}' is already loaded — skipping.",
+                        skill.name
+                    )
+                    .ok();
+                    continue;
                 }
+                guard.insert(skill.name.clone());
                 write!(output, "## Skill: {}\n{}\n---\n", skill.name, skill.content).ok();
             }
             Ok(json!(output))
@@ -74,7 +69,7 @@ struct LoadReferencesInput {
 }
 
 /// Load reference files of a skill for extra knowledge.
-pub fn load_references_tool() -> anyhow::Result<Tool> {
+pub fn load_references_tool(loaded_refs: Arc<Mutex<HashSet<String>>>) -> anyhow::Result<Tool> {
     Ok(Tool::builder()
         .definition(
             ToolDefinition::builder()
@@ -83,14 +78,9 @@ pub fn load_references_tool() -> anyhow::Result<Tool> {
                 .input_schema(schema_for!(LoadReferencesInput))
                 .build()?,
         )
-        .execute(ToolExecute::from_sync(|ctx, params| {
+        .execute(ToolExecute::from_sync(move |_ctx, params| {
             let input: LoadReferencesInput =
                 serde_json::from_value(params).map_err(|e| e.to_string())?;
-            let loaded_refs = ctx
-                .options
-                .extensions
-                .get::<Arc<Mutex<HashSet<String>>>>()
-                .ok_or_else(|| "loaded_refs not found in extensions".to_string())?;
 
             super::emit_tool_input("load_references", &json!(input));
 
@@ -139,7 +129,7 @@ struct ExecuteSkillScriptInput {
 const SCRIPT_EXTENSIONS: &[&str] = &["sh", "bash", "py", "js", "ts", "rb", "pl"];
 
 /// Execute a script from a skill directory. Runs inside a sandbox with read access to the skill directory.
-pub fn execute_skill_script_tool() -> anyhow::Result<Tool> {
+pub fn execute_skill_script_tool(sandbox: Arc<SandboxConfig>) -> anyhow::Result<Tool> {
     Ok(Tool::builder()
         .definition(
             ToolDefinition::builder()
@@ -148,14 +138,9 @@ pub fn execute_skill_script_tool() -> anyhow::Result<Tool> {
                 .input_schema(schema_for!(ExecuteSkillScriptInput))
                 .build()?,
         )
-        .execute(ToolExecute::from_sync(|ctx, params| {
+        .execute(ToolExecute::from_sync(move |_ctx, params| {
             let input: ExecuteSkillScriptInput =
                 serde_json::from_value(params).map_err(|e| e.to_string())?;
-            let sandbox_settings = ctx
-                .options
-                .extensions
-                .get::<Arc<SandboxConfig>>()
-                .ok_or_else(|| "SandboxConfig not found in extensions".to_string())?;
 
             super::emit_tool_input("execute_skill_script", &json!(input));
 
@@ -181,7 +166,7 @@ pub fn execute_skill_script_tool() -> anyhow::Result<Tool> {
                 format!("\"{}\" {}", script_path.display(), args_str)
             };
 
-            let mut sandbox = (**sandbox_settings).clone();
+            let mut sandbox = sandbox.as_ref().clone();
             let skill_path = dir.to_string_lossy().to_string();
             if !sandbox.allow_read.contains(&skill_path) {
                 sandbox.allow_read.push(skill_path);
