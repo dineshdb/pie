@@ -179,11 +179,6 @@ fn handle_submit(
         CommandAction::Model(name) => {
             handle_model_command(name, app, input, tx);
         }
-        CommandAction::ClearMessages => {
-            if let Some(chat) = chat_mut!(app) {
-                chat.clear_messages();
-            }
-        }
         CommandAction::Help => {
             if let Some(chat) = chat_mut!(app) {
                 chat.set_help_dialog();

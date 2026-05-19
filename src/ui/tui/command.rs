@@ -65,8 +65,7 @@ impl Command {
                     let text = build_skills_list(registry);
                     CommandAction::AddMessage(ChatMessage::system(&text))
                 }
-                BuiltinCommand::Clear => CommandAction::ClearMessages,
-                BuiltinCommand::New => CommandAction::NewSession,
+                BuiltinCommand::Clear | BuiltinCommand::New => CommandAction::NewSession,
             },
             Self::Shell(command) => CommandAction::Shell(command),
             Self::Send(query) => CommandAction::Stream(query),
@@ -78,7 +77,6 @@ impl Command {
 /// Result of executing a command — what the app should do next.
 pub enum CommandAction {
     AddMessage(ChatMessage),
-    ClearMessages,
     NewSession,
     Stream(String),
     Shell(String),

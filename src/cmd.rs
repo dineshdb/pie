@@ -46,7 +46,7 @@ const HELP_DESC: &str = "Show help and available commands";
 const QUIT_DESC: &str = "Exit the application";
 const MODEL_DESC: &str = "Switch or view the current model";
 const SKILLS_DESC: &str = "List available agents and skills";
-const CLEAR_DESC: &str = "Clear the chat history";
+const CLEAR_DESC: &str = "Start a new session";
 const NEW_DESC: &str = "Start a new session";
 
 impl BuiltinCommand {
