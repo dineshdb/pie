@@ -49,25 +49,7 @@ fn load_providers_data() -> anyhow::Result<HashMap<String, ProviderBaseUrl>> {
 
 /// Load the PIE configuration from global and project-specific paths.
 pub fn load_config() -> anyhow::Result<PieConfig> {
-    let global_home = pie_home();
-    let global = global_home.join("pie.toml");
-    let secrets = global_home.join("secrets.toml");
-    let project_root = git_repo_root().map(PathBuf::from);
-    let project_pie = project_root
-        .as_ref()
-        .map(|root| root.join(".pie").join("pie.toml"));
-
-    let mut figment = Figment::new().merge(Toml::file_exact(global));
-    if secrets.exists() {
-        figment = figment.merge(Toml::file_exact(secrets));
-    }
-    if let Some(p) = project_pie.filter(|p| p.exists()) {
-        figment = figment.merge(Toml::file_exact(p));
-    }
-
-    let mut pie_config: PieConfig = figment
-        .extract()
-        .map_err(|e| anyhow::anyhow!("config parse error: {e}"))?;
+    let mut pie_config: PieConfig = load_toml_config(&["pie.toml", "secrets.toml"], false, true)?;
 
     for provider in pie_config.provider.values_mut() {
         if let Some(ref api_key) = provider.api_key {
@@ -81,25 +63,131 @@ pub fn load_config() -> anyhow::Result<PieConfig> {
     Ok(pie_config)
 }
 
-/// Load launch configurations from embedded and global paths.
-pub fn load_launch_config() -> anyhow::Result<HashMap<String, LaunchConfig>> {
+/// A generic helper to load TOML configuration from multiple sources.
+/// Sources are merged in order: Embedded -> Global -> Project.
+/// Filenames are merged in order within each source.
+pub fn load_toml_config<T>(
+    filenames: &[&str],
+    use_embedded: bool,
+    use_local: bool,
+) -> anyhow::Result<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let home = pie_home();
+    let project = if use_local {
+        git_repo_root().map(PathBuf::from)
+    } else {
+        None
+    };
+
+    load_toml_config_impl(filenames, use_embedded, &home, project.as_deref())
+}
+
+fn load_toml_config_impl<T>(
+    filenames: &[&str],
+    use_embedded: bool,
+    home_dir: &std::path::Path,
+    project_root: Option<&std::path::Path>,
+) -> anyhow::Result<T>
+where
+    T: serde::de::DeserializeOwned,
+{
     let mut figment = Figment::new();
 
     // 1. Embedded defaults
-    if let Some(file) = EMBEDDED_PIE_DIR.get_file("launch.toml") {
-        let content = file.contents_utf8().context("launch.toml is not UTF-8")?;
-        figment = figment.merge(Toml::string(content));
+    if use_embedded {
+        for filename in filenames {
+            if let Some(file) = EMBEDDED_PIE_DIR.get_file(filename) {
+                let content = file
+                    .contents_utf8()
+                    .context(format!("embedded {filename} is not UTF-8"))?;
+                figment = figment.merge(Toml::string(content));
+            }
+        }
     }
 
-    // 2. Global overrides
-    let global = pie_home().join("launch.toml");
-    if global.exists() {
-        figment = figment.merge(Toml::file_exact(global));
+    // 2. Global overrides (from home_dir, which is already ~/.pie in prod)
+    for filename in filenames {
+        let global = home_dir.join(filename);
+        if global.exists() {
+            figment = figment.merge(Toml::file_exact(global));
+        }
     }
 
-    let config: HashMap<String, LaunchConfig> = figment
+    // 3. Local (Project) overrides
+    if let Some(root) = project_root {
+        for filename in filenames {
+            let project_file = root.join(".pie").join(filename);
+            if project_file.exists() {
+                figment = figment.merge(Toml::file_exact(project_file));
+            }
+        }
+    }
+
+    figment
         .extract()
-        .map_err(|e| anyhow::anyhow!("launch config parse error: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to parse configuration: {e}"))
+}
 
-    Ok(config)
+/// Load launch configurations from embedded and global paths.
+pub fn load_launch_config() -> anyhow::Result<HashMap<String, LaunchConfig>> {
+    load_toml_config(&["launch.toml"], true, false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct TestConfig {
+        #[serde(default)]
+        key: String,
+        #[serde(default)]
+        secret: String,
+    }
+
+    #[test]
+    fn test_load_toml_config_merging() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let home = temp.path().join("home");
+        let project = temp.path().join("project");
+
+        fs::create_dir_all(&home)?;
+        fs::create_dir_all(project.join(".pie"))?;
+
+        // 1. Global config
+        fs::write(home.join("test.toml"), "key = 'global'")?;
+
+        // 2. Project config overrides global
+        fs::write(project.join(".pie").join("test.toml"), "key = 'project'")?;
+
+        // 3. Secrets merged if requested
+        fs::write(project.join(".pie").join("secrets.toml"), "secret = 'shh'")?;
+
+        let config: TestConfig =
+            load_toml_config_impl(&["test.toml", "secrets.toml"], false, &home, Some(&project))?;
+
+        assert_eq!(config.key, "project");
+        assert_eq!(config.secret, "shh");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_toml_config_global_only() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let home = temp.path().join("home");
+        fs::create_dir_all(&home)?;
+
+        fs::write(home.join("test.toml"), "key = 'global'")?;
+
+        let config: TestConfig = load_toml_config_impl(&["test.toml"], false, &home, None)?;
+
+        assert_eq!(config.key, "global");
+        Ok(())
+    }
 }
