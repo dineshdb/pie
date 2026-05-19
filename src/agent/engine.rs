@@ -6,20 +6,19 @@ use crate::instructions::Instructions;
 use crate::prompt::SystemPrompt;
 use crate::registry::Registry;
 use crate::session::{HistoryEntry, Session, ToolCall};
-use crate::skill::Skill;
 use crate::tools::plan::{PlanContext, plan_tools};
 use crate::tools::{
     execute_skill_script_tool, glob_tool, list_directory_tool, load_references_tool,
     load_skills_tool, read_file_tool, replace_tool, shell, subagent_tool, websearch,
     write_file_tool,
 };
+use agentsdk::core::history::HistoryStore;
 use agentsdk::core::retry::RetryAction;
 use agentsdk::core::tools::Tool;
 use agentsdk::error::AgentSdkError;
-use agentsdk::openai::api::ChatCompletionRequestUserMessageContent;
 use agentsdk::{
-    Agent as SdkAgent, AgentListener, CompletionAction, Extensions, Message, Messages,
-    PostToolAction, PreToolAction, ToolErrorAction, messages,
+    Agent as SdkAgent, AgentListener, CompletionAction, Extensions, Messages, PostToolAction,
+    PreToolAction, ToolErrorAction,
 };
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -28,14 +27,8 @@ use p1e_sandbox::SandboxConfig;
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::collections::HashSet;
-use std::fmt::Write;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
-
-pub enum CompletionVerdict {
-    Accepted(Option<String>),
-    Rejected(String),
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentEvent {
@@ -251,39 +244,6 @@ impl PieAgent {
         .await;
     }
 
-    pub async fn run_pre_completion_hooks(
-        &self,
-        output: &str,
-        output_mode: OutputMode,
-    ) -> Result<CompletionVerdict> {
-        let data = HookContextData::Prompt(PromptData {
-            system: None,
-            query: Some(output.to_string()),
-        });
-        let (outcomes, transformed_data) = self
-            .run_hook(HookEvent::PreCompletion, data, output_mode)
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!("completion.pre infrastructure failure: {e}");
-                (vec![], HookContextData::Prompt(PromptData::default()))
-            });
-
-        for outcome in &outcomes {
-            if let HookOutcome::Error { message, .. } = outcome {
-                return Ok(CompletionVerdict::Rejected(message.clone()));
-            }
-        }
-
-        if let HookContextData::Prompt(p) = transformed_data
-            && let Some(transformed) = p.query
-            && transformed != output
-        {
-            return Ok(CompletionVerdict::Accepted(Some(transformed)));
-        }
-
-        Ok(CompletionVerdict::Accepted(None))
-    }
-
     pub async fn run_post_completion_hooks(&self, output: &str, output_mode: OutputMode) {
         self.run_prompt_hook(
             HookEvent::PostCompletion,
@@ -315,109 +275,6 @@ impl PieAgent {
         }
 
         crate::tools::wrap_tools_with_hooks(tools, &self.session.id.to_string(), output_mode)
-    }
-
-    fn build_messages(&self, query: &Instructions) -> Vec<Message> {
-        let skill_messages = self.build_skill_messages(query);
-
-        if self.config.history_limit == 0 {
-            let mut msgs = skill_messages;
-            msgs.push(messages::user(&query.raw));
-            return msgs;
-        }
-
-        let mut messages = self.build_history_messages();
-
-        let already_has_query = messages.last().is_some_and(|m| {
-            if let Message::UserMessage(u) = m {
-                if let Some(ChatCompletionRequestUserMessageContent::String(ref s)) = u.content {
-                    s == &query.raw
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        });
-
-        messages.extend(skill_messages);
-
-        if !already_has_query {
-            messages.push(messages::user(&query.raw));
-        }
-
-        messages
-    }
-
-    fn build_skill_messages(&self, query: &Instructions) -> Vec<Message> {
-        let merged = self.merged_mentions(query);
-        let mentions: Vec<String> = merged.mentions.iter().cloned().collect();
-        let resolved = Skill::resolve(&self.registry.skills, &mentions);
-
-        if resolved.is_empty() {
-            return Vec::new();
-        }
-
-        {
-            let mut loaded = self
-                .loaded_skills
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            for skill in &resolved {
-                loaded.insert(skill.name.clone());
-            }
-        }
-
-        let mut content = String::new();
-        for skill in &resolved {
-            write!(
-                content,
-                "## Skill: {}\n{}\n---\n",
-                skill.name, skill.content
-            )
-            .ok();
-        }
-
-        let call_id = uuid::Uuid::now_v7();
-        let call_msg = messages::assistant_tool_call(
-            "load_skills",
-            call_id,
-            &serde_json::json!({ "skills": resolved.iter().map(|s| s.name.clone()).collect::<Vec<_>>() }),
-        );
-
-        vec![call_msg, messages::tool(content, call_id)]
-    }
-
-    fn build_history_messages(&self) -> Vec<Message> {
-        self.session
-            .history_entries()
-            .iter()
-            .rev()
-            .take(self.config.history_limit as usize)
-            .rev()
-            .flat_map(|entry| match entry {
-                HistoryEntry::User(c) => vec![messages::user(c)],
-                HistoryEntry::Assistant(c) => vec![messages::assistant(c)],
-                HistoryEntry::Tool(tc) => {
-                    let mut msgs = Vec::new();
-                    let call_id = tc.call_id.to_string();
-                    msgs.push(messages::assistant_tool_call(
-                        &tc.tool_name,
-                        &call_id,
-                        &tc.params.clone(),
-                    ));
-
-                    if let Some(res) = &tc.output {
-                        let content = match res {
-                            Ok(v) | Err(v) => v.to_string(),
-                        };
-                        msgs.push(messages::tool(content, &call_id));
-                    }
-                    msgs
-                }
-                HistoryEntry::System(c) => vec![messages::system(c)],
-            })
-            .collect()
     }
 
     pub fn run<'a>(&'a mut self, query_str: &'a str) -> BoxFuture<'a, Result<String>> {
@@ -498,84 +355,42 @@ impl PieAgent {
             self.run_post_prompt_hooks(&system, &query, output_mode)
                 .await;
 
-            let mut messages = self.build_messages(&Instructions::new(query.clone()));
+            let sdk_agent = self.build_sdk_agent(output_mode)?;
 
-            let mut retry_count = 0u32;
-            loop {
-                let sdk_agent = self.build_sdk_agent(messages.clone(), output_mode)?;
+            let mut handler = StreamHandler {
+                system_prompt: system.clone(),
+                event_tx: event_tx.clone(),
+                session: self.session.clone(),
+                api_error_count: 0,
+                rate_limit_count: 0,
+                retry: self.config.retry.clone(),
+                output_mode,
+            };
 
-                let mut handler = StreamHandler {
-                    system_prompt: system.clone(),
-                    event_tx: event_tx.clone(),
-                    session: self.session.clone(),
-                    api_error_count: 0,
-                    rate_limit_count: 0,
-                    retry: self.config.retry.clone(),
-                };
+            sdk_agent.run(&mut handler).await?;
+            self.session = handler.session;
+            self.session.rebuild_cache().await?;
 
-                let history = sdk_agent.run(&mut handler).await?;
+            let final_text = self
+                .session
+                .history_entries()
+                .iter()
+                .rev()
+                .find_map(|e| match e {
+                    HistoryEntry::Assistant(c) => Some(c.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default();
 
-                self.session = handler.session;
+            let _ = event_tx.send(AgentEvent::Done(final_text.clone()));
+            self.run_post_completion_hooks(&final_text, output_mode)
+                .await;
 
-                let final_text = history
-                    .iter()
-                    .rev()
-                    .find_map(|m| {
-                        if let Message::AssistantMessage(a) = m {
-                            a.content.clone()
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or_default();
-
-                match self
-                    .run_pre_completion_hooks(&final_text, output_mode)
-                    .await
-                {
-                    Ok(CompletionVerdict::Accepted(Some(transformed))) => {
-                        self.session.add_assistant(&transformed).await?;
-                        let _ = event_tx.send(AgentEvent::Done(transformed.clone()));
-                        self.run_post_completion_hooks(&transformed, output_mode)
-                            .await;
-                        return Ok(transformed);
-                    }
-                    Ok(CompletionVerdict::Accepted(None)) => {
-                        self.session.add_assistant(&final_text).await?;
-                        let _ = event_tx.send(AgentEvent::Done(final_text.clone()));
-                        self.run_post_completion_hooks(&final_text, output_mode)
-                            .await;
-                        return Ok(final_text);
-                    }
-                    Ok(CompletionVerdict::Rejected(reason)) => {
-                        retry_count += 1;
-                        tracing::warn!(
-                            retry = retry_count,
-                            reason = %reason,
-                            "completion rejected by pre-completion hook"
-                        );
-                        self.session.add_assistant(&final_text).await?;
-                        let correction = format!(
-                            "Your previous response was rejected:\n{reason}\n\nPlease fix and retry."
-                        );
-                        self.session.add_user(&correction).await?;
-                        let _ = event_tx.send(AgentEvent::Error(reason));
-                        messages = self.build_messages(&Instructions::new(query.clone()));
-                    }
-                    Err(e) => {
-                        tracing::warn!("completion.pre hook error: {}", e);
-                        self.session.add_assistant(&final_text).await?;
-                        let _ = event_tx.send(AgentEvent::Done(final_text.clone()));
-                        self.run_post_completion_hooks(&final_text, output_mode)
-                            .await;
-                        return Ok(final_text);
-                    }
-                }
-            }
+            Ok(final_text)
         })
     }
 
-    fn build_sdk_agent(&self, messages: Vec<Message>, output_mode: OutputMode) -> Result<SdkAgent> {
+    fn build_sdk_agent(&self, output_mode: OutputMode) -> Result<SdkAgent> {
         let tools = self.build_tools(output_mode)?;
 
         let mut extensions = Extensions::new();
@@ -593,7 +408,11 @@ impl PieAgent {
             .options(
                 agentsdk::AgentOptions::builder()
                     .max_iterations(self.config.max_steps as usize)
-                    .messages(Arc::new(messages))
+                    .history_store({
+                        let store: Arc<dyn HistoryStore> = Arc::new(self.session.clone());
+                        store
+                    })
+                    .session_id(self.session.id.to_string())
                     .extensions(extensions)
                     .tool_definitions(Arc::new(
                         tools.iter().map(|t| t.definition.clone()).collect(),
@@ -653,6 +472,7 @@ struct StreamHandler {
     api_error_count: u32,
     rate_limit_count: u32,
     retry: crate::config::RetryConfig,
+    output_mode: OutputMode,
 }
 
 #[async_trait]
@@ -771,7 +591,47 @@ impl AgentListener for StreamHandler {
         RetryAction::DoNotRetry
     }
 
-    async fn on_completion(&mut self, _text: String) -> CompletionAction {
-        CompletionAction::Accept(None)
+    async fn on_completion(&mut self, text: String) -> CompletionAction {
+        let Some(cfg) = CONFIG.get() else {
+            return CompletionAction::Accept(None);
+        };
+
+        let data = HookContextData::Prompt(PromptData {
+            system: None,
+            query: Some(text.clone()),
+        });
+        let ctx = HookContext::new(
+            HookEvent::PreCompletion,
+            std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                .to_string_lossy()
+                .to_string(),
+            self.session.id.to_string(),
+            self.output_mode,
+            data,
+        );
+
+        match cfg.plugins.run(HookEvent::PreCompletion, &ctx).await {
+            Ok((outcomes, HookContextData::Prompt(p))) => {
+                for outcome in &outcomes {
+                    if let HookOutcome::Error { message, .. } = outcome {
+                        return CompletionAction::Reject {
+                            reason: message.clone(),
+                        };
+                    }
+                }
+                if let Some(transformed) = p.query
+                    && transformed != text
+                {
+                    return CompletionAction::Accept(Some(transformed));
+                }
+                CompletionAction::Accept(None)
+            }
+            Err(e) => {
+                tracing::warn!("completion.pre hook error: {e}");
+                CompletionAction::Accept(None)
+            }
+            Ok(_) => CompletionAction::Accept(None),
+        }
     }
 }

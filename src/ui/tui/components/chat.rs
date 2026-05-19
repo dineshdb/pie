@@ -129,17 +129,39 @@ impl ChatComponent {
         }
     }
     pub fn finish_stream(&mut self, output: String) {
-        if let Some(idx) = self.response_idx {
-            if let Some(msg) = self.messages.get_mut(idx) {
-                msg.set_content(output);
-                msg.finalize_response();
-            }
-            let msg = self.messages.remove(idx);
-            self.messages.push(msg);
-            self.render_cache.shift_remove(idx);
+        if let Some(idx) = self.response_idx
+            && let Some(msg) = self.messages.get_mut(idx)
+        {
+            msg.set_content(output);
+            msg.finalize_response();
+            self.render_cache.invalidate(idx);
         }
         self.response_idx = None;
         self.cached_lines.clear();
+    }
+
+    pub fn reload_history(&mut self) {
+        let pool = self.pool.clone();
+        let sid = crate::session::SessionId::from(self.session_id.clone());
+        let result = crate::ui::tui::realm::run_sync(crate::session::Session::load(pool, sid));
+
+        if let Ok(session) = result {
+            let mut messages = vec![ChatMessage::system("Welcome to pie! Type ? for help.")];
+            for entry in session.history_entries() {
+                let msg = match entry.role() {
+                    crate::session::Role::User => ChatMessage::user(&entry.content()),
+                    crate::session::Role::Assistant => ChatMessage::assistant(&entry.content()),
+                    crate::session::Role::System => ChatMessage::system(&entry.content()),
+                    crate::session::Role::Tool => ChatMessage::tool(&entry.content()),
+                };
+                messages.push(msg);
+            }
+            self.messages = messages;
+            self.render_cache.clear();
+            self.response_idx = None;
+            self.cached_lines.clear();
+            self.chat_state.auto_scroll = true;
+        }
     }
 
     pub fn stream_error(&mut self, err: &str) {
@@ -343,18 +365,15 @@ impl ChatComponent {
                 self.update_response(s);
                 Msg::Redraw
             }
-            StreamEvent::Done(s) => {
-                self.finish_stream(s.clone());
-                Msg::StreamDone(s.clone())
-            }
+            StreamEvent::Done(s) => Msg::StreamDone(s.clone()),
             StreamEvent::Error(s) => {
                 if let ActiveDialog::ModelSelector(state) = &mut self.active_dialog {
                     state.is_loading = false;
                     state.error = Some(s.clone());
+                    Msg::Redraw
                 } else {
-                    self.stream_error(s);
+                    Msg::StreamError(s.clone())
                 }
-                Msg::Redraw
             }
             StreamEvent::ToolCall {
                 name,

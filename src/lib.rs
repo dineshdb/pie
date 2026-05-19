@@ -318,16 +318,16 @@ async fn run_single_shot(
     };
 
     let query = Instructions::new(full_query);
-    handler::handle_query(
+    handler::handle_query(handler::HandleParams {
         model,
-        &query,
+        query,
         session,
         format,
         sandbox_settings,
-        config.max_steps,
-        config.retry.clone(),
+        max_steps: config.max_steps,
+        retry: config.retry.clone(),
         registry,
-    )
+    })
     .await
 }
 

@@ -92,12 +92,19 @@ fn process_msg(
             }
         }
 
-        Msg::StreamDone(output) => {
+        Msg::StreamDone(_output) => {
             if let Some(chat) = chat_mut!(app) {
-                chat.finish_stream(output);
+                chat.reload_history();
             }
             let query = input.finish_stream();
             crate::ui::notify::turn_complete(query.as_deref());
+        }
+
+        Msg::StreamError(err) => {
+            if let Some(chat) = chat_mut!(app) {
+                chat.stream_error(&err);
+            }
+            let _ = input.finish_stream();
         }
 
         Msg::FetchModels(provider_name) => {

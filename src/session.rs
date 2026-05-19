@@ -1,4 +1,9 @@
 use crate::db::DbPool;
+use agentsdk::AgentSdkError;
+use agentsdk::core::history::HistoryStore;
+use agentsdk::core::messages::{self, Message, Messages};
+use agentsdk::openai::api::ChatCompletionRequestUserMessageContent;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use std::str::FromStr;
@@ -223,8 +228,15 @@ impl Session {
             .await
     }
 
+    #[allow(dead_code)]
     pub async fn add_assistant(&mut self, content: &str) -> anyhow::Result<()> {
         self.add_entry(HistoryEntry::Assistant(content.to_string()))
+            .await
+    }
+
+    #[allow(dead_code)]
+    pub async fn add_system(&mut self, content: &str) -> anyhow::Result<()> {
+        self.add_entry(HistoryEntry::System(content.to_string()))
             .await
     }
 
@@ -269,7 +281,7 @@ impl Session {
         Ok(existing.clone())
     }
 
-    async fn rebuild_cache(&mut self) -> anyhow::Result<()> {
+    pub async fn rebuild_cache(&mut self) -> anyhow::Result<()> {
         let sid = self.id.to_string();
         let rows = sqlx::query_as::<_, HistoryEntry>(
             "SELECT role, content FROM messages WHERE session_id = ? AND compacted = 0 ORDER BY id",
@@ -279,6 +291,117 @@ impl Session {
         .await?;
 
         self.cache = rows;
+        Ok(())
+    }
+
+    /// Convert this session's history entries into agentsdk `Message`s.
+    pub fn to_messages(&self) -> Messages {
+        self.cache
+            .iter()
+            .flat_map(|entry| match entry {
+                HistoryEntry::User(c) => vec![messages::user(c)],
+                HistoryEntry::Assistant(c) => vec![messages::assistant(c)],
+                HistoryEntry::Tool(tc) => {
+                    let mut msgs = Vec::new();
+                    let call_id = tc.call_id.to_string();
+                    msgs.push(messages::assistant_tool_call(
+                        &tc.tool_name,
+                        &call_id,
+                        &tc.params,
+                    ));
+                    if let Some(res) = &tc.output {
+                        let content = match res {
+                            Ok(v) | Err(v) => v.to_string(),
+                        };
+                        msgs.push(messages::tool(content, &call_id));
+                    }
+                    msgs
+                }
+                HistoryEntry::System(c) => vec![messages::system(c)],
+            })
+            .collect()
+    }
+}
+
+#[async_trait]
+impl HistoryStore for Session {
+    async fn load(&self, _id: &str) -> agentsdk::error::Result<Messages> {
+        Ok(self.to_messages())
+    }
+
+    async fn push(&self, id: &str, message: Message) -> agentsdk::error::Result<()> {
+        // Session is behind Arc<...> in practice, but HistoryStore requires &self.
+        // We use the pool directly to append.
+        let pool = self.pool.clone();
+        let role_str = match &message {
+            Message::SystemMessage(_) => "system",
+            Message::UserMessage(_) => "user",
+            Message::AssistantMessage(a) if a.tool_calls.is_some() => "tool",
+            Message::AssistantMessage(_) | Message::FunctionMessage(_) => "assistant",
+            Message::ToolMessage(_) => "tool",
+        };
+        let content = match &message {
+            Message::SystemMessage(s) => s.content.clone().unwrap_or_default(),
+            Message::UserMessage(u) => match &u.content {
+                Some(ChatCompletionRequestUserMessageContent::String(s)) => s.clone(),
+                _ => String::new(),
+            },
+            Message::AssistantMessage(a) => {
+                if a.tool_calls.is_some() {
+                    // Serialize tool call info for the tool HistoryEntry
+                    let tc = ToolCall {
+                        call_id: Uuid::parse_str(
+                            a.tool_calls
+                                .as_ref()
+                                .and_then(|calls| calls.first().map(|c| c.id.as_str()))
+                                .unwrap_or_default(),
+                        )
+                        .unwrap_or_else(|_| Uuid::now_v7()),
+                        tool_name: a
+                            .tool_calls
+                            .as_ref()
+                            .and_then(|calls| calls.first().map(|c| c.function.name.clone()))
+                            .unwrap_or_default(),
+                        params: a
+                            .tool_calls
+                            .as_ref()
+                            .and_then(|calls| {
+                                calls
+                                    .first()
+                                    .and_then(|c| serde_json::from_str(&c.function.arguments).ok())
+                            })
+                            .unwrap_or(serde_json::Value::Null),
+                        output: None,
+                    };
+                    serde_json::to_string(&tc).unwrap_or_default()
+                } else {
+                    a.content.clone().unwrap_or_default()
+                }
+            }
+            Message::ToolMessage(t) => t.content.clone().unwrap_or_default(),
+            Message::FunctionMessage(_) => String::new(),
+        };
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let ts = now_ms * 1000;
+        sqlx::query!(
+            "INSERT INTO messages (session_id, ts, role, content) VALUES (?, ?, ?, ?)",
+            id,
+            ts,
+            role_str,
+            content,
+        )
+        .execute(&*pool)
+        .await
+        .map_err(|e| AgentSdkError::IoError(std::io::Error::other(e.to_string())))?;
+
+        sqlx::query!(
+            "UPDATE sessions SET updated_at = unixepoch('subsec') * 1000 WHERE id = ?",
+            id,
+        )
+        .execute(&*pool)
+        .await
+        .map_err(|e| AgentSdkError::IoError(std::io::Error::other(e.to_string())))?;
+
         Ok(())
     }
 }

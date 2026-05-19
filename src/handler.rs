@@ -30,33 +30,35 @@ fn output_response(
     Ok(())
 }
 
-pub async fn handle_query(
-    model: agentsdk::OpenAI,
-    query: &Instructions,
-    session: Session,
-    format: OutputFormat,
-    sandbox_settings: Arc<SandboxConfig>,
-    max_steps: u32,
-    retry: RetryConfig,
-    registry: Arc<crate::registry::Registry>,
-) -> Result<()> {
+pub struct HandleParams {
+    pub model: agentsdk::OpenAI,
+    pub query: Instructions,
+    pub session: Session,
+    pub format: OutputFormat,
+    pub sandbox_settings: Arc<SandboxConfig>,
+    pub max_steps: u32,
+    pub retry: RetryConfig,
+    pub registry: Arc<crate::registry::Registry>,
+}
+
+pub async fn handle_query(params: HandleParams) -> Result<()> {
     let config = AgentConfig {
-        max_steps,
-        retry,
+        max_steps: params.max_steps,
+        retry: params.retry,
         ..AgentConfig::default()
     };
 
     let mut agent = PieAgent::new(
-        model.clone(),
-        registry,
-        sandbox_settings,
-        session.pool.clone(),
-        session,
+        params.model.clone(),
+        params.registry,
+        params.sandbox_settings,
+        params.session.pool.clone(),
+        params.session,
         config,
     );
 
     let session_id = agent.session.id.to_string();
-    let output = agent.run(&query.raw).await?;
-    output_response(&output, &session_id, format, &model)?;
+    let output = agent.run(&params.query.raw).await?;
+    output_response(&output, &session_id, params.format, &params.model)?;
     Ok(())
 }

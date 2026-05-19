@@ -34,6 +34,7 @@ pub async fn spawn_stream(
     ctx: StreamContext,
     query: String,
     event_tx: UnboundedSender<StreamEvent>,
+    mut abort_rx: mpsc::UnboundedReceiver<()>,
 ) {
     let session = match Session::load(ctx.pool.clone(), ctx.session_id).await {
         Ok(s) => s,
@@ -91,10 +92,15 @@ pub async fn spawn_stream(
         }
     });
 
-    if let Err(e) = agent
-        .stream(&query, OutputMode::Interactive, agent_tx)
-        .await
-    {
-        let _ = event_tx.send(StreamEvent::Error(e.to_string()));
+    tokio::select! {
+        res = agent.stream(&query, OutputMode::Interactive, agent_tx) => {
+            if let Err(e) = res {
+                let _ = event_tx.send(StreamEvent::Error(e.to_string()));
+            }
+        }
+        _ = abort_rx.recv() => {
+            tracing::info!("stream cancelled");
+            let _ = event_tx.send(StreamEvent::Error("Cancelled".to_string()));
+        }
     }
 }

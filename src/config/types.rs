@@ -190,21 +190,12 @@ pub struct GlobalAgentConfig {
     pub retry: RetryConfig,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct RetryConfig {
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
     #[serde(default)]
     pub api_error: ApiErrorConfig,
-}
-
-impl Default for RetryConfig {
-    fn default() -> Self {
-        Self {
-            rate_limit: RateLimitConfig::default(),
-            api_error: ApiErrorConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

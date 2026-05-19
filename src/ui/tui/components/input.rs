@@ -345,9 +345,11 @@ impl InputComponent {
 
     pub fn start_stream(&mut self, query: &str, tx: &mpsc::UnboundedSender<StreamEvent>) {
         self.last_query = Some(query.to_string());
+        let (abort_tx, abort_rx) = mpsc::unbounded_channel();
+        self.stream_abort = Some(abort_tx);
 
         let ctx = StreamContext::from(&*self);
-        tokio::spawn(spawn_stream(ctx, query.to_string(), tx.clone()));
+        tokio::spawn(spawn_stream(ctx, query.to_string(), tx.clone(), abort_rx));
     }
 
     pub fn take_abort_handle(&mut self) -> Option<mpsc::UnboundedSender<()>> {

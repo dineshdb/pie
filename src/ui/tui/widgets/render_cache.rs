@@ -105,12 +105,9 @@ impl MessageRenderCache {
         self.entries.drain(0..count);
     }
 
-    /// Remove the entry at `index`, shift subsequent entries down by one,
-    /// and append `None` at the end (for the moved message).
-    pub fn shift_remove(&mut self, index: usize) {
-        if index < self.entries.len() {
-            self.entries.remove(index);
-            self.entries.push(None);
+    pub fn invalidate(&mut self, index: usize) {
+        if let Some(entry) = self.entries.get_mut(index) {
+            *entry = None;
         }
     }
 }

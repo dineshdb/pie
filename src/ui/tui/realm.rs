@@ -32,6 +32,7 @@ pub enum Msg {
     CloseHelp,
 
     StreamDone(String),
+    StreamError(String),
 
     KeyboardToInput(KeyEvent),
 
