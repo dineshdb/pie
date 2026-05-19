@@ -11,6 +11,7 @@
 mod agent;
 mod cmd;
 mod config;
+mod cron;
 mod db;
 pub mod error;
 mod handler;
@@ -88,6 +89,35 @@ enum Commands {
         #[arg(short = 'S', long)]
         no_sandbox: bool,
     },
+    /// Manage cron jobs
+    Cron {
+        #[command(subcommand)]
+        command: CronCommand,
+    },
+}
+
+#[derive(clap::Subcommand, Clone)]
+enum CronCommand {
+    /// Add a new cron job
+    Add {
+        name: String,
+        #[arg(long)]
+        shell: Option<String>,
+        #[arg(long)]
+        prompt: Option<String>,
+        #[arg(long)]
+        cron: String,
+        #[arg(long)]
+        cwd: Option<String>,
+    },
+    /// List cron jobs
+    List,
+    /// Remove a cron job
+    Rm { id: String },
+    /// Show run history for a cron job
+    Runs { id: String },
+    /// Execute due cron jobs (one-shot)
+    Run,
 }
 
 impl Cli {
@@ -135,7 +165,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     let registry = Registry::load();
     if let Some(cmd) = cli.command {
-        return handle_command(cmd, config, &registry);
+        return handle_command(cmd, config, &registry, pool.clone()).await;
     }
 
     let session = resolve_session(pool.clone(), cli.resume).await?;
@@ -149,10 +179,11 @@ pub async fn run() -> anyhow::Result<()> {
     }
 }
 
-fn handle_command(
+async fn handle_command(
     cmd: Commands,
     config: &ResolvedConfig,
     registry: &Arc<Registry>,
+    pool: Arc<DbPool>,
 ) -> anyhow::Result<()> {
     match cmd {
         Commands::Status => {
@@ -169,6 +200,73 @@ fn handle_command(
             all_args,
             no_sandbox,
         } => handle_launch(config, &all_args, no_sandbox),
+        Commands::Cron { command } => handle_cron(command, pool, registry.clone()).await,
+    }
+}
+
+async fn handle_cron(
+    command: CronCommand,
+    pool: Arc<DbPool>,
+    registry: Arc<Registry>,
+) -> anyhow::Result<()> {
+    match command {
+        CronCommand::Add {
+            name,
+            shell,
+            prompt,
+            cron,
+            cwd,
+        } => {
+            let (job_type, payload) = match (shell, prompt) {
+                (Some(s), None) => (cron::JobType::Shell, s),
+                (None, Some(p)) => (cron::JobType::Prompt, p),
+                (Some(_), Some(_)) => anyhow::bail!("use either --shell or --prompt, not both"),
+                (None, None) => anyhow::bail!("use either --shell or --prompt"),
+            };
+            let cwd = cwd.unwrap_or_else(|| {
+                std::env::current_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            });
+
+            let job = cron::CronJob::insert(&pool, &name, &job_type, &payload, &cron, &cwd).await?;
+            tracing::info!("cron job added: {} (next run: {})", job.id, job.next_run_at);
+            Ok(())
+        }
+        CronCommand::List => {
+            let rows = cron::CronJob::list_all(&pool).await?;
+            if rows.is_empty() {
+                tracing::info!("no cron jobs");
+                return Ok(());
+            }
+            for job in &rows {
+                tracing::info!("{}  {}  {}  {}", job.id, job.name, job.job_type, job.cron);
+            }
+            Ok(())
+        }
+        CronCommand::Rm { id } => {
+            if !cron::CronJob::delete(&pool, &id).await? {
+                anyhow::bail!("cron job {id} not found");
+            }
+            tracing::info!("cron job {id} removed");
+            Ok(())
+        }
+        CronCommand::Runs { id } => {
+            let rows = cron::CronRun::find_recent_for_cron(&pool, &id).await?;
+            if rows.is_empty() {
+                tracing::info!("no runs for cron job {id}");
+                return Ok(());
+            }
+            for r in &rows {
+                let dur = r.finished_at.map_or(0, |f| f - r.started_at);
+                let code = r
+                    .exit_code
+                    .map_or_else(|| "-".to_string(), |c| c.to_string());
+                tracing::info!("{}  {}  {}  {code}  {dur}ms", r.id, r.session_id, r.status);
+            }
+            Ok(())
+        }
+        CronCommand::Run => cron::run_due_jobs(pool, registry).await,
     }
 }
 

@@ -3,7 +3,7 @@ use crate::error::{AppError, Result};
 use agentsdk::core::messages::{self, Message, Messages};
 use agentsdk::openai::api::ChatCompletionRequestUserMessageContent;
 use serde::{Deserialize, Serialize};
-use sqlx::Row;
+use sqlx::Row as _;
 use std::str::FromStr;
 use std::sync::Arc;
 use strum::{AsRefStr, EnumString, IntoStaticStr};
@@ -132,13 +132,27 @@ impl From<String> for SessionId {
 pub struct Session {
     pub id: SessionId,
     pub pool: Arc<DbPool>,
+    #[allow(dead_code)]
+    pub parent_id: Option<String>,
     cache: Vec<HistoryEntry>,
 }
 
 impl Session {
     pub async fn create(pool: Arc<DbPool>) -> Result<Self> {
+        Self::create_with_parent(pool, None).await
+    }
+
+    pub async fn create_with_parent(pool: Arc<DbPool>, parent_id: Option<&str>) -> Result<Self> {
         let id = SessionId::new();
-        Self::create_with_id(pool, id).await
+        let cwd = std::env::current_dir()?.to_string_lossy().to_string();
+        let id_str = id.to_string();
+        sqlx::query("INSERT OR IGNORE INTO sessions (id, cwd, parent_id) VALUES (?, ?, ?)")
+            .bind(&id_str)
+            .bind(&cwd)
+            .bind(parent_id)
+            .execute(&*pool)
+            .await?;
+        Self::load(pool, id).await
     }
 
     pub async fn create_with_id(pool: Arc<DbPool>, id: SessionId) -> Result<Self> {
@@ -156,16 +170,18 @@ impl Session {
 
     pub async fn load(pool: Arc<DbPool>, session_id: SessionId) -> Result<Self> {
         let sid = session_id.to_string();
-        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?)")
+        let row = sqlx::query("SELECT parent_id FROM sessions WHERE id = ?")
             .bind(&sid)
-            .fetch_one(&*pool)
+            .fetch_optional(&*pool)
             .await?;
-        if !exists {
+        let Some(row) = row else {
             return Err(AppError::NotFound(session_id.to_string()));
-        }
+        };
+        let parent_id: Option<String> = row.try_get("parent_id")?;
         let mut session = Self {
             id: session_id,
             pool,
+            parent_id,
             cache: Vec::new(),
         };
         session.rebuild_cache().await?;
@@ -232,7 +248,6 @@ impl Session {
             .await
     }
 
-    #[allow(dead_code)]
     pub async fn add_system(&mut self, content: &str) -> Result<()> {
         self.add_entry(HistoryEntry::System(content.to_string()))
             .await
