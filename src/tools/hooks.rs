@@ -6,12 +6,11 @@ use serde_json::Value;
 use std::sync::Arc;
 
 /// Helper to wrap all tools with hooks.
-#[allow(clippy::expect_used)]
 pub fn wrap_tools_with_hooks(
     tools: Vec<Tool>,
     session_id: &str,
     output_mode: OutputMode,
-) -> Vec<Tool> {
+) -> anyhow::Result<Vec<Tool>> {
     tools
         .into_iter()
         .map(|t| {
@@ -21,14 +20,13 @@ pub fn wrap_tools_with_hooks(
             let inner_tool = Arc::new(t);
             let sid = session_id.to_string();
 
-            Tool::builder()
+            Ok(Tool::builder()
                 .definition(
                     ToolDefinition::builder()
                         .name(&name)
                         .description(&description)
                         .input_schema(input_schema)
-                        .build()
-                        .expect("failed to build tool definition"),
+                        .build()?,
                 )
                 .execute(ToolExecute::from_async(move |ctx, params| {
                     let inner = inner_tool.clone();
@@ -90,8 +88,7 @@ pub fn wrap_tools_with_hooks(
                         result.map_err(|e| e.clone())
                     }
                 }))
-                .build()
-                .expect("failed to rebuild tool with hooks")
+                .build()?)
         })
         .collect()
 }

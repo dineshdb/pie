@@ -19,7 +19,7 @@ use agentsdk::{
     Agent as SdkAgent, AgentListener, CompletionAction, Extensions, Message, Messages,
     PostToolAction, PreToolAction, ToolErrorAction, messages,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 use p1e_sandbox::SandboxConfig;
@@ -291,22 +291,22 @@ impl PieAgent {
         .await;
     }
 
-    fn build_tools(&self, output_mode: OutputMode) -> Vec<Tool> {
+    fn build_tools(&self, output_mode: OutputMode) -> Result<Vec<Tool>> {
         let mut tools = vec![
-            read_file_tool(),
-            write_file_tool(),
-            replace_tool(),
-            list_directory_tool(),
-            glob_tool(),
-            shell(),
-            load_skills_tool(),
-            load_references_tool(),
-            execute_skill_script_tool(),
-            websearch(),
-            subagent_tool(),
+            read_file_tool()?,
+            write_file_tool()?,
+            replace_tool()?,
+            list_directory_tool()?,
+            glob_tool()?,
+            shell()?,
+            load_skills_tool()?,
+            load_references_tool()?,
+            execute_skill_script_tool()?,
+            websearch()?,
+            subagent_tool()?,
         ];
 
-        for tool in plan_tools() {
+        for tool in plan_tools()? {
             tools.push(tool);
         }
 
@@ -432,7 +432,43 @@ impl PieAgent {
         })
     }
 
-    #[allow(clippy::too_many_lines)]
+    async fn prepare_query_and_system(
+        &self,
+        query_str: &str,
+        output_mode: OutputMode,
+    ) -> Result<(String, String)> {
+        let mut current_query_raw = query_str.to_string();
+
+        if let Ok(Some(transformed)) = self
+            .run_user_query_post_hooks(&current_query_raw, output_mode)
+            .await
+        {
+            current_query_raw = transformed;
+        }
+
+        let mut query = current_query_raw.clone();
+        let mut system = String::new();
+        if let Ok((s, q)) = self
+            .run_pre_prompt_hooks(&system, &query, output_mode)
+            .await
+        {
+            if let Some(s) = s {
+                system = s;
+            }
+            if let Some(q) = q {
+                query = q;
+            }
+        }
+
+        if system.is_empty() {
+            system = self
+                .prepare_system_prompt(&Instructions::new(query.clone()))
+                .await?;
+        }
+
+        Ok((query, system))
+    }
+
     pub fn stream<'a>(
         &'a mut self,
         query_str: &'a str,
@@ -446,38 +482,13 @@ impl PieAgent {
                 && let Some(agent_name) = find_subsume_candidate(&query, &self.registry.agents)
                 && self.config.agent_name.as_ref() != Some(&agent_name)
             {
-                let mut subagent = self.spawn_subagent(Some(agent_name)).await;
+                let mut subagent = self.spawn_subagent(Some(agent_name)).await?;
                 return subagent.stream(query_str, output_mode, event_tx).await;
             }
 
-            let mut current_query_raw = query_str.to_string();
-
-            if let Ok(Some(transformed)) = self
-                .run_user_query_post_hooks(&current_query_raw, output_mode)
-                .await
-            {
-                current_query_raw = transformed;
-            }
-
-            let mut query = current_query_raw.clone();
-            let mut system = String::new();
-            if let Ok((s, q)) = self
-                .run_pre_prompt_hooks(&system, &query, output_mode)
-                .await
-            {
-                if let Some(s) = s {
-                    system = s;
-                }
-                if let Some(q) = q {
-                    query = q;
-                }
-            }
-
-            if system.is_empty() {
-                system = self
-                    .prepare_system_prompt(&Instructions::new(query.clone()))
-                    .await?;
-            }
+            let (query, system) = self
+                .prepare_query_and_system(query_str, output_mode)
+                .await?;
 
             self.session.add_user(&query).await?;
             self.run_post_prompt_hooks(&system, &query, output_mode)
@@ -558,7 +569,7 @@ impl PieAgent {
     }
 
     fn build_sdk_agent(&self, messages: Vec<Message>, output_mode: OutputMode) -> Result<SdkAgent> {
-        let tools = self.build_tools(output_mode);
+        let tools = self.build_tools(output_mode)?;
 
         let mut extensions = Extensions::new();
         extensions.insert(self.pool.clone());
@@ -592,7 +603,7 @@ impl PieAgent {
             .map_err(Into::into)
     }
 
-    pub async fn spawn_subagent(&self, agent_name: Option<String>) -> Self {
+    pub async fn spawn_subagent(&self, agent_name: Option<String>) -> Result<Self> {
         let tier = agent_name.as_ref().and_then(|name| {
             self.registry
                 .agents
@@ -610,20 +621,19 @@ impl PieAgent {
             crate::session::SessionId::new()
         };
 
-        #[allow(clippy::expect_used)]
         let sub_session = Session::create_with_id(self.pool.clone(), sub_id)
             .await
-            .expect("failed to create subagent session");
+            .context("failed to create subagent session")?;
         let config = AgentConfig::subagent(self.config.depth + 1, agent_name);
 
-        PieAgent::new(
+        Ok(PieAgent::new(
             model,
             self.registry.clone(),
             self.sandbox.clone(),
             self.pool.clone(),
             sub_session,
             config,
-        )
+        ))
     }
 }
 

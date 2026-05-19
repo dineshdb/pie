@@ -3,7 +3,6 @@ use tuirealm::ratatui::style::{Color, Modifier, Style};
 use tuirealm::ratatui::text::{Line, Span};
 
 /// Render a markdown string into ratatui [`Line`]s with styled spans.
-#[allow(clippy::too_many_lines)]
 pub fn render_markdown(text: &str, width: usize, base_color: Color) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let parser = Parser::new_ext(text, Options::empty());
@@ -101,6 +100,10 @@ pub fn render_markdown(text: &str, width: usize, base_color: Color) -> Vec<Line<
         lines.push(Line::from(current_spans));
     }
 
+    wrap_lines(lines, width)
+}
+
+fn wrap_lines(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
     let mut result = Vec::with_capacity(lines.len());
     for line in lines {
         if line.width() <= width {
@@ -113,7 +116,6 @@ pub fn render_markdown(text: &str, width: usize, base_color: Color) -> Vec<Line<
             }
         }
     }
-
     result
 }
 

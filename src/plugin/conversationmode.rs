@@ -47,10 +47,8 @@ impl Hook for ConversationModeHook {
     fn on<'a>(&'a self, context: &'a HookContext) -> BoxFuture<'a, Result<HookOutcome>> {
         let output_mode = context.output_mode;
         Box::pin(async move {
-            Ok(HookOutcome::system_transform(
-                self.name(),
-                output_mode.prompt(),
-            ))
+            let prompt = output_mode.prompt();
+            Ok(HookOutcome::system_transform(self.name(), &prompt))
         })
     }
 }

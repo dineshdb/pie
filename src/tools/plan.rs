@@ -150,16 +150,14 @@ pub struct PlanContext {
 }
 
 /// CRITICAL: Planning phase. Call this FIRST to define the plan steps.
-#[allow(clippy::unwrap_used)]
-pub fn plan_set_tool() -> Tool {
-    Tool::builder()
+pub fn plan_set_tool() -> anyhow::Result<Tool> {
+    Ok(Tool::builder()
         .definition(
             ToolDefinition::builder()
                 .name("plan_set")
                 .description("CRITICAL: Planning phase. Call this FIRST to define the plan steps")
                 .input_schema(schema_for!(PlanSetInput))
-                .build()
-                .unwrap(),
+                .build()?,
         )
         .execute(ToolExecute::from_async(|ctx, params| async move {
             let input: PlanSetInput = serde_json::from_value(params).map_err(|e| e.to_string())?;
@@ -180,21 +178,18 @@ pub fn plan_set_tool() -> Tool {
 
             Ok(json!({ "status": "ok" }))
         }))
-        .build()
-        .unwrap()
+        .build()?)
 }
 
 /// MANDATORY: Update a plan step status.
-#[allow(clippy::unwrap_used)]
-pub fn plan_step_update_tool() -> Tool {
-    Tool::builder()
+pub fn plan_step_update_tool() -> anyhow::Result<Tool> {
+    Ok(Tool::builder()
         .definition(
             ToolDefinition::builder()
                 .name("plan_step_update")
                 .description("MANDATORY: Update a plan step status")
                 .input_schema(schema_for!(PlanStepUpdateInput))
-                .build()
-                .unwrap(),
+                .build()?,
         )
         .execute(ToolExecute::from_async(|ctx, params| async move {
             let input: PlanStepUpdateInput =
@@ -218,12 +213,10 @@ pub fn plan_step_update_tool() -> Tool {
 
             Ok(json!({ "status": "ok" }))
         }))
-        .build()
-        .unwrap()
+        .build()?)
 }
 
 /// Build the plan-related tools.
-#[allow(clippy::unwrap_used)]
-pub fn plan_tools() -> Vec<Tool> {
-    vec![plan_set_tool(), plan_step_update_tool()]
+pub fn plan_tools() -> anyhow::Result<Vec<Tool>> {
+    Ok(vec![plan_set_tool()?, plan_step_update_tool()?])
 }

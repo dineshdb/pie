@@ -12,16 +12,14 @@ struct ShellInput {
 }
 
 /// Execute a system command, bash tools, clis, etc. Requires plan.
-#[allow(clippy::unwrap_used)]
-pub fn shell() -> Tool {
-    Tool::builder()
+pub fn shell() -> anyhow::Result<Tool> {
+    Ok(Tool::builder()
         .definition(
             ToolDefinition::builder()
                 .name("shell")
                 .description("Execute a system command, bash tools, clis, etcs")
                 .input_schema(schema_for!(ShellInput))
-                .build()
-                .unwrap(),
+                .build()?,
         )
         .execute(ToolExecute::from_async(|ctx, params| async move {
             let input: ShellInput = serde_json::from_value(params).map_err(|e| e.to_string())?;
@@ -46,6 +44,5 @@ pub fn shell() -> Tool {
             tracing::trace!(%result, "shell:");
             Ok(result)
         }))
-        .build()
-        .unwrap()
+        .build()?)
 }

@@ -38,7 +38,7 @@ impl Hook for KnownCommandsPromptHook {
                 String::new()
             };
 
-            Ok(HookOutcome::system_transform(self.name(), help))
+            Ok(HookOutcome::system_transform(self.name(), &help))
         })
     }
 }

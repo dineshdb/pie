@@ -33,17 +33,15 @@ struct ReadFileInput {
 }
 
 /// Read the content of a file.
-#[allow(clippy::unwrap_used)]
-pub fn read_file_tool() -> Tool {
+pub fn read_file_tool() -> anyhow::Result<Tool> {
     let schema = schemars::schema_for!(ReadFileInput);
-    Tool::builder()
+    Ok(Tool::builder()
         .definition(
             ToolDefinition::builder()
                 .name("read_file")
                 .description("Read the content of a file")
                 .input_schema(schema)
-                .build()
-                .unwrap(),
+                .build()?,
         )
         .execute(ToolExecute::from_sync(|_ctx, params| {
             let input: ReadFileInput = serde_json::from_value(params).map_err(|e| e.to_string())?;
@@ -73,8 +71,7 @@ pub fn read_file_tool() -> Tool {
                 "total_lines": lines.len()
             }))
         }))
-        .build()
-        .unwrap()
+        .build()?)
 }
 
 #[derive(JsonSchema, Deserialize, Serialize)]
@@ -86,16 +83,14 @@ struct WriteFileInput {
 }
 
 /// Write content to a file. Overwrites if it exists. Requires plan.
-#[allow(clippy::unwrap_used)]
-pub fn write_file_tool() -> Tool {
-    Tool::builder()
+pub fn write_file_tool() -> anyhow::Result<Tool> {
+    Ok(Tool::builder()
         .definition(
             ToolDefinition::builder()
                 .name("write_file")
                 .description("Write content to a file. Overwrites if it exists. Requires plan")
                 .input_schema(schema_for!(WriteFileInput))
-                .build()
-                .unwrap(),
+                .build()?,
         )
         .execute(ToolExecute::from_async(|_ctx, params| async move {
             let input: WriteFileInput =
@@ -113,8 +108,7 @@ pub fn write_file_tool() -> Tool {
                 .map_err(|e| format!("Failed to write file: {e}"))?;
             Ok(json!({ "status": "success", "path": input.path, "bytes": input.content.len() }))
         }))
-        .build()
-        .unwrap()
+        .build()?)
 }
 
 #[derive(JsonSchema, Deserialize, Serialize)]
@@ -128,16 +122,14 @@ struct ReplaceInput {
 }
 
 /// Search and replace a specific string in a file. Fails if `old_string` is not found or is ambiguous. Requires plan.
-#[allow(clippy::unwrap_used)]
-pub fn replace_tool() -> Tool {
-    Tool::builder()
+pub fn replace_tool() -> anyhow::Result<Tool> {
+    Ok(Tool::builder()
         .definition(
             ToolDefinition::builder()
                 .name("replace")
                 .description("Search and replace a specific string in a file. Fails if old_string is not found or is ambiguous.")
                 .input_schema(schema_for!(ReplaceInput))
-                .build()
-                .unwrap(),
+                .build()?,
         )
         .execute(ToolExecute::from_async(|_ctx, params| async move {
             let input: ReplaceInput = serde_json::from_value(params).map_err(|e| e.to_string())?;
@@ -162,8 +154,7 @@ pub fn replace_tool() -> Tool {
 
             Ok(json!({ "status": "success", "path": input.path }))
         }))
-        .build()
-        .unwrap()
+        .build()?)
 }
 
 #[derive(JsonSchema, Deserialize, Serialize)]
@@ -173,16 +164,14 @@ struct ListDirectoryInput {
 }
 
 /// List the names of files and subdirectories within a specified directory path.
-#[allow(clippy::unwrap_used)]
-pub fn list_directory_tool() -> Tool {
-    Tool::builder()
+pub fn list_directory_tool() -> anyhow::Result<Tool> {
+    Ok(Tool::builder()
         .definition(
             ToolDefinition::builder()
                 .name("list_directory")
                 .description("List the names of files and subdirectories within a specified path")
                 .input_schema(schema_for!(ListDirectoryInput))
-                .build()
-                .unwrap(),
+                .build()?,
         )
         .execute(ToolExecute::from_sync(|_ctx, params| {
             let input: ListDirectoryInput =
@@ -209,8 +198,7 @@ pub fn list_directory_tool() -> Tool {
 
             Ok(json!({ "path": input.path, "entries": result }))
         }))
-        .build()
-        .unwrap()
+        .build()?)
 }
 
 #[derive(JsonSchema, Deserialize, Serialize)]
@@ -220,16 +208,14 @@ struct GlobInput {
 }
 
 /// Find files matching a specific glob pattern.
-#[allow(clippy::unwrap_used)]
-pub fn glob_tool() -> Tool {
-    Tool::builder()
+pub fn glob_tool() -> anyhow::Result<Tool> {
+    Ok(Tool::builder()
         .definition(
             ToolDefinition::builder()
                 .name("glob")
                 .description("Find files matching a specific glob pattern")
                 .input_schema(schema_for!(GlobInput))
-                .build()
-                .unwrap(),
+                .build()?,
         )
         .execute(ToolExecute::from_sync(|_ctx, params| {
             let input: GlobInput = serde_json::from_value(params).map_err(|e| e.to_string())?;
@@ -245,6 +231,5 @@ pub fn glob_tool() -> Tool {
 
             Ok(json!({ "pattern": input.pattern, "matches": matches }))
         }))
-        .build()
-        .unwrap()
+        .build()?)
 }

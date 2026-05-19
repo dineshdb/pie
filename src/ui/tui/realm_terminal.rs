@@ -12,7 +12,7 @@ use crate::config::{PieConfig, ResolvedProvider, get_providers_data};
 use crate::provider::fetch_models;
 use crate::session::{Role, Session};
 use crate::ui::tui::command::{Command, CommandAction};
-use crate::ui::tui::components::chat::{ActiveDialog, ChatComponent};
+use crate::ui::tui::components::chat::{ActiveDialog, ChatComponent, ModelSelectorState};
 use crate::ui::tui::components::input::InputComponent;
 use crate::ui::tui::realm::{App, Id, Msg, StreamEvent, StreamPort, run_sync};
 use crate::ui::tui::state::ChatMessage;
@@ -236,14 +236,14 @@ fn handle_model_command(
             .unwrap_or(0);
 
         if let Some(chat) = chat_mut!(app) {
-            chat.active_dialog = ActiveDialog::ModelSelector {
+            chat.active_dialog = ActiveDialog::ModelSelector(ModelSelectorState {
                 providers: available_providers,
                 provider_idx,
                 models: Vec::new(),
                 selected_idx: None,
                 is_loading: true,
                 error: None,
-            };
+            });
         }
         let tx = tx.clone();
         tokio::spawn(async move {

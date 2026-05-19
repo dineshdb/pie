@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashSet;
 use std::fmt::Write;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::Mutex;
 
 #[derive(JsonSchema, Deserialize, Serialize)]
 struct LoadSkillsInput {
@@ -16,16 +17,14 @@ struct LoadSkillsInput {
 }
 
 /// Load one or more skills by name. Auto-resolves `needs` dependencies.
-#[allow(clippy::unwrap_used)]
-pub fn load_skills_tool() -> Tool {
-    Tool::builder()
+pub fn load_skills_tool() -> anyhow::Result<Tool> {
+    Ok(Tool::builder()
         .definition(
             ToolDefinition::builder()
                 .name("load_skills")
                 .description("Load one or more skills by name")
                 .input_schema(schema_for!(LoadSkillsInput))
-                .build()
-                .unwrap(),
+                .build()?,
         )
         .execute(ToolExecute::from_sync(|ctx, params| {
             let input: LoadSkillsInput =
@@ -63,8 +62,7 @@ pub fn load_skills_tool() -> Tool {
             }
             Ok(json!(output))
         }))
-        .build()
-        .unwrap()
+        .build()?)
 }
 
 #[derive(JsonSchema, Deserialize, Serialize)]
@@ -76,16 +74,14 @@ struct LoadReferencesInput {
 }
 
 /// Load reference files of a skill for extra knowledge.
-#[allow(clippy::unwrap_used)]
-pub fn load_references_tool() -> Tool {
-    Tool::builder()
+pub fn load_references_tool() -> anyhow::Result<Tool> {
+    Ok(Tool::builder()
         .definition(
             ToolDefinition::builder()
                 .name("load_references")
                 .description("Load reference files of a skill for extra knowledge")
                 .input_schema(schema_for!(LoadReferencesInput))
-                .build()
-                .unwrap(),
+                .build()?,
         )
         .execute(ToolExecute::from_sync(|ctx, params| {
             let input: LoadReferencesInput =
@@ -127,8 +123,7 @@ pub fn load_references_tool() -> Tool {
             }
             Ok(json!(output))
         }))
-        .build()
-        .unwrap()
+        .build()?)
 }
 
 #[derive(JsonSchema, Deserialize, Serialize)]
@@ -144,16 +139,14 @@ struct ExecuteSkillScriptInput {
 const SCRIPT_EXTENSIONS: &[&str] = &["sh", "bash", "py", "js", "ts", "rb", "pl"];
 
 /// Execute a script from a skill directory. Runs inside a sandbox with read access to the skill directory.
-#[allow(clippy::unwrap_used)]
-pub fn execute_skill_script_tool() -> Tool {
-    Tool::builder()
+pub fn execute_skill_script_tool() -> anyhow::Result<Tool> {
+    Ok(Tool::builder()
         .definition(
             ToolDefinition::builder()
                 .name("execute_skill_script")
                 .description("Execute a script from a skill directory")
                 .input_schema(schema_for!(ExecuteSkillScriptInput))
-                .build()
-                .unwrap(),
+                .build()?,
         )
         .execute(ToolExecute::from_sync(|ctx, params| {
             let input: ExecuteSkillScriptInput =
@@ -202,8 +195,7 @@ pub fn execute_skill_script_tool() -> Tool {
                 "stderr": out.stderr,
             }))
         }))
-        .build()
-        .unwrap()
+        .build()?)
 }
 
 /// Validate a filename: no path traversal, absolute paths, or hidden files; must match allowed extensions.

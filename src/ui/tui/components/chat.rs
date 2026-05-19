@@ -22,19 +22,20 @@ use tuirealm::state::State;
 const MAX_MESSAGES: usize = 1_000;
 
 #[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ModelSelectorState {
+    pub(crate) providers: Vec<String>,
+    pub(crate) provider_idx: usize,
+    pub(crate) models: Vec<String>,
+    pub(crate) selected_idx: Option<usize>,
+    pub(crate) is_loading: bool,
+    pub(crate) error: Option<String>,
+}
+
+#[derive(Debug, PartialEq)]
 pub enum ActiveDialog {
     None,
-    Help {
-        scroll_offset: u16,
-    },
-    ModelSelector {
-        providers: Vec<String>,
-        provider_idx: usize,
-        models: Vec<String>,
-        selected_idx: Option<usize>,
-        is_loading: bool,
-        error: Option<String>,
-    },
+    Help { scroll_offset: u16 },
+    ModelSelector(ModelSelectorState),
 }
 pub struct ChatComponent {
     pub messages: Vec<ChatMessage>,
@@ -218,26 +219,23 @@ impl Component for ChatComponent {
                     area,
                 );
             }
-            ActiveDialog::ModelSelector {
-                providers,
-                provider_idx,
-                models,
-                selected_idx,
-                is_loading,
-                error,
-            } => {
-                let provider_name = providers.get(*provider_idx).cloned().unwrap_or_default();
+            ActiveDialog::ModelSelector(state) => {
+                let provider_name = state
+                    .providers
+                    .get(state.provider_idx)
+                    .cloned()
+                    .unwrap_or_default();
                 let title = if provider_name.is_empty() {
                     "Select Model".to_string()
                 } else {
                     format!("Select Provider / Model ({provider_name})")
                 };
 
-                let current_model_idx = if *is_loading {
+                let current_model_idx = if state.is_loading {
                     None
                 } else {
                     let current = self.current_model.trim().to_lowercase();
-                    models.iter().position(|m| {
+                    state.models.iter().position(|m| {
                         let m_lower = m.trim().to_lowercase();
                         m_lower == current
                             || m_lower.ends_with(&format!("/{current}"))
@@ -249,13 +247,13 @@ impl Component for ChatComponent {
                     super::super::widgets::dialog::Dialog::new(
                         &title,
                         super::super::widgets::model_selector::ModelSelectorOverlay {
-                            providers,
-                            provider_idx: *provider_idx,
-                            models,
-                            selected_idx: *selected_idx,
+                            providers: &state.providers,
+                            provider_idx: state.provider_idx,
+                            models: &state.models,
+                            selected_idx: state.selected_idx,
                             current_model_idx,
-                            is_loading: *is_loading,
-                            error: error.as_deref(),
+                            is_loading: state.is_loading,
+                            error: state.error.as_deref(),
                         },
                     )
                     .with_size(80, 80),
@@ -350,12 +348,9 @@ impl ChatComponent {
                 Msg::StreamDone(s.clone())
             }
             StreamEvent::Error(s) => {
-                if let ActiveDialog::ModelSelector {
-                    is_loading, error, ..
-                } = &mut self.active_dialog
-                {
-                    *is_loading = false;
-                    *error = Some(s.clone());
+                if let ActiveDialog::ModelSelector(state) = &mut self.active_dialog {
+                    state.is_loading = false;
+                    state.error = Some(s.clone());
                 } else {
                     self.stream_error(s);
                 }
@@ -388,16 +383,11 @@ impl ChatComponent {
             }
             StreamEvent::ModelList(models) => {
                 tracing::info!(count = models.len(), "received ModelList in ChatComponent");
-                if let ActiveDialog::ModelSelector {
-                    providers,
-                    provider_idx,
-                    ..
-                } = &self.active_dialog
-                {
-                    tracing::info!(provider = %providers.get(*provider_idx).cloned().unwrap_or_default(), "updating ModelSelector state");
+                if let ActiveDialog::ModelSelector(state) = &self.active_dialog {
+                    tracing::info!(provider = %state.providers.get(state.provider_idx).cloned().unwrap_or_default(), "updating ModelSelector state");
                     let models = models.clone();
-                    let providers = providers.clone();
-                    let provider_idx = *provider_idx;
+                    let providers = state.providers.clone();
+                    let provider_idx = state.provider_idx;
 
                     // Match current_model flexibly
                     let current = self.current_model.trim().to_lowercase();
@@ -413,14 +403,14 @@ impl ChatComponent {
 
                     tracing::info!(selected = ?selected_idx, "selected index determined");
 
-                    self.active_dialog = ActiveDialog::ModelSelector {
+                    self.active_dialog = ActiveDialog::ModelSelector(ModelSelectorState {
                         providers,
                         provider_idx,
                         models,
                         selected_idx,
                         is_loading: false,
                         error: None,
-                    };
+                    });
                 } else {
                     tracing::warn!(dialog = ?self.active_dialog, "received ModelList but ModelSelector is not active");
                 }
@@ -438,28 +428,15 @@ impl ChatComponent {
                 let max_scroll = total_lines.saturating_sub(dialog_height);
                 Self::handle_help_keyboard_event(key, scroll_offset, max_scroll)
             }
-            ActiveDialog::ModelSelector {
-                providers,
-                provider_idx,
-                models,
-                selected_idx,
-                is_loading,
-                error,
-            } => Self::handle_model_selector_keyboard_event(
-                key,
-                providers,
-                provider_idx,
-                models,
-                selected_idx,
-                *is_loading,
-                error,
-            ),
+            ActiveDialog::ModelSelector(state) => {
+                Self::handle_model_selector_keyboard_event(key, state)
+            }
         };
 
         if let Some(m) = msg {
             if matches!(m, Msg::Redraw)
                 && (matches!(self.active_dialog, ActiveDialog::Help { .. })
-                    || matches!(self.active_dialog, ActiveDialog::ModelSelector { .. }))
+                    || matches!(self.active_dialog, ActiveDialog::ModelSelector(_)))
             {
                 // If it was a close command, handle it here
                 if let Key::Esc | Key::Char('?') = key.code {
@@ -525,65 +502,71 @@ impl ChatComponent {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn handle_model_selector_keyboard_event(
         key: &tuirealm::event::KeyEvent,
-        providers: &[String],
-        provider_idx: &mut usize,
-        models: &[String],
-        selected_idx: &mut Option<usize>,
-        is_loading: bool,
-        error: &mut Option<String>,
+        state: &mut ModelSelectorState,
     ) -> Option<Msg> {
         match (key.modifiers, &key.code) {
             (KeyModifiers::NONE, Key::Up) => {
-                if let Some(idx) = selected_idx
-                    && *idx > 0
+                if let Some(idx) = state.selected_idx
+                    && idx > 0
                 {
-                    *selected_idx = Some(*idx - 1);
+                    state.selected_idx = Some(idx - 1);
                 }
                 Some(Msg::Redraw)
             }
             (KeyModifiers::NONE, Key::Down) => {
-                if let Some(idx) = selected_idx
-                    && *idx + 1 < models.len()
+                if let Some(idx) = state.selected_idx
+                    && idx + 1 < state.models.len()
                 {
-                    *selected_idx = Some(*idx + 1);
+                    state.selected_idx = Some(idx + 1);
                 }
                 Some(Msg::Redraw)
             }
             (KeyModifiers::NONE, Key::Left) => {
-                if *provider_idx > 0 {
-                    *provider_idx -= 1;
-                    *selected_idx = None;
-                    *error = None;
-                    let provider_name = providers.get(*provider_idx).cloned().unwrap_or_default();
+                if state.provider_idx > 0 {
+                    state.provider_idx -= 1;
+                    state.selected_idx = None;
+                    state.error = None;
+                    let provider_name = state
+                        .providers
+                        .get(state.provider_idx)
+                        .cloned()
+                        .unwrap_or_default();
                     return Some(Msg::FetchModels(provider_name));
                 }
                 Some(Msg::Redraw)
             }
             (KeyModifiers::NONE, Key::Right) => {
-                if *provider_idx + 1 < providers.len() {
-                    *provider_idx += 1;
-                    *selected_idx = None;
-                    *error = None;
-                    let provider_name = providers.get(*provider_idx).cloned().unwrap_or_default();
+                if state.provider_idx + 1 < state.providers.len() {
+                    state.provider_idx += 1;
+                    state.selected_idx = None;
+                    state.error = None;
+                    let provider_name = state
+                        .providers
+                        .get(state.provider_idx)
+                        .cloned()
+                        .unwrap_or_default();
                     return Some(Msg::FetchModels(provider_name));
                 }
                 Some(Msg::Redraw)
             }
             (KeyModifiers::NONE, Key::Enter) => {
-                if let Some(idx) = selected_idx
-                    && let Some(model) = models.get(*idx)
+                if let Some(idx) = state.selected_idx
+                    && let Some(model) = state.models.get(idx)
                 {
                     let model = model.clone();
-                    let provider_name = providers.get(*provider_idx).cloned().unwrap_or_default();
+                    let provider_name = state
+                        .providers
+                        .get(state.provider_idx)
+                        .cloned()
+                        .unwrap_or_default();
                     return Some(Msg::SwitchProviderAndModel(provider_name, model));
                 }
                 None
             }
             (KeyModifiers::NONE, Key::Esc) => {
-                if !is_loading {
+                if !state.is_loading {
                     return Some(Msg::Redraw);
                 }
                 None

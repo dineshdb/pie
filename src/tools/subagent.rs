@@ -18,17 +18,15 @@ struct SubagentInput {
 }
 
 /// Delegate a goal to an subagent with detailed instructions.
-#[allow(clippy::unwrap_used)]
-pub fn subagent_tool() -> Tool {
+pub fn subagent_tool() -> anyhow::Result<Tool> {
     let schema = schemars::schema_for!(SubagentInput);
-    Tool::builder()
+    Ok(Tool::builder()
         .definition(
             ToolDefinition::builder()
                 .name("subagent")
                 .description("Delegate a goal to an subagent with detailed instructions")
                 .input_schema(schema)
-                .build()
-                .unwrap(),
+                .build()?,
         )
         .execute(ToolExecute::from_async(|ctx, params| async move {
             let input: SubagentInput = serde_json::from_value(params).map_err(|e| e.to_string())?;
@@ -86,6 +84,5 @@ pub fn subagent_tool() -> Tool {
             let res = agent.run(&input.query).await.map_err(|e| e.to_string())?;
             Ok(json!(res))
         }))
-        .build()
-        .unwrap()
+        .build()?)
 }

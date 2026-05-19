@@ -24,18 +24,16 @@ struct DdgrResult {
 }
 
 /// Search the web using `DuckDuckGo` (ddgr) and return results in Markdown format. Use for finding information not in the local context.
-#[allow(clippy::unwrap_used)]
-pub fn websearch() -> Tool {
+pub fn websearch() -> anyhow::Result<Tool> {
     let schema = schemars::schema_for!(WebsearchInput);
 
-    Tool::builder()
+    Ok(Tool::builder()
         .definition(
             ToolDefinition::builder()
                 .name("websearch")
                 .description("Search the web using DuckDuckGo (ddgr) and return results in Markdown format. Use for finding information not in the local context")
                 .input_schema(schema)
-                .build()
-                .unwrap(),
+                .build()?,
         )
         .execute(ToolExecute::from_async(|ctx, params| async move {
             let input: WebsearchInput = serde_json::from_value(params).map_err(|e| e.to_string())?;
@@ -90,6 +88,5 @@ pub fn websearch() -> Tool {
                 }
             }
         }))
-        .build()
-        .unwrap()
+        .build()?)
 }

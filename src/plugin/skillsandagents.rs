@@ -43,10 +43,8 @@ impl Hook for SkillsAndAgentsHook {
                 }
             }
 
-            Ok(HookOutcome::system_transform(
-                self.name(),
-                format!("{SKILLS_AND_AGENTS}\n{}", skills.join("\n")),
-            ))
+            let content = format!("{SKILLS_AND_AGENTS}\n{}", skills.join("\n"));
+            Ok(HookOutcome::system_transform(self.name(), &content))
         })
     }
 }
