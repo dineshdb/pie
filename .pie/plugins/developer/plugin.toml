@@ -43,14 +43,6 @@ handler = "developer.py diff-sentinel"
 matcher = { tools = ["write_file", "replace"] }
 
 [[hooks]]
-name = "doom-loop-detection"
-event = "tool.post"
-type = "cmd"
-handler = "developer.py doom-loop"
-scope = "transform"
-matcher = { tools = ["shell"] }
-
-[[hooks]]
 name = "error-enrichment"
 event = "tool.post"
 type = "cmd"

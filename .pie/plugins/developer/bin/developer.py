@@ -454,42 +454,6 @@ def cmd_diff_sentinel(args, data):
     print(json.dumps({"output": output}))
 
 
-def cmd_doom_loop(args, data):
-    tool = data.get("tool")
-    output = data.get("output", "")
-    session_id = os.environ.get("PIE_SESSION_ID", "default")
-    if tool in ["shell", "build_check"] and (
-        "Failure" in str(output) or "error" in str(output).lower()
-    ):
-        db = get_db()
-        if db:
-            cursor = db.cursor()
-            curr_hash = hashlib.md5(str(output).encode()).hexdigest()
-            cursor.execute(
-                "SELECT id FROM messages WHERE session_id = ? AND role = 'tool' ORDER BY ts DESC LIMIT 1",
-                (session_id,),
-            )
-            row = cursor.fetchone()
-            if row:
-                msg_id = row[0]
-                cursor.execute(
-                    "UPDATE messages SET fail_hash = ? WHERE id = ?",
-                    (curr_hash, msg_id),
-                )
-                cursor.execute(
-                    "SELECT count(*) FROM messages WHERE session_id = ? AND id < ? AND fail_hash = ?",
-                    (session_id, msg_id, curr_hash),
-                )
-                if cursor.fetchone()[0] > 0:
-                    print(
-                        f"### [Doom Loop Detected]\nIdentical failure to a previous turn. Re-evaluate strategy.",
-                        file=sys.stderr,
-                    )
-            db.commit()
-            db.close()
-    sys.exit(0)
-
-
 def cmd_diagnostic(args, data):
     tool = data.get("tool")
     output = data.get("output", "")
@@ -570,7 +534,6 @@ def main():
         "test-first": cmd_test_first,
         "build-check": cmd_build_check,
         "diff-sentinel": cmd_diff_sentinel,
-        "doom-loop": cmd_doom_loop,
         "diagnostic": cmd_diagnostic,
         "verify": cmd_verify,
     }
