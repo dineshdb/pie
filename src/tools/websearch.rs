@@ -45,13 +45,8 @@ pub fn websearch(sandbox: Arc<SandboxConfig>) -> anyhow::Result<Tool> {
 
                 let limit = input.limit.unwrap_or(5);
                 let limit = if limit == 0 { 5 } else { limit };
-                let escaped_query = input.query
-                    .replace('\\', "\\\\")
-                    .replace('"', "\\\"")
-                    .replace('$', "\\$")
-                    .replace('`', "\\`")
-                    .replace('!', "\\!");
-                let cmd = format!("ddgr --json -n {limit} \"{escaped_query}\"");
+                let quoted_query = shell_words::quote(&input.query);
+                let cmd = format!("ddgr --json -n {limit} {quoted_query}");
 
                 tracing::debug!(cmd = %cmd, "websearch:");
                 let output = p1e_sandbox::build_shell_command(&cmd, &sandbox)
