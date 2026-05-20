@@ -9,7 +9,7 @@ mod websearch;
 pub use filesystem::{
     glob_tool, list_directory_tool, read_file_tool, replace_tool, write_file_tool,
 };
-pub use hooks::wrap_tools_with_hooks;
+
 pub use shell::shell;
 pub use skills::{execute_skill_script_tool, load_references_tool, load_skills_tool};
 pub use subagent::subagent_tool;

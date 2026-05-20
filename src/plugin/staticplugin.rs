@@ -1,18 +1,7 @@
-use crate::{hook::Hook, plugin::Plugin};
-use std::sync::Arc;
+use crate::hook::CommandHook;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StaticPlugin {
     pub name: String,
-    pub hooks: Vec<Arc<dyn Hook>>,
-}
-
-impl Plugin for StaticPlugin {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn hooks(&self) -> &[Arc<dyn Hook>] {
-        &self.hooks
-    }
+    pub hooks: Vec<CommandHook>,
 }

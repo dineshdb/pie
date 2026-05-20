@@ -2,7 +2,7 @@ use super::loader::get_providers_data;
 use super::types::{PieConfig, ProviderBaseUrl, ProviderConfig, ProviderEndpoint};
 use crate::Cli;
 use crate::error::{AppError, Result};
-use crate::hook::{CommandHook, Hook};
+use crate::hook::CommandHook;
 use crate::plugin::StaticPlugin;
 use crate::utils::output::OutputFormat;
 use agentsdk::{ModelConfig, OpenAI};
@@ -28,7 +28,7 @@ pub struct ResolvedConfig {
     pub output_format: OutputFormat,
     pub log_level: String,
     pub debug: bool,
-    pub plugins: crate::hook::PluginManager,
+    pub plugins: Vec<StaticPlugin>,
     pub known_commands: HashMap<String, super::types::CliConfig>,
 }
 
@@ -292,22 +292,12 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
 
         // Wrap pie.toml hooks in a static plugin
         if !pie.hooks.is_empty() {
-            let hooks: Vec<Arc<dyn Hook>> = pie
-                .hooks
-                .into_iter()
-                .map(CommandHook::from)
-                .map(|h| {
-                    let h: Arc<dyn Hook> = Arc::new(h);
-                    h
-                })
-                .collect();
-            plugins.push(Arc::new(StaticPlugin {
+            let hooks: Vec<CommandHook> = pie.hooks.into_iter().map(CommandHook::from).collect();
+            plugins.push(StaticPlugin {
                 name: "config".to_string(),
                 hooks,
-            }));
+            });
         }
-
-        let hooks = crate::hook::PluginManager::new(plugins, pie.hooks_timeout_ms);
 
         let known_commands = load_cli_config()?;
         let retry = pie
@@ -323,7 +313,7 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
             output_format,
             log_level,
             debug: cli.debug,
-            plugins: hooks,
+            plugins,
             known_commands,
         })
     }

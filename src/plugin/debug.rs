@@ -14,8 +14,6 @@ use std::fmt::Write as _;
 
 #[derive(Debug)]
 pub struct DebugPlugin {
-    #[allow(dead_code)]
-    session_id: String,
     log_path: PathBuf,
 }
 
@@ -25,10 +23,7 @@ impl DebugPlugin {
         let _ = std::fs::create_dir_all(&debug_dir);
         let log_path = debug_dir.join("debug.md");
 
-        let this = Self {
-            session_id: session_id.to_string(),
-            log_path,
-        };
+        let this = Self { log_path };
 
         tracing::info!(session_id = %session_id, log_path = ?this.log_path, "Debug plugin initialized");
 

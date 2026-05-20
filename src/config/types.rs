@@ -150,7 +150,6 @@ pub struct PieConfig {
     pub log_level: Option<String>,
     #[serde(default)]
     pub hooks: Vec<crate::hook::HookDef>,
-    pub hooks_timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Hash)]

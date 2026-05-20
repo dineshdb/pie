@@ -1,6 +1,5 @@
-use crate::{agent::OutputMode, plugin::Plugin};
+use crate::agent::OutputMode;
 use anyhow::Result;
-use futures::future::{BoxFuture, join_all};
 use serde::{Deserialize, Serialize};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -60,28 +59,6 @@ pub enum HookEvent {
     PostCompletion,
 }
 
-/// Internal plugin that can listen for hooks and transform data.
-#[allow(clippy::unnecessary_literal_bound)]
-pub trait Hook: Send + Sync + std::fmt::Debug {
-    fn name(&self) -> &str;
-
-    fn event(&self) -> HookEvent;
-
-    fn strategy(&self) -> ExecutionStrategy {
-        ExecutionStrategy::Sequential
-    }
-
-    fn scope(&self) -> HookScope {
-        HookScope::Transform
-    }
-
-    fn matches(&self, _context: &HookContext) -> bool {
-        true
-    }
-
-    fn on<'a>(&'a self, context: &'a HookContext) -> BoxFuture<'a, Result<HookOutcome>>;
-}
-
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default, Display)]
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
@@ -139,7 +116,7 @@ impl std::fmt::Debug for HookMatcher {
 }
 
 /// Raw hook definition deserialized from TOML config.
-/// Cannot be executed directly — build a [`Hook`] via [`From<HookDef>`].
+/// Built into a [`CommandHook`] via [`From<HookDef>`].
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HookDef {
     pub name: String,
@@ -151,7 +128,6 @@ pub struct HookDef {
     pub matcher: Option<HookMatcher>,
     #[serde(default)]
     pub on_failure: OnFailure,
-    pub timeout_ms: Option<u64>,
     #[serde(default)]
     pub scope: HookScope,
     #[serde(default)]
@@ -169,17 +145,14 @@ struct CmdEnv {
     path_override: Option<std::ffi::OsString>,
 }
 
-/// Runtime hook with an pre-computed environment.
-/// Built from [`HookDef`] via [`From<HookDef>`].
+/// Runtime hook with a pre-computed environment.
 pub struct CommandHook {
     pub name: String,
     pub event: HookEvent,
     pub matcher: Option<HookMatcher>,
     pub on_failure: OnFailure,
-    pub timeout_ms: Option<u64>,
     pub scope: HookScope,
     pub strategy: ExecutionStrategy,
-    pub kind: HookType,
     cmd_env: CmdEnv,
 }
 
@@ -190,10 +163,8 @@ impl Clone for CommandHook {
             event: self.event,
             matcher: self.matcher.clone(),
             on_failure: self.on_failure,
-            timeout_ms: self.timeout_ms,
             scope: self.scope,
             strategy: self.strategy,
-            kind: self.kind,
             cmd_env: self.cmd_env.clone(),
         }
     }
@@ -209,14 +180,10 @@ impl std::fmt::Debug for CommandHook {
             s.field("matcher", m);
         }
         s.field("on_failure", &self.on_failure);
-        if let Some(t) = self.timeout_ms {
-            s.field("timeout_ms", &t);
-        }
         s.field("scope", &self.scope);
         if self.strategy != ExecutionStrategy::default() {
             s.field("strategy", &self.strategy);
         }
-        s.field("kind", &self.kind);
         s.finish_non_exhaustive()
     }
 }
@@ -231,33 +198,31 @@ impl From<HookDef> for CommandHook {
             event: def.event,
             matcher: def.matcher,
             on_failure: def.on_failure,
-            timeout_ms: def.timeout_ms,
             scope: def.scope,
             strategy: def.strategy,
-            kind: def.kind,
             cmd_env,
         }
     }
 }
 
-impl Hook for CommandHook {
-    fn name(&self) -> &str {
+impl CommandHook {
+    pub fn name(&self) -> &str {
         &self.name
     }
 
-    fn event(&self) -> HookEvent {
+    pub fn event(&self) -> HookEvent {
         self.event
     }
 
-    fn strategy(&self) -> ExecutionStrategy {
+    pub fn strategy(&self) -> ExecutionStrategy {
         self.strategy
     }
 
-    fn scope(&self) -> HookScope {
+    pub fn scope(&self) -> HookScope {
         self.scope
     }
 
-    fn matches(&self, context: &HookContext) -> bool {
+    pub fn matches(&self, context: &HookContext) -> bool {
         let Some(matcher) = &self.matcher else {
             return true;
         };
@@ -286,12 +251,10 @@ impl Hook for CommandHook {
         true
     }
 
-    fn on<'a>(&'a self, context: &'a HookContext) -> BoxFuture<'a, Result<HookOutcome>> {
-        Box::pin(self.execute_cmd(context))
+    pub async fn on(&self, context: &HookContext) -> Result<HookOutcome> {
+        self.execute_cmd(context).await
     }
-}
 
-impl CommandHook {
     fn build_cmd_env(def: &HookDef, plugin_dir: Option<&str>) -> CmdEnv {
         let mut env_vars = vec![(
             "PIE_DATABASE_PATH".to_string(),
@@ -465,7 +428,7 @@ impl HookContextData {
         matches!(self, HookContextData::Tool(_))
     }
 
-    fn merge(&mut self, delta_val: serde_json::Value) {
+    pub(crate) fn merge(&mut self, delta_val: serde_json::Value) {
         match self {
             HookContextData::Prompt(p) => {
                 if let Ok(delta) = serde_json::from_value::<PromptData>(delta_val) {
@@ -676,146 +639,6 @@ impl HookOutcome {
                     message.trim()
                 )
             }
-        }
-    }
-}
-
-// ── Manager ───────────────────────────────────────────────────────────
-
-const DEFAULT_HOOK_TIMEOUT_MS: u64 = 30_000;
-
-#[derive(Default)]
-pub struct PluginManager {
-    pub plugins: Vec<Arc<dyn Plugin>>,
-    pub timeout_ms: u64,
-}
-
-impl std::fmt::Debug for PluginManager {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut s = f.debug_struct("PluginManager");
-        s.field("plugins", &self.plugins);
-        if self.timeout_ms != DEFAULT_HOOK_TIMEOUT_MS {
-            s.field("timeout_ms", &self.timeout_ms);
-        }
-        s.finish()
-    }
-}
-
-impl PluginManager {
-    pub fn new(plugins: Vec<Arc<dyn Plugin>>, timeout_ms: Option<u64>) -> Self {
-        Self {
-            plugins,
-            timeout_ms: timeout_ms.unwrap_or(DEFAULT_HOOK_TIMEOUT_MS),
-        }
-    }
-
-    pub async fn run(
-        &self,
-        event: HookEvent,
-        context: &HookContext,
-    ) -> Result<(Vec<HookOutcome>, HookContextData)> {
-        let mut applicable_hooks = Vec::new();
-
-        for plugin in &self.plugins {
-            if !plugin.is_enabled(context) {
-                continue;
-            }
-
-            for hook in plugin.hooks() {
-                if hook.event() == event && hook.matches(context) {
-                    applicable_hooks.push(hook);
-                }
-            }
-        }
-
-        if applicable_hooks.is_empty() {
-            return Ok((Vec::new(), context.data.clone()));
-        }
-
-        let mut all_outcomes = Vec::new();
-        let mut current_data = context.data.clone();
-
-        let (validations, transforms): (Vec<_>, Vec<_>) = applicable_hooks
-            .into_iter()
-            .partition(|h| h.scope() == HookScope::Validation);
-
-        if !validations.is_empty() {
-            let futures: Vec<_> = validations.iter().map(|h| h.on(context)).collect();
-            let results = join_all(futures).await;
-            for result in results {
-                all_outcomes.push(result?);
-            }
-
-            if all_outcomes
-                .iter()
-                .any(|o| matches!(o, HookOutcome::Error { .. }))
-            {
-                return Ok((all_outcomes, current_data));
-            }
-        }
-
-        let mut i = 0;
-        while i < transforms.len() {
-            let strategy = transforms.get(i).map(|h| h.strategy()).unwrap_or_default();
-            if strategy == ExecutionStrategy::Sequential {
-                if let Some(hook) = transforms.get(i) {
-                    let transform_context =
-                        Self::build_transform_context(event, context, &current_data);
-                    let outcome = hook.on(&transform_context).await?;
-                    if let HookOutcome::Transformed { data, .. } = &outcome {
-                        current_data.merge(data.clone());
-                    }
-                    all_outcomes.push(outcome);
-                }
-                i += 1;
-            } else {
-                let mut batch = Vec::new();
-                while i < transforms.len()
-                    && transforms.get(i).map(|h| h.strategy()) == Some(ExecutionStrategy::Parallel)
-                {
-                    if let Some(hook) = transforms.get(i) {
-                        batch.push(hook);
-                    }
-                    i += 1;
-                }
-
-                let transform_context =
-                    Self::build_transform_context(event, context, &current_data);
-
-                let futures: Vec<_> = batch.iter().map(|h| h.on(&transform_context)).collect();
-                let results = join_all(futures).await;
-
-                for outcome_res in results {
-                    let outcome = outcome_res?;
-                    if let HookOutcome::Transformed { data, .. } = &outcome {
-                        current_data.merge(data.clone());
-                    }
-                    all_outcomes.push(outcome);
-                }
-            }
-
-            if all_outcomes
-                .iter()
-                .any(|o| matches!(o, HookOutcome::Error { .. }))
-            {
-                break;
-            }
-        }
-
-        Ok((all_outcomes, current_data))
-    }
-
-    fn build_transform_context(
-        event: HookEvent,
-        base_ctx: &HookContext,
-        current_data: &HookContextData,
-    ) -> HookContext {
-        HookContext {
-            event,
-            cwd: base_ctx.cwd.clone(),
-            session_id: base_ctx.session_id.clone(),
-            output_mode: base_ctx.output_mode,
-            data: current_data.clone(),
         }
     }
 }

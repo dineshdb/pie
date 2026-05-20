@@ -1,8 +1,9 @@
-use crate::agent::{OutputMode, find_subsume_candidate};
+use crate::agent::user_plugins::run_prompt_hook;
+use crate::agent::{OutputMode, UserPluginRunner, find_subsume_candidate};
 use crate::config::CONFIG;
 use crate::db::DbPool;
 use crate::error::{AppError, Result};
-use crate::hook::{HookContext, HookContextData, HookEvent, HookOutcome, PromptData};
+use crate::hook::HookEvent;
 use crate::instructions::Instructions;
 use crate::prompt::SystemPrompt;
 use crate::registry::Registry;
@@ -17,8 +18,8 @@ use agentsdk::core::retry::RetryAction;
 use agentsdk::core::tools::Tool;
 use agentsdk::error::AgentSdkError;
 use agentsdk::{
-    Agent as SdkAgent, AgentPlugin, CompletionAction, MemoryHistoryPlugin, Message, PluginContext,
-    PostToolAction, PreToolAction, ToolErrorAction,
+    Agent as SdkAgent, AgentPlugin, MemoryHistoryPlugin, Message, PluginContext, PostToolAction,
+    PreToolAction, ToolErrorAction,
 };
 use async_trait::async_trait;
 use futures::future::BoxFuture;
@@ -144,120 +145,7 @@ impl PieAgent {
         Ok(sp.render().await?)
     }
 
-    fn make_hook_ctx(
-        &self,
-        event: HookEvent,
-        data: HookContextData,
-        output_mode: OutputMode,
-    ) -> HookContext {
-        HookContext::new(
-            event,
-            std::env::current_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."))
-                .to_string_lossy()
-                .to_string(),
-            self.session.id.to_string(),
-            output_mode,
-            data,
-        )
-    }
-
-    async fn run_hook(
-        &self,
-        event: HookEvent,
-        data: HookContextData,
-        output_mode: OutputMode,
-    ) -> Result<(Vec<HookOutcome>, HookContextData)> {
-        let Some(cfg) = CONFIG.get() else {
-            return Ok((vec![], data));
-        };
-        let ctx = self.make_hook_ctx(event, data, output_mode);
-        cfg.plugins
-            .run(event, &ctx)
-            .await
-            .map_err(|e| AppError::Plugin(e.to_string()))
-    }
-
-    /// Run a prompt hook and extract (system, query) from the result.
-    async fn run_prompt_hook(
-        &self,
-        event: HookEvent,
-        system: Option<&str>,
-        query: Option<&str>,
-        output_mode: OutputMode,
-        warn_ctx: &str,
-    ) -> (Option<String>, Option<String>) {
-        let data = HookContextData::Prompt(PromptData {
-            system: system.map(String::from),
-            query: query.map(String::from),
-        });
-        match self.run_hook(event, data, output_mode).await {
-            Ok((_, HookContextData::Prompt(p))) => (p.system, p.query),
-            Ok(_) => (None, None),
-            Err(e) => {
-                tracing::warn!("{warn_ctx} infrastructure failure: {e}");
-                (None, None)
-            }
-        }
-    }
-
-    pub async fn run_user_query_post_hooks(
-        &self,
-        query: &str,
-        output_mode: OutputMode,
-    ) -> Result<Option<String>> {
-        Ok(self
-            .run_prompt_hook(
-                HookEvent::PostUserQuery,
-                None,
-                Some(query),
-                output_mode,
-                "user_query.post",
-            )
-            .await
-            .1)
-    }
-
-    pub async fn run_pre_prompt_hooks(
-        &self,
-        system: &str,
-        query: &str,
-        output_mode: OutputMode,
-    ) -> Result<(Option<String>, Option<String>)> {
-        Ok(self
-            .run_prompt_hook(
-                HookEvent::PrePrompt,
-                Some(system),
-                Some(query),
-                output_mode,
-                "prompt.pre",
-            )
-            .await)
-    }
-
-    pub async fn run_post_prompt_hooks(&self, system: &str, query: &str, output_mode: OutputMode) {
-        self.run_prompt_hook(
-            HookEvent::PostPrompt,
-            Some(system),
-            Some(query),
-            output_mode,
-            "prompt.post",
-        )
-        .await;
-    }
-
-    pub async fn run_post_completion_hooks(&self, output: &str, output_mode: OutputMode) {
-        self.run_prompt_hook(
-            HookEvent::PostCompletion,
-            None,
-            Some(output),
-            output_mode,
-            "completion.post",
-        )
-        .await;
-    }
-
-    fn build_tools(&self, output_mode: OutputMode) -> Result<Vec<Tool>> {
+    fn build_tools(&self, _output_mode: OutputMode) -> Result<Vec<Tool>> {
         let sandbox = self.sandbox.clone();
         let registry = self.registry.clone();
         let pool = self.pool.clone();
@@ -283,11 +171,7 @@ impl PieAgent {
             tools.push(tool);
         }
 
-        Ok(crate::tools::wrap_tools_with_hooks(
-            tools,
-            &session_id,
-            output_mode,
-        )?)
+        Ok(tools)
     }
 
     fn build_sdk_agent(&self, output_mode: OutputMode) -> Result<agentsdk::AgentBuilder> {
@@ -372,31 +256,49 @@ impl PieAgent {
     ) -> Result<(String, String)> {
         let mut current_query_raw = query_str.to_string();
 
-        if let Ok(Some(transformed)) = self
-            .run_user_query_post_hooks(&current_query_raw, output_mode)
-            .await
-        {
+        let Some(cfg) = CONFIG.get() else {
+            let query = current_query_raw.clone();
+            let system = self
+                .prepare_system_prompt(&Instructions::new(query.clone()))
+                .await?;
+            return Ok((query, system));
+        };
+        let sid = &self.session.id.to_string();
+
+        // PostUserQuery: transform the raw query
+        let (_, q) = run_prompt_hook(
+            &cfg.plugins,
+            HookEvent::PostUserQuery,
+            None,
+            Some(&current_query_raw),
+            sid,
+            output_mode,
+        )
+        .await;
+        if let Some(transformed) = q {
             current_query_raw = transformed;
         }
 
         let mut query = current_query_raw.clone();
-
-        // Always start with the default (embedded) system prompt
         let mut system = self
             .prepare_system_prompt(&Instructions::new(query.clone()))
             .await?;
 
-        // Allow pre-prompt hooks to transform or augment the system/query
-        if let Ok((s, q)) = self
-            .run_pre_prompt_hooks(&system, &query, output_mode)
-            .await
-        {
-            if let Some(s) = s {
-                system = s;
-            }
-            if let Some(q) = q {
-                query = q;
-            }
+        // PrePrompt: transform system + query
+        let (s, q) = run_prompt_hook(
+            &cfg.plugins,
+            HookEvent::PrePrompt,
+            Some(&system),
+            Some(&query),
+            sid,
+            output_mode,
+        )
+        .await;
+        if let Some(s) = s {
+            system = s;
+        }
+        if let Some(q) = q {
+            query = q;
         }
 
         Ok((query, system))
@@ -419,13 +321,31 @@ impl PieAgent {
                 return subagent.stream(query_str, output_mode, event_tx).await;
             }
 
-            let (query, system) = self
+            let (query, _system) = self
                 .prepare_query_and_system(query_str, output_mode)
                 .await?;
 
+            // The system prompt is re-derived by EmbeddedSystemPromptPlugin inside the agent.
+            // We still need it for the plugin registration below.
+            let system = self
+                .prepare_system_prompt(&Instructions::new(query.clone()))
+                .await?;
+
             self.session.add_user(&query).await?;
-            self.run_post_prompt_hooks(&system, &query, output_mode)
+
+            // PostPrompt: fire-and-forget after prompt sent
+            if let Some(cfg) = CONFIG.get() {
+                let sid = self.session.id.to_string();
+                run_prompt_hook(
+                    &cfg.plugins,
+                    HookEvent::PostPrompt,
+                    Some(&system),
+                    Some(&query),
+                    &sid,
+                    output_mode,
+                )
                 .await;
+            }
 
             let mut builder = self.build_sdk_agent(output_mode)?;
 
@@ -440,6 +360,12 @@ impl PieAgent {
             builder = builder.plugin(crate::plugin::KnownCommandsPlugin::new());
             builder = builder.plugin(crate::plugin::SkillsPlugin::new());
 
+            // Register the user plugin runner (handles PreCompletion, tool hooks, PostCompletion)
+            builder = builder.plugin(UserPluginRunner::new(
+                self.session.id.to_string(),
+                output_mode,
+            ));
+
             if AgentConfig::is_debug() {
                 builder = builder.plugin(crate::plugin::DebugPlugin::new(
                     &self.session.id.to_string(),
@@ -449,11 +375,9 @@ impl PieAgent {
 
             let stream_plugin = StreamPlugin {
                 event_tx: event_tx.clone(),
-                session_id: self.session.id.to_string(),
                 api_error_count: 0,
                 rate_limit_count: 0,
                 retry: self.config.retry.clone(),
-                output_mode,
             };
             builder = builder.plugin(stream_plugin);
 
@@ -475,8 +399,6 @@ impl PieAgent {
                 .unwrap_or_default();
 
             let _ = event_tx.send(AgentEvent::Done(final_text.clone()));
-            self.run_post_completion_hooks(&final_text, output_mode)
-                .await;
 
             Ok(final_text)
         })
@@ -518,11 +440,9 @@ impl PieAgent {
 
 struct StreamPlugin {
     event_tx: UnboundedSender<AgentEvent>,
-    session_id: String,
     api_error_count: u32,
     rate_limit_count: u32,
     retry: crate::config::RetryConfig,
-    output_mode: OutputMode,
 }
 
 #[async_trait]
@@ -629,49 +549,5 @@ impl AgentPlugin for StreamPlugin {
         }
 
         RetryAction::DoNotRetry
-    }
-
-    async fn on_completion(&mut self, _ctx: &PluginContext, text: String) -> CompletionAction {
-        let Some(cfg) = CONFIG.get() else {
-            return CompletionAction::Accept(None);
-        };
-
-        let data = HookContextData::Prompt(PromptData {
-            system: None,
-            query: Some(text.clone()),
-        });
-        let ctx = HookContext::new(
-            HookEvent::PreCompletion,
-            std::env::current_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."))
-                .to_string_lossy()
-                .to_string(),
-            self.session_id.clone(),
-            self.output_mode,
-            data,
-        );
-
-        match cfg.plugins.run(HookEvent::PreCompletion, &ctx).await {
-            Ok((outcomes, HookContextData::Prompt(p))) => {
-                for outcome in &outcomes {
-                    if let HookOutcome::Error { message, .. } = outcome {
-                        return CompletionAction::Reject {
-                            reason: message.clone(),
-                        };
-                    }
-                }
-                if let Some(transformed) = p.query
-                    && transformed != text
-                {
-                    return CompletionAction::Accept(Some(transformed));
-                }
-                CompletionAction::Accept(None)
-            }
-            Err(e) => {
-                tracing::warn!("completion.pre hook error: {e}");
-                CompletionAction::Accept(None)
-            }
-            Ok(_) => CompletionAction::Accept(None),
-        }
     }
 }

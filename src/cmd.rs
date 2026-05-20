@@ -92,12 +92,11 @@ pub fn handle_status(config: &ResolvedConfig, registry: &Arc<Registry>) {
     if config.output_format.is_json() {
         let plugins = config
             .plugins
-            .plugins
             .iter()
             .map(|p| PluginStatus {
-                name: p.name().to_string(),
+                name: p.name.clone(),
                 hooks: p
-                    .hooks()
+                    .hooks
                     .iter()
                     .map(|h| HookStatus {
                         name: h.name().to_string(),
@@ -137,11 +136,10 @@ pub fn handle_status(config: &ResolvedConfig, registry: &Arc<Registry>) {
     println!("Max Steps:   {}", config.max_steps);
 
     println!("\n--- Hooks Manager ---");
-    println!("Timeout: {}ms", config.plugins.timeout_ms);
-    println!("Plugins: {}", config.plugins.plugins.len());
-    for plugin in &config.plugins.plugins {
-        println!(" - Plugin: {}", plugin.name());
-        for hook in plugin.hooks() {
+    println!("Plugins: {}", config.plugins.len());
+    for plugin in &config.plugins {
+        println!(" - Plugin: {}", plugin.name);
+        for hook in &plugin.hooks {
             println!(
                 "   - {}: event={}, scope={:?}, strategy={:?}",
                 hook.name(),

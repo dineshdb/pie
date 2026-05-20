@@ -13,7 +13,7 @@ pub use skills::SkillsPlugin;
 pub use staticplugin::StaticPlugin;
 pub use system_prompts::{EmbeddedSystemPromptPlugin, SystemPromptsPlugin};
 
-use crate::hook::{CommandHook, Hook, HookContext};
+use crate::hook::CommandHook;
 use crate::registry::PluginMetadata;
 use crate::utils::git_repo_root;
 use figment::{
@@ -21,21 +21,10 @@ use figment::{
     providers::{Format, Toml},
 };
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
-
-#[allow(clippy::unnecessary_literal_bound)]
-pub trait Plugin: Send + Sync + std::fmt::Debug {
-    fn name(&self) -> &str;
-
-    fn is_enabled(&self, _context: &HookContext) -> bool {
-        true
-    }
-
-    fn hooks(&self) -> &[Arc<dyn Hook>];
-}
+use std::sync::OnceLock;
 
 struct ScanResult {
-    plugins: Vec<Arc<dyn Plugin>>,
+    plugins: Vec<StaticPlugin>,
     metadata: Vec<PluginMetadata>,
 }
 
@@ -43,7 +32,7 @@ static SCAN_CACHE: OnceLock<ScanResult> = OnceLock::new();
 
 /// Scan plugin directories (global + project-local) and return discovered plugins and metadata.
 /// Results are cached after the first call.
-pub fn scan_plugins() -> (Vec<Arc<dyn Plugin>>, Vec<PluginMetadata>) {
+pub fn scan_plugins() -> (Vec<StaticPlugin>, Vec<PluginMetadata>) {
     let result = SCAN_CACHE.get_or_init(scan_plugins_inner);
     (result.plugins.clone(), result.metadata.clone())
 }
@@ -91,7 +80,7 @@ fn parse_plugin_toml(content: &str) -> Option<crate::config::PieConfig> {
 }
 
 /// Load a plugin subdirectory with `plugin.toml`.
-fn scan_plugin_dir(path: &Path) -> Option<(Arc<dyn Plugin>, PluginMetadata)> {
+fn scan_plugin_dir(path: &Path) -> Option<(StaticPlugin, PluginMetadata)> {
     let plugin_toml = path.join("plugin.toml");
     if !plugin_toml.exists() {
         return None;
@@ -109,7 +98,7 @@ fn scan_plugin_dir(path: &Path) -> Option<(Arc<dyn Plugin>, PluginMetadata)> {
     }
 
     let plugin_dir_str = path.to_string_lossy().to_string();
-    let mut hooks: Vec<Arc<dyn Hook>> = Vec::new();
+    let mut hooks: Vec<CommandHook> = Vec::new();
 
     for mut hook_def in plugin_config.hooks {
         hook_def.plugin_dir = Some(plugin_dir_str.clone());
@@ -120,25 +109,25 @@ fn scan_plugin_dir(path: &Path) -> Option<(Arc<dyn Plugin>, PluginMetadata)> {
                 .unwrap_or_else(|_| path.join(&hook_def.handler));
             hook_def.handler = abs_handler.to_string_lossy().to_string();
         }
-        hooks.push(Arc::new(CommandHook::from(hook_def)));
+        hooks.push(CommandHook::from(hook_def));
     }
 
-    let plugin = Arc::new(StaticPlugin {
+    let plugin = StaticPlugin {
         name: meta.name.clone(),
         hooks,
-    });
+    };
 
     Some((plugin, meta))
 }
 
 /// Load hooks from a standalone `.toml` plugin file.
-fn scan_plugin_toml(path: &Path) -> Option<Arc<dyn Plugin>> {
+fn scan_plugin_toml(path: &Path) -> Option<StaticPlugin> {
     let content = std::fs::read_to_string(path).ok()?;
     let plugin_config = parse_plugin_toml(&content)?;
 
-    let mut hooks: Vec<Arc<dyn Hook>> = Vec::new();
+    let mut hooks: Vec<CommandHook> = Vec::new();
     for hook_def in plugin_config.hooks {
-        hooks.push(Arc::new(CommandHook::from(hook_def)));
+        hooks.push(CommandHook::from(hook_def));
     }
 
     let name = path
@@ -146,5 +135,5 @@ fn scan_plugin_toml(path: &Path) -> Option<Arc<dyn Plugin>> {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    Some(Arc::new(StaticPlugin { name, hooks }))
+    Some(StaticPlugin { name, hooks })
 }
