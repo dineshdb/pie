@@ -1,54 +1,30 @@
-use crate::{
-    hook::{ExecutionStrategy, Hook, HookContext, HookEvent, HookOutcome},
-    plugin::Plugin,
-};
-use anyhow::Result;
-use futures::future::BoxFuture;
-use std::sync::{Arc, LazyLock};
-
-static CONVERSATION_MODE_HOOKS: LazyLock<[Arc<dyn Hook>; 1]> =
-    LazyLock::new(|| [Arc::new(ConversationModeHook)]);
+use crate::agent::OutputMode;
+use agentsdk::{AgentPlugin, Messages, PluginContext};
+use async_trait::async_trait;
+use std::borrow::Cow;
 
 #[derive(Debug)]
-pub struct ConversationModePlugin;
+pub struct ConversationModePlugin {
+    output_mode: OutputMode,
+}
 
 impl ConversationModePlugin {
-    pub fn new() -> Self {
-        Self
+    pub fn new(output_mode: OutputMode) -> Self {
+        Self { output_mode }
     }
 }
 
-impl Plugin for ConversationModePlugin {
+#[async_trait]
+impl AgentPlugin for ConversationModePlugin {
     fn name(&self) -> &'static str {
-        "ConversationMode"
+        "conversation_mode"
     }
 
-    fn hooks(&self) -> &[Arc<dyn Hook>] {
-        CONVERSATION_MODE_HOOKS.as_slice()
-    }
-}
-
-#[derive(Debug)]
-pub struct ConversationModeHook;
-
-impl Hook for ConversationModeHook {
-    fn name(&self) -> &'static str {
-        "ConversationMode"
-    }
-
-    fn event(&self) -> HookEvent {
-        HookEvent::PrePrompt
-    }
-
-    fn strategy(&self) -> ExecutionStrategy {
-        ExecutionStrategy::Parallel
-    }
-
-    fn on<'a>(&'a self, context: &'a HookContext) -> BoxFuture<'a, Result<HookOutcome>> {
-        let output_mode = context.output_mode;
-        Box::pin(async move {
-            let prompt = output_mode.prompt();
-            Ok(HookOutcome::system_transform(self.name(), &prompt))
-        })
+    async fn prepare_system_prompt(
+        &mut self,
+        _ctx: &PluginContext,
+        _history: &Messages,
+    ) -> Option<Cow<'static, str>> {
+        Some(Cow::Owned(self.output_mode.prompt()))
     }
 }

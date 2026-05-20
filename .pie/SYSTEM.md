@@ -39,12 +39,3 @@ Every interaction follows a structured reasoning process:
 ```json
 {{ extra_context | tojson }}
 ```
----
-## Agent Role
-
-{% if agent_name is not none -%}
-You are a specialized agent running as **{{ agent_name }}**. 
-{{ agent_content }}
-{% else -%}
-You are a general agent who uses agents, skills and tools for.
-{% endif -%}

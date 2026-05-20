@@ -1,19 +1,21 @@
 mod conversationmode;
-mod knowncommands;
-mod memory;
-mod skillsandagents;
+mod debug;
+mod known_commands;
+mod skills;
 mod staticplugin;
+mod system_prompts;
 
 pub use crate::config::pie_home;
-pub use knowncommands::KnownCommandsPromptHook;
-pub use memory::AgentsMdHook;
-pub use skillsandagents::SkillsAndAgentsHook;
+pub use conversationmode::ConversationModePlugin;
+pub use debug::DebugPlugin;
+pub use known_commands::KnownCommandsPlugin;
+pub use skills::SkillsPlugin;
 pub use staticplugin::StaticPlugin;
+pub use system_prompts::{EmbeddedSystemPromptPlugin, SystemPromptsPlugin};
 
 use crate::hook::{CommandHook, Hook, HookContext};
 use crate::registry::PluginMetadata;
 use crate::utils::git_repo_root;
-pub use conversationmode::ConversationModePlugin;
 use figment::{
     Figment,
     providers::{Format, Toml},
@@ -97,7 +99,14 @@ fn scan_plugin_dir(path: &Path) -> Option<(Arc<dyn Plugin>, PluginMetadata)> {
 
     let content = std::fs::read_to_string(&plugin_toml).ok()?;
     let plugin_config = parse_plugin_toml(&content)?;
-    let meta = PluginMetadata::from_toml_str(&content).ok()?;
+    let mut meta = PluginMetadata::from_toml_str(&content).ok()?;
+
+    if meta.system_prompt.is_none() {
+        let system_md = path.join("SYSTEM.md");
+        if system_md.exists() {
+            meta.system_prompt = std::fs::read_to_string(system_md).ok();
+        }
+    }
 
     let plugin_dir_str = path.to_string_lossy().to_string();
     let mut hooks: Vec<Arc<dyn Hook>> = Vec::new();

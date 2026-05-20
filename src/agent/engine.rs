@@ -17,14 +17,13 @@ use agentsdk::core::retry::RetryAction;
 use agentsdk::core::tools::Tool;
 use agentsdk::error::AgentSdkError;
 use agentsdk::{
-    Agent as SdkAgent, AgentPlugin, CompletionAction, MemoryHistoryPlugin, Message, Messages,
-    PluginContext, PostToolAction, PreToolAction, ToolErrorAction,
+    Agent as SdkAgent, AgentPlugin, CompletionAction, MemoryHistoryPlugin, Message, PluginContext,
+    PostToolAction, PreToolAction, ToolErrorAction,
 };
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 use p1e_sandbox::SandboxConfig;
 use serde::Deserialize;
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
@@ -78,6 +77,10 @@ impl Default for AgentConfig {
 }
 
 impl AgentConfig {
+    pub fn is_debug() -> bool {
+        CONFIG.get().is_some_and(|c| c.debug)
+    }
+
     pub fn subagent(depth: u32, agent_name: Option<String>) -> Self {
         Self {
             agent_name,
@@ -377,7 +380,13 @@ impl PieAgent {
         }
 
         let mut query = current_query_raw.clone();
-        let mut system = String::new();
+
+        // Always start with the default (embedded) system prompt
+        let mut system = self
+            .prepare_system_prompt(&Instructions::new(query.clone()))
+            .await?;
+
+        // Allow pre-prompt hooks to transform or augment the system/query
         if let Ok((s, q)) = self
             .run_pre_prompt_hooks(&system, &query, output_mode)
             .await
@@ -388,12 +397,6 @@ impl PieAgent {
             if let Some(q) = q {
                 query = q;
             }
-        }
-
-        if system.is_empty() {
-            system = self
-                .prepare_system_prompt(&Instructions::new(query.clone()))
-                .await?;
         }
 
         Ok((query, system))
@@ -431,9 +434,20 @@ impl PieAgent {
                 history_plugin.push(msg).await;
             }
             builder = builder.plugin(history_plugin.clone());
+            builder = builder.plugin(crate::plugin::EmbeddedSystemPromptPlugin::new(&system));
+            builder = builder.plugin(crate::plugin::SystemPromptsPlugin::new());
+            builder = builder.plugin(crate::plugin::ConversationModePlugin::new(output_mode));
+            builder = builder.plugin(crate::plugin::KnownCommandsPlugin::new());
+            builder = builder.plugin(crate::plugin::SkillsPlugin::new());
+
+            if AgentConfig::is_debug() {
+                builder = builder.plugin(crate::plugin::DebugPlugin::new(
+                    &self.session.id.to_string(),
+                    &system,
+                ));
+            }
 
             let stream_plugin = StreamPlugin {
-                system_prompt: system.clone(),
                 event_tx: event_tx.clone(),
                 session_id: self.session.id.to_string(),
                 api_error_count: 0,
@@ -503,7 +517,6 @@ impl PieAgent {
 // ── Stream Plugin ──────────────────────────────────────────────────
 
 struct StreamPlugin {
-    system_prompt: String,
     event_tx: UnboundedSender<AgentEvent>,
     session_id: String,
     api_error_count: u32,
@@ -516,14 +529,6 @@ struct StreamPlugin {
 impl AgentPlugin for StreamPlugin {
     fn name(&self) -> &'static str {
         "stream"
-    }
-
-    async fn prepare_system_prompt(
-        &mut self,
-        _ctx: &PluginContext,
-        _history: &Messages,
-    ) -> Option<Cow<'static, str>> {
-        Some(Cow::Owned(self.system_prompt.clone()))
     }
 
     async fn on_text_delta(&mut self, _ctx: &PluginContext, text: &str) {

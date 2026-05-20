@@ -3,7 +3,7 @@ use super::types::{PieConfig, ProviderBaseUrl, ProviderConfig, ProviderEndpoint}
 use crate::Cli;
 use crate::error::{AppError, Result};
 use crate::hook::{CommandHook, Hook};
-use crate::plugin::{AgentsMdHook, KnownCommandsPromptHook, SkillsAndAgentsHook, StaticPlugin};
+use crate::plugin::StaticPlugin;
 use crate::utils::output::OutputFormat;
 use agentsdk::{ModelConfig, OpenAI};
 use itertools::Itertools;
@@ -307,16 +307,6 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
             }));
         }
 
-        plugins.push(Arc::new(StaticPlugin {
-            name: "builtin".to_string(),
-            hooks: vec![
-                Arc::new(KnownCommandsPromptHook::new()),
-                Arc::new(SkillsAndAgentsHook::new()),
-                Arc::new(AgentsMdHook::new()),
-            ],
-        }));
-
-        plugins.push(Arc::new(crate::plugin::ConversationModePlugin::new()));
         let hooks = crate::hook::PluginManager::new(plugins, pie.hooks_timeout_ms);
 
         let known_commands = load_cli_config()?;

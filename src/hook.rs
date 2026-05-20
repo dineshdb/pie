@@ -424,14 +424,15 @@ impl PromptData {
     pub fn merge(&mut self, delta: Self) {
         if let Some(delta_sys) = delta.system {
             let mut current_sys = self.system.take().unwrap_or_default();
-            if !current_sys.is_empty()
-                && !current_sys.ends_with('\n')
-                && !delta_sys.starts_with('\n')
-            {
-                current_sys.push('\n');
+            if current_sys.is_empty() {
+                self.system = Some(delta_sys);
+            } else {
+                if !current_sys.ends_with('\n') {
+                    current_sys.push('\n');
+                }
+                current_sys.push_str(&delta_sys);
+                self.system = Some(current_sys);
             }
-            current_sys.push_str(&delta_sys);
-            self.system = Some(current_sys);
         }
         if let Some(delta_query) = delta.query {
             self.query = Some(delta_query);
@@ -535,15 +536,6 @@ pub enum HookOutcome {
         name: String,
         data: serde_json::Value,
     },
-}
-
-impl HookOutcome {
-    pub fn system_transform(name: &str, system: &str) -> Self {
-        Self::Transformed {
-            name: name.to_string(),
-            data: serde_json::json!({ "system": system }),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
