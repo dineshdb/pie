@@ -322,6 +322,46 @@ impl PieAgent {
         })
     }
 
+    pub fn run_json<'a>(
+        &'a mut self,
+        query_str: &'a str,
+        schema: serde_json::Value,
+    ) -> BoxFuture<'a, Result<serde_json::Value>> {
+        Box::pin(async move {
+            let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+
+            let query = if let Some(ref name) = self.config.agent_name
+                && !query_str.contains(name)
+            {
+                format!("{name} {query_str}")
+            } else {
+                query_str.to_string()
+            };
+
+            let _ = self.stream(&query, OutputMode::Json, event_tx).await?;
+
+            let mut history = self.session.to_messages();
+
+            // Explicitly prompt the LLM to format its response as JSON based on the tools output.
+            history.push(agentsdk::core::messages::user(
+                "Based on the execution and gathered information, please output the final result strictly as JSON matching the requested schema."
+            ));
+
+            let options = agentsdk::AgentOptions::builder()
+                .max_iterations(self.config.max_steps as usize)
+                .build()
+                .map_err(|e| AppError::Config(e.to_string()))?;
+
+            let result = self
+                .model
+                .get_json(&options, &history, &schema)
+                .await
+                .map_err(|e| AppError::Api(Box::new(e)))?;
+
+            Ok(result)
+        })
+    }
+
     async fn prepare_query_and_system(
         &self,
         query_str: &str,

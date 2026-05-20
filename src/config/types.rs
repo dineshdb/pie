@@ -171,7 +171,7 @@ pub struct ModelTier {
 impl PieConfig {
     pub fn output_format(&self) -> OutputFormat {
         match self.output_format.as_deref() {
-            Some("json") => OutputFormat::Json,
+            Some("json") => OutputFormat::Json(None),
             Some("markdown" | "md") => OutputFormat::Markdown,
             _ => OutputFormat::Default,
         }

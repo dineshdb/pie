@@ -1,14 +1,12 @@
 mod conversationmode;
 mod knowncommands;
 mod memory;
-mod queryrefinement;
 mod skillsandagents;
 mod staticplugin;
 
 pub use crate::config::pie_home;
 pub use knowncommands::KnownCommandsPromptHook;
 pub use memory::AgentsMdHook;
-pub use queryrefinement::QueryRefinementPlugin;
 pub use skillsandagents::SkillsAndAgentsHook;
 pub use staticplugin::StaticPlugin;
 

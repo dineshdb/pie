@@ -89,7 +89,7 @@ struct HookStatus {
 }
 
 pub fn handle_status(config: &ResolvedConfig, registry: &Arc<Registry>) {
-    if config.output_format == OutputFormat::Json {
+    if config.output_format.is_json() {
         let plugins = config
             .plugins
             .plugins
@@ -112,7 +112,7 @@ pub fn handle_status(config: &ResolvedConfig, registry: &Arc<Registry>) {
         let status = StatusOutput {
             provider: &config.provider,
             log_level: &config.log_level,
-            output_format: config.output_format,
+            output_format: config.output_format.clone(),
             max_steps: config.max_steps,
             plugins,
             skills: registry.skills.iter().map(|s| s.name.clone()).collect(),
@@ -181,7 +181,7 @@ struct SkillInfo {
 }
 
 pub fn handle_skills(config: &ResolvedConfig, registry: &Arc<Registry>) {
-    if config.output_format == OutputFormat::Json {
+    if config.output_format.is_json() {
         let output = SkillsOutput {
             skills: registry
                 .skills

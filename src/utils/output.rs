@@ -1,34 +1,38 @@
 use serde::{Deserialize, Serialize};
 
 /// Output format requested by the user.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OutputFormat {
     #[default]
     Default,
     Markdown,
-    Json,
+    Json(Option<String>),
 }
 
 impl OutputFormat {
-    pub fn is_json(self) -> bool {
-        self == Self::Json
+    pub fn is_json(&self) -> bool {
+        matches!(self, Self::Json(_))
     }
 
-    pub fn is_explicit(self) -> bool {
-        matches!(self, Self::Markdown | Self::Json)
+    pub fn is_explicit(&self) -> bool {
+        matches!(self, Self::Markdown | Self::Json(_))
     }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct JsonResponse {
-    pub response: String,
+    pub response: serde_json::Value,
     pub session_id: Option<String>,
     pub model_used: Option<String>,
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
 impl JsonResponse {
-    pub fn new(response: String, session_id: Option<String>, model_used: Option<String>) -> Self {
+    pub fn new(
+        response: serde_json::Value,
+        session_id: Option<String>,
+        model_used: Option<String>,
+    ) -> Self {
         Self {
             response,
             session_id,
@@ -46,6 +50,7 @@ mod tests {
     fn is_explicit_only_true_for_markdown_and_json() {
         assert!(!OutputFormat::Default.is_explicit());
         assert!(OutputFormat::Markdown.is_explicit());
-        assert!(OutputFormat::Json.is_explicit());
+        assert!(OutputFormat::Json(None).is_explicit());
+        assert!(OutputFormat::Json(Some("{}".to_string())).is_explicit());
     }
 }

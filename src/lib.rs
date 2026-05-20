@@ -54,9 +54,9 @@ struct Cli {
     #[arg(short, long, global = true)]
     debug: bool,
 
-    /// Output response in JSON format
+    /// Output response in JSON format. Provide a valid JSON schema (inline or file path).
     #[arg(long, global = true)]
-    json: bool,
+    json: Option<String>,
 
     /// Output response in Markdown format
     #[arg(long, global = true)]
@@ -122,8 +122,8 @@ enum CronCommand {
 
 impl Cli {
     pub fn output_format(&self) -> OutputFormat {
-        match (self.json, self.md) {
-            (true, _) => OutputFormat::Json,
+        match (self.json.is_some(), self.md) {
+            (true, _) => OutputFormat::Json(self.json.clone().filter(|s| !s.is_empty())),
             (false, true) => OutputFormat::Markdown,
             _ => OutputFormat::Default,
         }

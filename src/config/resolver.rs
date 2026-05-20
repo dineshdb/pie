@@ -313,7 +313,6 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
                 Arc::new(KnownCommandsPromptHook::new()),
                 Arc::new(SkillsAndAgentsHook::new()),
                 Arc::new(AgentsMdHook::new()),
-                Arc::new(crate::plugin::QueryRefinementPlugin::new()),
             ],
         }));
 
