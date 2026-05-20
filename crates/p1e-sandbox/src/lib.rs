@@ -13,6 +13,8 @@ pub struct SandboxConfig {
     pub deny_write: Vec<String>,
     pub allowed_domains: Vec<String>,
     pub denied_domains: Vec<String>,
+    pub allowed_bins: Vec<String>,
+    pub disallowed_bins: Vec<String>,
 }
 
 impl Default for SandboxConfig {
@@ -51,11 +53,133 @@ impl Default for SandboxConfig {
                 "files.pythonhosted.org".into(),
             ],
             denied_domains: vec![],
+            allowed_bins: vec![],
+            disallowed_bins: vec!["sudo".into(), "su".into()],
         }
     }
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SecurityMode {
+    #[default]
+    Guard,
+    Isolation,
+}
+
+impl std::fmt::Display for SecurityMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SecurityMode::Guard => write!(f, "Guard"),
+            SecurityMode::Isolation => write!(f, "Isolation"),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct SecurityReport {
+    pub is_safe: bool,
+    pub errors: Vec<String>,
+    pub mode: SecurityMode,
+}
+
 impl SandboxConfig {
+    /// Comprehensive security check for a command string.
+    pub fn check_command_safety(&self, cmd: &str) -> SecurityReport {
+        let mode = if self.allowed_bins.is_empty() {
+            SecurityMode::Guard
+        } else {
+            SecurityMode::Isolation
+        };
+
+        let mut report = SecurityReport {
+            is_safe: true,
+            errors: Vec::new(),
+            mode,
+        };
+
+        let words = match shell_words::split(cmd) {
+            Ok(w) => w,
+            Err(e) => {
+                report.is_safe = false;
+                report.errors.push(format!("Failed to parse command: {e}"));
+                return report;
+            }
+        };
+
+        let indirection_operators = ["|", ">", ">>", "<", "&>", "2>", "1>"];
+        let mut next_is_cmd = true;
+
+        for word in words {
+            if indirection_operators.contains(&word.as_str()) {
+                next_is_cmd = true;
+                continue;
+            }
+
+            if next_is_cmd {
+                let is_disallowed = self.disallowed_bins.iter().any(|disallowed| {
+                    &word == disallowed || word.ends_with(&format!("/{}", disallowed))
+                });
+                if is_disallowed {
+                    report.is_safe = false;
+                    report
+                        .errors
+                        .push(format!("Binary is explicitly disallowed: {word}"));
+                }
+
+                match report.mode {
+                    SecurityMode::Isolation => {
+                        // Isolation Mode: Must be in allowed_bins
+                        let is_allowed = self.allowed_bins.iter().any(|allowed| {
+                            &word == allowed || word.ends_with(&format!("/{}", allowed))
+                        });
+                        if !is_allowed {
+                            report.is_safe = false;
+                            report.errors.push(format!(
+                                "Binary is not in the allowed list (Isolation Mode): {word}"
+                            ));
+                        }
+                    }
+                    SecurityMode::Guard => {
+                        // Guard Mode: already checked disallowed_bins
+                    }
+                }
+                next_is_cmd = false;
+            }
+
+            if word.contains('/') || word.contains('.') {
+                match self.is_within_allowed_paths(&word) {
+                    Ok(allowed) => {
+                        if !allowed {
+                            report.is_safe = false;
+                            report
+                                .errors
+                                .push(format!("Path is outside allowed sandbox paths: {word}"));
+                        }
+                    }
+                    Err(e) => {
+                        tracing::trace!(path = %word, error = %e, "Could not validate path safety");
+                    }
+                }
+            }
+        }
+
+        report
+    }
+
+    /// Build a sandboxed shell command with standard agent environment defaults.
+    /// Returns the command.
+    pub fn build_safe_command(&self, cmd: &str) -> Result<Command, String> {
+        let report = self.check_command_safety(cmd);
+        if !report.is_safe {
+            return Err(report.errors.join("; "));
+        }
+
+        let mut c = build_shell_command(cmd, self);
+        c.env("GIT_TERMINAL_PROMPT", "0");
+        c.env("PAGER", "cat");
+        Ok(c)
+    }
+
     /// Validate for duplicates and conflicts.
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut warnings = Vec::new();
@@ -86,6 +210,60 @@ impl SandboxConfig {
         } else {
             Err(warnings)
         }
+    }
+
+    /// Check if a candidate path falls within any of the allowed read or write paths.
+    pub fn is_within_allowed_paths(&self, candidate: &str) -> std::io::Result<bool> {
+        let candidate_path = Path::new(candidate);
+
+        // If it's just a filename without path components, it's relative to CWD, which is usually allowed.
+        if !candidate.contains('/') && !candidate.contains("..") {
+            return Ok(true);
+        }
+
+        let base = std::env::current_dir()?;
+        let full_path = if candidate_path.is_absolute() {
+            candidate_path.to_path_buf()
+        } else {
+            base.join(candidate_path)
+        };
+
+        // Note: fs::canonicalize only works for existing paths.
+        let resolved = match std::fs::canonicalize(&full_path) {
+            Ok(p) => p,
+            Err(_) => {
+                // Fallback to logical normalization for non-existent paths
+                let mut depth: i32 = 0;
+                for component in candidate.split('/') {
+                    match component {
+                        "" | "." => continue,
+                        ".." => {
+                            depth -= 1;
+                            if depth < 0 {
+                                return Ok(false);
+                            }
+                        }
+                        _ => depth += 1,
+                    }
+                }
+                return Ok(true);
+            }
+        };
+
+        let mut allowed_paths = self.allow_read.clone();
+        allowed_paths.extend(self.allow_write.clone());
+
+        for allowed in allowed_paths {
+            let expanded = expand_tilde(&allowed);
+            let Ok(allowed_canonical) = std::fs::canonicalize(expanded) else {
+                continue;
+            };
+            if resolved.starts_with(&allowed_canonical) {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
     }
 }
 
