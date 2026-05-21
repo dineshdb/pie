@@ -199,7 +199,12 @@ async fn handle_command(
         Commands::Launch {
             all_args,
             no_sandbox,
-        } => handle_launch(config, &all_args, no_sandbox),
+        } => {
+            if config.debug {
+                init_stderr_subscriber(config.debug, &config.log_level);
+            }
+            cmd::handle_launch(config, &all_args, no_sandbox)
+        }
         Commands::Cron { command } => handle_cron(command, pool, registry.clone()).await,
     }
 }
@@ -267,118 +272,6 @@ async fn handle_cron(
             Ok(())
         }
         CronCommand::Run => cron::run_due_jobs(pool, registry).await,
-    }
-}
-
-fn handle_launch(
-    config: &ResolvedConfig,
-    all_args: &[String],
-    no_sandbox: bool,
-) -> anyhow::Result<()> {
-    if config.debug {
-        init_stderr_subscriber(config.debug, &config.log_level);
-    }
-
-    let (command, args) = if let Some((cmd, rest)) = all_args.split_first() {
-        (cmd.clone(), rest.to_vec())
-    } else {
-        anyhow::bail!("no command provided to launch");
-    };
-
-    if command == "claude" && config.provider.anthropic_url.is_none() {
-        anyhow::bail!(
-            "launching 'claude' is only supported on providers with an anthropic endpoint (e.g., 'anthropic', 'openrouter', 'ollama', 'zai')"
-        );
-    }
-
-    let env = config.provider.env_vars();
-    let launch_configs = config::load_launch_config()?;
-
-    // Resolve alias
-    let (actual_command, launch_cfg) = if let Some(cfg) = launch_configs.get(&command) {
-        (command.clone(), Some(cfg))
-    } else if let Some((name, cfg)) = launch_configs
-        .iter()
-        .find(|(_, cfg)| cfg.aliases.contains(&command))
-    {
-        (name.clone(), Some(cfg))
-    } else {
-        (command.clone(), None)
-    };
-
-    let mut final_args = args;
-    if let Some(cfg) = launch_cfg
-        && final_args.is_empty()
-    {
-        final_args.clone_from(&cfg.args);
-    }
-
-    // If the command itself contains spaces and no args were provided, split it.
-    // This handles cases like `pie launch "claude --version"`.
-    let (actual_command, extra_args) = if actual_command.contains(' ') && final_args.is_empty() {
-        let parts: Vec<String> = actual_command
-            .split_whitespace()
-            .map(String::from)
-            .collect();
-        if let (Some(cmd), Some(args)) = (parts.first(), parts.get(1..)) {
-            (cmd.clone(), args.to_vec())
-        } else {
-            (actual_command, Vec::new())
-        }
-    } else {
-        (actual_command, Vec::new())
-    };
-    if !extra_args.is_empty() {
-        final_args = extra_args;
-    }
-
-    let mut cmd = if no_sandbox {
-        let mut c = std::process::Command::new(&actual_command);
-        c.args(&final_args);
-        c
-    } else if let Some(cfg) = launch_cfg
-        && let Some(sandbox) = &cfg.sandbox
-    {
-        p1e_sandbox::build_command(&actual_command, &final_args, sandbox)
-    } else {
-        let mut c = std::process::Command::new(&actual_command);
-        c.args(&final_args);
-        c
-    };
-
-    // Explicitly inherit stdio for interaction
-    cmd.stdin(std::process::Stdio::inherit());
-    cmd.stdout(std::process::Stdio::inherit());
-    cmd.stderr(std::process::Stdio::inherit());
-
-    // 1. Provider env vars
-    for (k, v) in env {
-        cmd.env(k, v);
-    }
-
-    // 2. Extra env vars from launch.toml
-    if let Some(cfg) = launch_cfg {
-        for (k, v) in &cfg.env {
-            cmd.env(k, v);
-        }
-    }
-
-    // Process Handoff (Unix):
-    // On Unix-like systems, we use `execvp` to replace the current `pie` process with the target command.
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        let err = cmd.exec();
-        anyhow::bail!("failed to launch command: {err}");
-    }
-
-    // Fallback (Non-Unix):
-    // Spawning is used where process replacement is not supported (e.g., Windows).
-    #[cfg(not(unix))]
-    {
-        let mut child = cmd.spawn().context("failed to launch command")?;
-        let status = child.wait().context("failed to wait for child")?;
-        std::process::exit(status.code().unwrap_or(0));
     }
 }
 

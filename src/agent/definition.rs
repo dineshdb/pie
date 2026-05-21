@@ -3,7 +3,6 @@ use crate::instructions::Instructions;
 use crate::skill::split_frontmatter;
 use include_dir::Dir;
 use serde::Deserialize;
-use std::collections::HashSet;
 use std::path::PathBuf;
 use strum::{AsRefStr, Display, EnumString};
 
@@ -210,26 +209,13 @@ fn load_embedded_agents() -> Vec<Agent> {
 /// Load all agents: embedded + global (~/.pie/agents/) + local (.pie/agents/).
 /// Local overrides global, global overrides embedded.
 pub fn get_all_agents() -> Vec<Agent> {
-    let mut agents: Vec<Agent> = load_embedded_agents();
-    let mut names: HashSet<String> = agents.iter().map(|a| a.name.clone()).collect();
-
-    crate::utils::merge_by_name(
-        &mut agents,
-        &mut names,
-        load_agents_from_dir(&agents_root_global()),
+    crate::utils::load_resources(
+        load_embedded_agents(),
+        &agents_root_global(),
+        agents_root_local(),
+        load_agents_from_dir,
         |a| &a.name,
-    );
-
-    if let Some(local_dir) = agents_root_local() {
-        crate::utils::merge_by_name(
-            &mut agents,
-            &mut names,
-            load_agents_from_dir(&local_dir),
-            |a| &a.name,
-        );
-    }
-
-    agents
+    )
 }
 
 /// Resolve agents whose names appear in the given instructions.

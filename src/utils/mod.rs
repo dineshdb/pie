@@ -30,6 +30,36 @@ pub fn merge_by_name<T, F>(
     }
 }
 
+/// Generic resource loader: embedded -> global (~/.pie/) -> local (.pie/).
+pub fn load_resources<T, F, N>(
+    embedded: Vec<T>,
+    global_dir: &std::path::Path,
+    local_dir: Option<std::path::PathBuf>,
+    load_dir_fn: F,
+    get_name: N,
+) -> Vec<T>
+where
+    F: Fn(&std::path::Path) -> Vec<T>,
+    N: Fn(&T) -> &str,
+{
+    let mut resources = embedded;
+    let mut names: std::collections::HashSet<String> =
+        resources.iter().map(|r| get_name(r).to_string()).collect();
+
+    merge_by_name(
+        &mut resources,
+        &mut names,
+        load_dir_fn(global_dir),
+        &get_name,
+    );
+
+    if let Some(local) = local_dir {
+        merge_by_name(&mut resources, &mut names, load_dir_fn(&local), &get_name);
+    }
+
+    resources
+}
+
 /// Walk from cwd upward, calling `check` on each directory.
 /// Stops at home directory, filesystem root, or after 32 levels.
 /// The closure returns `Break(Some(T))` when found, `Break(None)` to stop, `Continue(())` to keep going.

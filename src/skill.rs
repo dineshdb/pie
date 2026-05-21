@@ -50,6 +50,12 @@ fn skills_root() -> PathBuf {
     pie_home().join("skills")
 }
 
+fn skills_root_local() -> Option<PathBuf> {
+    crate::utils::git_repo_root()
+        .map(|root| PathBuf::from(root).join(".pie").join("skills"))
+        .filter(|p| p.is_dir())
+}
+
 /// Embedded skills directory (from .pie/skills/ in the crate root).
 fn embedded_skills_dir() -> Option<&'static Dir<'static>> {
     EMBEDDED_PIE_DIR.get_dir("skills")
@@ -67,11 +73,9 @@ fn parse_skill(raw: &str) -> Option<Skill> {
     })
 }
 
-/// List all skills: embedded + filesystem. Filesystem skills override embedded ones with the same name.
-pub fn get_all_skills() -> Vec<Skill> {
-    let mut skills: Vec<Skill> = Vec::new();
-
-    // Load embedded skills: iterate subdirectories and find SKILL.md in each
+/// Load embedded skills: iterate subdirectories and find SKILL.md in each.
+fn load_embedded_skills() -> Vec<Skill> {
+    let mut skills = Vec::new();
     if let Some(skills_dir) = embedded_skills_dir() {
         for dir in skills_dir.dirs() {
             for file in dir.files() {
@@ -84,13 +88,18 @@ pub fn get_all_skills() -> Vec<Skill> {
             }
         }
     }
-
-    let mut names: HashSet<String> = skills.iter().map(|s| s.name.clone()).collect();
-    let root = skills_root();
-    let filesystem_skills = load_skills_from_dir(&root);
-
-    crate::utils::merge_by_name(&mut skills, &mut names, filesystem_skills, |s| &s.name);
     skills
+}
+
+/// List all skills: embedded + global + local. Overrides by name.
+pub fn get_all_skills() -> Vec<Skill> {
+    crate::utils::load_resources(
+        load_embedded_skills(),
+        &skills_root(),
+        skills_root_local(),
+        load_skills_from_dir,
+        |s| &s.name,
+    )
 }
 
 /// Load skills from a filesystem directory of skill subdirectories.
