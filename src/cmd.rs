@@ -1,9 +1,7 @@
-use crate::config::{CliConfig, ResolvedConfig};
+use crate::config::ResolvedConfig;
 use crate::registry::Registry;
 use crate::utils::output::OutputFormat;
 use serde::Serialize;
-use std::collections::HashMap;
-use std::fmt::Write;
 use std::sync::Arc;
 use strum::{AsRefStr, EnumIter, EnumString};
 use tracing::warn;
@@ -71,7 +69,6 @@ struct StatusOutput<'a> {
     plugins: Vec<PluginStatus>,
     skills: Vec<String>,
     agents: Vec<String>,
-    known_commands: &'a HashMap<String, CliConfig>,
 }
 
 #[derive(Serialize)]
@@ -116,7 +113,6 @@ pub fn handle_status(config: &ResolvedConfig, registry: &Arc<Registry>) {
             plugins,
             skills: registry.skills.iter().map(|s| s.name.clone()).collect(),
             agents: registry.agents.iter().map(|a| a.name.clone()).collect(),
-            known_commands: &config.known_commands,
         };
 
         if let Ok(json) = serde_json::to_string_pretty(&status) {
@@ -158,11 +154,6 @@ pub fn handle_status(config: &ResolvedConfig, registry: &Arc<Registry>) {
     println!("Agents: {}", registry.agents.len());
     for agent in &registry.agents {
         println!(" - {}", agent.name);
-    }
-
-    if !config.known_commands.is_empty() {
-        println!("\n--- Known Commands ---");
-        print!("{}", format_known_commands(&config.known_commands));
     }
 }
 
@@ -236,18 +227,4 @@ where
         let (name, desc) = get_info(item);
         println!(" - {name}: {desc}");
     }
-}
-
-pub fn format_known_commands(commands: &HashMap<String, CliConfig>) -> String {
-    let mut out = String::from("You can run known external commands via shell tool:\n");
-    let mut sorted: Vec<_> = commands.iter().collect();
-    sorted.sort_by_key(|(name, _)| *name);
-    for (name, cfg) in sorted {
-        let _ = writeln!(
-            out,
-            "- {name}: {}",
-            cfg.description.as_deref().unwrap_or(&cfg.command)
-        );
-    }
-    out
 }

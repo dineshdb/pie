@@ -12,15 +12,15 @@ reduce clarity.
 
 ## Workflow
 
-1. Spawn /review to review the codebase first — use its findings as input
-2. Identify the scope of changes to review (diff, branch, or whole repo)
-3. Run the three review passes below
-4. Fix issues directly, then summarize
+- Spawn /review to review the codebase first — use its findings as input
+- Identify the scope of changes to review (diff, branch, or whole repo)
+- Run the three review passes below
+- Confirm with the user and ask which tasks to work on
+- Fix issues directly, then summarize
 
 ## Pass 1: Code Reuse
 
 Search for existing utilities that could replace newly written code:
-
 - Look for similar patterns in utility directories, shared modules, adjacent
   files
 - Flag functions that duplicate existing functionality
@@ -30,7 +30,7 @@ Search for existing utilities that could replace newly written code:
 ## Pass 2: Code Quality
 
 Check for:
-
+- For rust code, run `cargo-crap` to find crap metrics to identify the hot spots.
 - **Redundant state**: state duplicating existing state, cached values that
   could be derived
 - **Parameter sprawl**: new parameters added instead of generalizing

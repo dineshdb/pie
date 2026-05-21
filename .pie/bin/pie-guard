@@ -1,0 +1,67 @@
+#!/usr/bin/env uv run
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
+import json
+import os
+import sqlite3
+import sys
+
+def get_db():
+    db_path = os.environ.get("PIE_DATABASE_PATH")
+    if not db_path:
+        return None
+    return sqlite3.connect(db_path)
+
+def read_input():
+    input_json = os.environ.get("PIE_INPUT")
+    if not input_json:
+        if not sys.stdin.isatty():
+            input_json = sys.stdin.read()
+    if not input_json:
+        return {}
+    try:
+        return json.loads(input_json)
+    except json.JSONDecodeError:
+        return {}
+
+def cmd_test_first(_data):
+    session_id = os.environ.get("PIE_SESSION_ID", "default")
+    db = get_db()
+    if db:
+        try:
+            cursor = db.cursor()
+            # Check for any test-related keywords in recent history
+            cursor.execute(
+                "SELECT count(*) FROM messages WHERE session_id = ? AND (content LIKE '%test%' OR content LIKE '%check%' OR content LIKE '%just%' OR content LIKE '%repo%')",
+                (session_id,),
+            )
+            count = cursor.fetchone()[0]
+            if count == 0:
+                print("### [Quality Alert]\nYou are attempting to modify code without having read or run any tests in this session.", file=sys.stderr)
+                sys.exit(1)
+        except sqlite3.OperationalError:
+            pass
+        finally:
+            db.close()
+    sys.exit(0)
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--help":
+        print("Run quality guardrails on tool inputs.")
+        print("Usage: pie-guard [test-first]")
+        sys.exit(0)
+
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "test-first"
+    data = read_input()
+
+    if cmd == "test-first":
+        cmd_test_first(data)
+    else:
+        # Compatibility for any legacy callers (though we've updated the main ones)
+        # We just exit successfully for any other command.
+        sys.exit(0)
+
+if __name__ == "__main__":
+    main()

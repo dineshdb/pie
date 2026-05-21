@@ -40,7 +40,12 @@ pub(crate) struct SandboxOutput {
 
 /// Execute a command inside the sandbox and capture its output.
 pub(crate) fn run_sandboxed_command(cmd: &str, cfg: &p1e_sandbox::SandboxConfig) -> SandboxOutput {
-    let result = cfg.build_safe_command(cmd);
+    let mut bin_dirs = vec![crate::config::pie_home().join("bin")];
+    if let Some(git_root) = crate::utils::git_repo_root() {
+        bin_dirs.push(std::path::PathBuf::from(git_root).join(".pie").join("bin"));
+    }
+
+    let result = cfg.build_safe_command(cmd, &bin_dirs);
     match result {
         Ok(mut c) => match c.output() {
             Ok(out) => SandboxOutput {

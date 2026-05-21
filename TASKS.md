@@ -7,7 +7,6 @@
 - [ ] System Notifications
 - [ ] Define tools such that they can check and run automatically at different points.
 - [ ] find_skills tool
-- [ ] Fix double tool calls
 - [ ] Add /update hook for running project updates, committing them and verifying it doesn't break anything.
 - [ ] Recurring tasks
 - [ ] Automatic memory

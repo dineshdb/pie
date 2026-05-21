@@ -168,7 +168,11 @@ impl SandboxConfig {
 
     /// Build a sandboxed shell command with standard agent environment defaults.
     /// Returns the command.
-    pub fn build_safe_command(&self, cmd: &str) -> Result<Command, String> {
+    pub fn build_safe_command(
+        &self,
+        cmd: &str,
+        bin_dirs: &[std::path::PathBuf],
+    ) -> Result<Command, String> {
         let report = self.check_command_safety(cmd);
         if !report.is_safe {
             return Err(report.errors.join("; "));
@@ -177,6 +181,22 @@ impl SandboxConfig {
         let mut c = build_shell_command(cmd, self);
         c.env("GIT_TERMINAL_PROMPT", "0");
         c.env("PAGER", "cat");
+
+        if !bin_dirs.is_empty()
+            && let Some(old_path) = std::env::var_os("PATH")
+        {
+            let mut paths = std::env::split_paths(&old_path).collect::<Vec<_>>();
+            // Insert in reverse order so the most specific (repo local) comes first if we insert at 0
+            for bin_dir in bin_dirs.iter().rev() {
+                if !paths.contains(bin_dir) {
+                    paths.insert(0, bin_dir.clone());
+                }
+            }
+            if let Ok(new_path) = std::env::join_paths(paths) {
+                c.env("PATH", new_path);
+            }
+        }
+
         Ok(c)
     }
 

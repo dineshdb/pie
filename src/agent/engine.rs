@@ -357,8 +357,9 @@ impl PieAgent {
             builder = builder.plugin(crate::plugin::EmbeddedSystemPromptPlugin::new(&system));
             builder = builder.plugin(crate::plugin::SystemPromptsPlugin::new());
             builder = builder.plugin(crate::plugin::ConversationModePlugin::new(output_mode));
-            builder = builder.plugin(crate::plugin::KnownCommandsPlugin::new());
             builder = builder.plugin(crate::plugin::SkillsPlugin::new());
+            builder = builder.plugin(crate::plugin::DeveloperPlugin::new());
+            builder = builder.plugin(crate::plugin::HelperBinariesPlugin::new());
 
             // Register the user plugin runner (handles PreCompletion, tool hooks, PostCompletion)
             builder = builder.plugin(UserPluginRunner::new(

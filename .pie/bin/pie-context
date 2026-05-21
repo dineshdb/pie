@@ -1,0 +1,192 @@
+#!/usr/bin/env uv run
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
+import json
+import os
+import subprocess
+import sys
+import sqlite3
+
+def get_db():
+    db_path = os.environ.get("PIE_DATABASE_PATH")
+    if not db_path:
+        return None
+    return sqlite3.connect(db_path)
+
+def read_input():
+    input_json = os.environ.get("PIE_INPUT")
+    if not input_json:
+        # Avoid hanging if stdin is empty and we are not being piped to
+        if not sys.stdin.isatty():
+            input_json = sys.stdin.read()
+    if not input_json:
+        return {}
+    return json.loads(input_json)
+
+def anonymize_path(path):
+    home = os.path.expanduser("~")
+    if path.startswith(home):
+        return path.replace(home, "~/")
+    return path
+
+def find_test_file(path):
+    if not path or not os.path.exists(path):
+        return None
+    base = os.path.basename(path)
+    name, ext = os.path.splitext(base)
+    dirname = os.path.dirname(path)
+    candidates = [
+        os.path.join(dirname, f"{name}_test{ext}"),
+        os.path.join(dirname, "tests.rs"),
+        os.path.join(dirname, "test.rs"),
+    ]
+    root = dirname
+    while root != "/" and not os.path.exists(os.path.join(root, ".git")):
+        new_root = os.path.dirname(root)
+        if new_root == root:
+            break
+        root = new_root
+    if os.path.exists(os.path.join(root, "tests")):
+        candidates.extend([
+            os.path.join(root, "tests", f"{name}{ext}"),
+            os.path.join(root, "tests", f"{name}_test{ext}"),
+            os.path.join(root, "tests", "mod.rs"),
+        ])
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return None
+
+def get_git_status():
+    try:
+        subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"]).decode().strip()
+        status = subprocess.check_output(["git", "status", "--short"]).decode().strip()
+        context = f"\n- **Branch**: `{branch}`"
+        if status:
+            context += f"\n- **Pending Changes**:\n```\n{status}\n```"
+        else:
+            context += "\n- **Status**: Clean"
+        return context
+    except:
+        return ""
+
+def get_recent_files():
+    try:
+        cmd = ["find", ".", "-maxdepth", "4", "-not", "-path", "*/.*", "-not", "-path", "./target/*", "-mtime", "-1", "-type", "f"]
+        files = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip().split("\n")
+        files = [f for f in files if f and not f.endswith((".swp", "~", ".lock"))]
+        if files:
+            files.sort(key=lambda x: os.path.getmtime(x) if os.path.exists(x) else 0, reverse=True)
+            return "\n" + "\n".join([f"- {f}" for f in files[:10]])
+    except:
+        pass
+    return ""
+
+def get_test_mirror():
+    try:
+        cmd = ["find", ".", "-maxdepth", "4", "-not", "-path", "*/.*", "-mmin", "-120", "-type", "f"]
+        recent = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode().strip().split("\n")
+        recent = [f for f in recent if f and not "test" in f.lower() and not f.endswith((".md", ".toml", ".lock"))]
+        test_map = []
+        visited = set()
+        for f in recent[:5]:
+            test = find_test_file(f)
+            if test and test not in visited:
+                test_map.append(f"- **{f}** tests in `{test}`")
+                visited.add(test)
+        return "\n" + "\n".join(test_map) if test_map else ""
+    except:
+        return ""
+
+def get_stack_info():
+    info = ""
+    if os.path.exists("Cargo.toml"):
+        info += "\n- **Rust**: `just build/test`, `cargo check`"
+    if os.path.exists("package.json"):
+        try:
+            with open("package.json", "r") as f:
+                scripts = json.load(f).get("scripts", {})
+                if scripts:
+                    info += "\n- **Node**: " + ", ".join([f"`npm run {s}`" for s in list(scripts.keys())[:3]])
+        except:
+            pass
+    if os.path.exists("Justfile"):
+        info += "\n- **Just**: Use `just <task>`"
+    return info
+
+def get_docs():
+    docs = []
+    for f in ["ARCHITECTURE.md", "DESIGN.md", "CONTRIBUTING.md", "API.md"]:
+        for p in [f, os.path.join("docs", f)]:
+            if os.path.exists(p):
+                docs.append(f"- **{f}** at `{p}`")
+                break
+    return "\n" + "\n".join(docs) if docs else ""
+
+def get_repo_development_prompts():
+    try:
+        subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        return """
+### Development Guidelines (Repository Detected)
+
+1. **Verify Context**: Always run `repo context` to understand the project structure before starting.
+2. **Test-Driven**: Look for existing tests. If adding a feature, add a test first. If fixing a bug, reproduce it with a test.
+3. **Atomic Changes**: Keep your changes focused and atomic.
+4. **Style Alignment**: Adhere to the project's existing coding style and conventions.
+5. **Documentation**: Update relevant documentation (README, API docs) if your changes affect them.
+"""
+    except:
+        return ""
+
+def cmd_ground():
+    new_content = ""
+    sections = [
+        ("Git Context", get_git_status()),
+        ("Recently Modified", get_recent_files()),
+        ("Related Tests", get_test_mirror()),
+        ("Tech Stack", get_stack_info()),
+        ("Key Documentation", get_docs()),
+        ("Development Strategy", get_repo_development_prompts()),
+    ]
+    for title, content in sections:
+        if content.strip():
+            new_content += f"\n\n### {title}\n{content.strip()}"
+    print(json.dumps({"system": anonymize_path(new_content)}))
+
+def cmd_step_alignment():
+    new_content = ""
+    session_id = os.environ.get("PIE_SESSION_ID", "default")
+    db = get_db()
+    if db:
+        cursor = db.cursor()
+        cursor.execute(
+            "SELECT count(*) FROM messages WHERE session_id = ? AND ts > (SELECT COALESCE(max(ts), 0) FROM messages WHERE session_id = ? AND content LIKE '%task_add%' OR content LIKE '%task_update%')",
+            (session_id, session_id),
+        )
+        turns = cursor.fetchone()[0]
+        if turns >= 3:
+            new_content = f"\n\n### [Task Alignment Alert]\nYou have taken **{turns} turns** without updating your task list. \n**Mandate**: Ensure your plan is still accurate."
+        db.close()
+    print(json.dumps({"system": anonymize_path(new_content)}))
+
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--help":
+        print("Gather project context, git status, and check step alignment.")
+        print("Usage: pie-context [ground | step-alignment]")
+        sys.exit(0)
+
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "ground"
+    if cmd == "ground":
+        cmd_ground()
+    elif cmd == "step-alignment":
+        cmd_step_alignment()
+    else:
+        print(f"Unknown command: {cmd}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

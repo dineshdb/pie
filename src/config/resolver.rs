@@ -29,7 +29,6 @@ pub struct ResolvedConfig {
     pub log_level: String,
     pub debug: bool,
     pub plugins: Vec<StaticPlugin>,
-    pub known_commands: HashMap<String, super::types::CliConfig>,
 }
 
 impl std::fmt::Debug for ResolvedConfig {
@@ -55,9 +54,7 @@ impl std::fmt::Debug for ResolvedConfig {
             s.field("debug", &self.debug);
         }
         s.field("plugins", &self.plugins);
-        if !self.known_commands.is_empty() {
-            s.field("known_commands", &self.known_commands);
-        }
+
         s.finish()
     }
 }
@@ -299,7 +296,6 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
             });
         }
 
-        let known_commands = load_cli_config()?;
         let retry = pie
             .agent
             .as_ref()
@@ -314,13 +310,8 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
             log_level,
             debug: cli.debug,
             plugins,
-            known_commands,
         })
     }
-}
-
-fn load_cli_config() -> Result<HashMap<String, super::types::CliConfig>> {
-    super::loader::load_toml_config(&["cli.toml"], true, true).or_else(|_| Ok(HashMap::new()))
 }
 
 /// Resolve `[model.<name>]` tiers into `ResolvedProvider`s by looking up

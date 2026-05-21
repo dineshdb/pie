@@ -107,7 +107,10 @@ async fn dispatch(
             all_outcomes.push(outcome);
         } else {
             let mut batch = vec![hook];
-            while iter.peek().is_some_and(|h| h.strategy() == ExecutionStrategy::Parallel) {
+            while iter
+                .peek()
+                .is_some_and(|h| h.strategy() == ExecutionStrategy::Parallel)
+            {
                 if let Some(next) = iter.next() {
                     batch.push(next);
                 }

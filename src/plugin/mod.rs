@@ -1,6 +1,7 @@
 mod conversationmode;
 mod debug;
-mod known_commands;
+mod developer;
+mod helper_binaries;
 mod skills;
 mod staticplugin;
 mod system_prompts;
@@ -8,7 +9,8 @@ mod system_prompts;
 pub use crate::config::pie_home;
 pub use conversationmode::ConversationModePlugin;
 pub use debug::DebugPlugin;
-pub use known_commands::KnownCommandsPlugin;
+pub use developer::DeveloperPlugin;
+pub use helper_binaries::HelperBinariesPlugin;
 pub use skills::SkillsPlugin;
 pub use staticplugin::StaticPlugin;
 pub use system_prompts::{EmbeddedSystemPromptPlugin, SystemPromptsPlugin};
