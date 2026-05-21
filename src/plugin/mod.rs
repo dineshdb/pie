@@ -1,20 +1,20 @@
 mod conversationmode;
 mod debug;
 mod developer;
+mod externalplugin;
 mod helper_binaries;
 mod secret_scan;
 mod skills;
-mod staticplugin;
 mod system_prompts;
 
 pub use crate::config::pie_home;
 pub use conversationmode::ConversationModePlugin;
 pub use debug::DebugPlugin;
 pub use developer::DeveloperPlugin;
+pub use externalplugin::ExternalPlugin;
 pub use helper_binaries::HelperBinariesPlugin;
 pub use secret_scan::SecretScanningPlugin;
 pub use skills::SkillsPlugin;
-pub use staticplugin::StaticPlugin;
 pub use system_prompts::{EmbeddedSystemPromptPlugin, SystemPromptsPlugin};
 
 use crate::hook::CommandHook;
@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 struct ScanResult {
-    plugins: Vec<StaticPlugin>,
+    plugins: Vec<ExternalPlugin>,
     metadata: Vec<PluginMetadata>,
 }
 
@@ -36,7 +36,7 @@ static SCAN_CACHE: OnceLock<ScanResult> = OnceLock::new();
 
 /// Scan plugin directories (global + project-local) and return discovered plugins and metadata.
 /// Results are cached after the first call.
-pub fn scan_plugins() -> (Vec<StaticPlugin>, Vec<PluginMetadata>) {
+pub fn scan_plugins() -> (Vec<ExternalPlugin>, Vec<PluginMetadata>) {
     let result = SCAN_CACHE.get_or_init(scan_plugins_inner);
     (result.plugins.clone(), result.metadata.clone())
 }
@@ -84,7 +84,7 @@ fn parse_plugin_toml(content: &str) -> Option<crate::config::PieConfig> {
 }
 
 /// Load a plugin subdirectory with `plugin.toml`.
-fn scan_plugin_dir(path: &Path) -> Option<(StaticPlugin, PluginMetadata)> {
+fn scan_plugin_dir(path: &Path) -> Option<(ExternalPlugin, PluginMetadata)> {
     let plugin_toml = path.join("plugin.toml");
     if !plugin_toml.exists() {
         return None;
@@ -116,7 +116,7 @@ fn scan_plugin_dir(path: &Path) -> Option<(StaticPlugin, PluginMetadata)> {
         hooks.push(CommandHook::from(hook_def));
     }
 
-    let plugin = StaticPlugin {
+    let plugin = ExternalPlugin {
         name: meta.name.clone(),
         hooks,
     };
@@ -125,7 +125,7 @@ fn scan_plugin_dir(path: &Path) -> Option<(StaticPlugin, PluginMetadata)> {
 }
 
 /// Load hooks from a standalone `.toml` plugin file.
-fn scan_plugin_toml(path: &Path) -> Option<StaticPlugin> {
+fn scan_plugin_toml(path: &Path) -> Option<ExternalPlugin> {
     let content = std::fs::read_to_string(path).ok()?;
     let plugin_config = parse_plugin_toml(&content)?;
 
@@ -139,5 +139,5 @@ fn scan_plugin_toml(path: &Path) -> Option<StaticPlugin> {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    Some(StaticPlugin { name, hooks })
+    Some(ExternalPlugin { name, hooks })
 }

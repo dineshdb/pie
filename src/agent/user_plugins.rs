@@ -4,7 +4,7 @@ use crate::hook::{
     ExecutionStrategy, HookContext, HookContextData, HookEvent, HookOutcome, HookScope, PromptData,
     ToolData,
 };
-use crate::plugin::StaticPlugin;
+use crate::plugin::ExternalPlugin;
 use agentsdk::core::agent::{CompletionAction, PostToolAction, PreToolAction};
 use agentsdk::core::history::History;
 use agentsdk::core::messages::Message;
@@ -15,11 +15,11 @@ use futures::future::join_all;
 use serde_json::Value;
 use std::collections::HashMap;
 
-pub struct UserPlugins(pub Vec<StaticPlugin>);
+pub struct UserPlugins(pub Vec<ExternalPlugin>);
 
 /// Run prompt hooks outside the agent loop (`PostUserQuery`, `PrePrompt`, `PostPrompt`).
 pub(crate) async fn run_prompt_hook(
-    plugins: &[StaticPlugin],
+    plugins: &[ExternalPlugin],
     event: HookEvent,
     system: Option<&str>,
     query: Option<&str>,
@@ -58,7 +58,7 @@ fn make_ctx(
 /// Core dispatch: run all hooks matching `event` from the given plugins.
 async fn dispatch(
     context: &HookContext,
-    plugins: &[StaticPlugin],
+    plugins: &[ExternalPlugin],
 ) -> Result<(Vec<HookOutcome>, HookContextData)> {
     let applicable_hooks: Vec<_> = plugins
         .iter()
@@ -158,7 +158,11 @@ impl UserPluginRunner {
         }
     }
 
-    async fn run_pre_completion(&self, plugins: &[StaticPlugin], text: String) -> CompletionAction {
+    async fn run_pre_completion(
+        &self,
+        plugins: &[ExternalPlugin],
+        text: String,
+    ) -> CompletionAction {
         let data = HookContextData::Prompt(PromptData {
             system: None,
             query: Some(text.clone()),
@@ -196,7 +200,7 @@ impl UserPluginRunner {
 
     async fn run_pre_tool_use(
         &self,
-        plugins: &[StaticPlugin],
+        plugins: &[ExternalPlugin],
         tool_name: &str,
         args: &Value,
     ) -> PreToolAction {
@@ -230,7 +234,7 @@ impl UserPluginRunner {
 
     async fn run_post_tool_use(
         &self,
-        plugins: &[StaticPlugin],
+        plugins: &[ExternalPlugin],
         tool_name: &str,
         params: &Value,
         result: &Value,
@@ -266,7 +270,7 @@ impl UserPluginRunner {
         }
     }
 
-    async fn run_post_completion(&self, plugins: &[StaticPlugin], final_text: Option<String>) {
+    async fn run_post_completion(&self, plugins: &[ExternalPlugin], final_text: Option<String>) {
         let data = HookContextData::Prompt(PromptData {
             system: None,
             query: final_text,

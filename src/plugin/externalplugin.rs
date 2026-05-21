@@ -1,7 +1,7 @@
 use crate::hook::CommandHook;
 
 #[derive(Debug, Clone)]
-pub struct StaticPlugin {
+pub struct ExternalPlugin {
     pub name: String,
     pub hooks: Vec<CommandHook>,
 }

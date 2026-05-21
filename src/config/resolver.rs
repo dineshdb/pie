@@ -3,7 +3,7 @@ use super::types::{PieConfig, ProviderBaseUrl, ProviderConfig, ProviderEndpoint}
 use crate::Cli;
 use crate::error::{AppError, Result};
 use crate::hook::CommandHook;
-use crate::plugin::StaticPlugin;
+use crate::plugin::ExternalPlugin;
 use crate::utils::output::OutputFormat;
 use agentsdk::{ModelConfig, OpenAI};
 use itertools::Itertools;
@@ -28,7 +28,7 @@ pub struct ResolvedConfig {
     pub output_format: OutputFormat,
     pub log_level: String,
     pub debug: bool,
-    pub plugins: Vec<StaticPlugin>,
+    pub plugins: Vec<ExternalPlugin>,
 }
 
 impl std::fmt::Debug for ResolvedConfig {
@@ -287,10 +287,10 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
 
         let (mut plugins, _) = crate::plugin::scan_plugins();
 
-        // Wrap pie.toml hooks in a static plugin
+        // Wrap pie.toml hooks in an external plugin
         if !pie.hooks.is_empty() {
             let hooks: Vec<CommandHook> = pie.hooks.into_iter().map(CommandHook::from).collect();
-            plugins.push(StaticPlugin {
+            plugins.push(ExternalPlugin {
                 name: "config".to_string(),
                 hooks,
             });
