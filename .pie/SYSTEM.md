@@ -36,6 +36,11 @@ Every interaction follows a structured reasoning process:
 
 ## Identity & Environment
 
+{% if agent_content %}
+### Agent Role
+{{ agent_content }}
+{% endif %}
+
 ```json
 {{ extra_context | tojson }}
 ```

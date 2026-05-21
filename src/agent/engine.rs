@@ -279,6 +279,8 @@ impl PieAgent {
             current_query_raw = transformed;
         }
 
+        current_query_raw = jewels::redact(&current_query_raw);
+
         let mut query = current_query_raw.clone();
         let mut system = self
             .prepare_system_prompt(&Instructions::new(query.clone()))
@@ -300,6 +302,8 @@ impl PieAgent {
         if let Some(q) = q {
             query = q;
         }
+
+        system = jewels::redact(&system);
 
         Ok((query, system))
     }
@@ -330,6 +334,7 @@ impl PieAgent {
             let system = self
                 .prepare_system_prompt(&Instructions::new(query.clone()))
                 .await?;
+            let system = jewels::redact(&system);
 
             self.session.add_user(&query).await?;
 
@@ -358,6 +363,7 @@ impl PieAgent {
             builder = builder.plugin(crate::plugin::SystemPromptsPlugin::new());
             builder = builder.plugin(crate::plugin::ConversationModePlugin::new(output_mode));
             builder = builder.plugin(crate::plugin::SkillsPlugin::new());
+            builder = builder.plugin(crate::plugin::SecretScanningPlugin::new());
             builder = builder.plugin(crate::plugin::DeveloperPlugin::new());
             builder = builder.plugin(crate::plugin::HelperBinariesPlugin::new());
 

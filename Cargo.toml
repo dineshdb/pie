@@ -8,13 +8,14 @@ license = "MIT"
 repository = "https://github.com/dineshdb/pie"
 
 [workspace]
-members = [".", "crates/p1e-sandbox"]
+members = [".", "crates/p1e-sandbox", "crates/jewels"]
 
 [workspace.dependencies]
 dirs = "6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
+jewels = { path = "crates/jewels" }
 
 [dependencies]
 agentsdk = { path = "../agentsdk" }
@@ -40,8 +41,10 @@ reqwest = { version = "0.13", features = ["json"] }
 schemars = "1"
 serde.workspace = true
 serde_json.workspace = true
+jewels.workspace = true
 serde_yaml = "0.9"
 shell-words = "1.1"
+
 strum = { version = "0.28", features = ["derive"] }
 tachyonfx = "0.25"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "sync"] }

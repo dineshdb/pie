@@ -1,13 +1,7 @@
 use std::process::{Command, Stdio};
 
 /// Send a macOS system notification. Fire-and-forget — spawned, never blocks.
-pub fn turn_complete(query: Option<&str>) {
-    let title = "pie: Task Completed";
-    let body = match query {
-        Some(q) => truncate(q, 80),
-        None => String::new(),
-    };
-
+pub fn notify(title: &str, body: &str) {
     let term = std::env::var("TERM_PROGRAM").unwrap_or_default();
     let bundle_id = match term.as_str() {
         "iTerm.app" => "com.googlecode.iterm2",
@@ -22,14 +16,14 @@ pub fn turn_complete(query: Option<&str>) {
             .arg("-title")
             .arg(title)
             .arg("-message")
-            .arg(&body)
+            .arg(body)
             .arg("-activate")
             .arg(bundle_id)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
         else {
-            osascript_notify(title, &body);
+            osascript_notify(title, body);
             return;
         };
         std::thread::spawn(move || {
@@ -38,7 +32,18 @@ pub fn turn_complete(query: Option<&str>) {
         return;
     }
 
-    osascript_notify(title, &body);
+    osascript_notify(title, body);
+}
+
+/// Send a macOS system notification. Fire-and-forget — spawned, never blocks.
+pub fn turn_complete(query: Option<&str>) {
+    let title = "pie: Task Completed";
+    let body = match query {
+        Some(q) => truncate(q, 80),
+        None => String::new(),
+    };
+
+    notify(title, &body);
 }
 
 fn osascript_notify(title: &str, body: &str) {
