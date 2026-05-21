@@ -5,7 +5,6 @@ use crate::instructions::Instructions;
 use crate::registry::Registry;
 use crate::session::Session;
 use crate::skill::Skill;
-use crate::tools::run_sandboxed_command;
 use std::sync::Arc;
 
 struct CwdGuard {
@@ -26,31 +25,6 @@ impl Drop for CwdGuard {
             let _ = std::env::set_current_dir(p);
         }
     }
-}
-
-pub async fn shell_exec(session: &mut Session, command: &str, cwd: &str) -> i64 {
-    let _guard = CwdGuard::new(cwd);
-
-    let cfg = p1e_sandbox::SandboxConfig::default();
-    let result = run_sandboxed_command(command, &cfg);
-
-    let output = if result.stderr.is_empty() {
-        result.stdout
-    } else {
-        format!("STDOUT:\n{}\nSTDERR:\n{}", result.stdout, result.stderr)
-    };
-
-    if let Err(e) = session.add_user(command).await {
-        tracing::error!("failed to add shell command: {e}");
-    }
-    if let Err(e) = session
-        .add_system(&format!("Exit code: {}\n\n{output}", result.exit_code))
-        .await
-    {
-        tracing::error!("failed to add shell output: {e}");
-    }
-
-    i64::from(result.exit_code)
 }
 
 pub async fn prompt_exec(

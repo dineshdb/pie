@@ -78,6 +78,12 @@ struct Cli {
 enum Commands {
     /// Show current configuration and system status
     Status,
+    /// Run the cron daemon (continuous mode)
+    Daemon {
+        /// Check interval in seconds (default: 60)
+        #[arg(short, long, default_value = "60")]
+        interval: u64,
+    },
     /// List available skills and agents
     Skills,
     /// Launch another agent with current provider environment
@@ -98,25 +104,11 @@ enum Commands {
 
 #[derive(clap::Subcommand, Clone)]
 enum CronCommand {
-    /// Add a new cron job
-    Add {
-        name: String,
-        #[arg(long)]
-        shell: Option<String>,
-        #[arg(long)]
-        prompt: Option<String>,
-        #[arg(long)]
-        cron: String,
-        #[arg(long)]
-        cwd: Option<String>,
-    },
-    /// List cron jobs
+    /// List schedules loaded from files
     List,
-    /// Remove a cron job
-    Rm { id: String },
-    /// Show run history for a cron job
-    Runs { id: String },
-    /// Execute due cron jobs (one-shot)
+    /// Show recent run history (optionally for a specific schedule)
+    Runs { id: Option<String> },
+    /// Execute due schedules (one-shot)
     Run,
 }
 
@@ -205,7 +197,20 @@ async fn handle_command(
             }
             cmd::handle_launch(config, &all_args, no_sandbox)
         }
-        Commands::Cron { command } => handle_cron(command, pool, registry.clone()).await,
+        Commands::Cron { command } => {
+            init_stderr_subscriber(config.debug, &config.log_level);
+            handle_cron(command, pool, registry.clone()).await
+        }
+        Commands::Daemon { interval } => {
+            init_stderr_subscriber(config.debug, &config.log_level);
+            if !config.debug {
+                tracing::info!(
+                    "pie daemon starting (interval: {interval}s, pid: {})",
+                    std::process::id()
+                );
+            }
+            cron::run_daemon(pool, registry.clone(), interval).await
+        }
     }
 }
 
@@ -215,59 +220,69 @@ async fn handle_cron(
     registry: Arc<Registry>,
 ) -> anyhow::Result<()> {
     match command {
-        CronCommand::Add {
-            name,
-            shell,
-            prompt,
-            cron,
-            cwd,
-        } => {
-            let (job_type, payload) = match (shell, prompt) {
-                (Some(s), None) => (cron::JobType::Shell, s),
-                (None, Some(p)) => (cron::JobType::Prompt, p),
-                (Some(_), Some(_)) => anyhow::bail!("use either --shell or --prompt, not both"),
-                (None, None) => anyhow::bail!("use either --shell or --prompt"),
-            };
-            let cwd = cwd.unwrap_or_else(|| {
-                std::env::current_dir()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_default()
-            });
-
-            let job = cron::CronJob::insert(&pool, &name, &job_type, &payload, &cron, &cwd).await?;
-            tracing::info!("cron job added: {} (next run: {})", job.id, job.next_run_at);
-            Ok(())
-        }
         CronCommand::List => {
-            let rows = cron::CronJob::list_all(&pool).await?;
-            if rows.is_empty() {
-                tracing::info!("no cron jobs");
+            let schedules = cron::load_all_schedules();
+            if schedules.is_empty() {
+                tracing::info!("no schedules found");
                 return Ok(());
             }
-            for job in &rows {
-                tracing::info!("{}  {}  {}  {}", job.id, job.name, job.job_type, job.cron);
+            let max_id = schedules.iter().map(|s| s.id.len()).max().unwrap_or(4);
+            for s in &schedules {
+                let status = if s.enabled { "enabled " } else { "disabled" };
+                let desc = if s.description.is_empty() {
+                    ""
+                } else {
+                    &s.description
+                };
+                tracing::info!(
+                    "{:max_id$}  {}  {}  {}",
+                    s.id,
+                    status,
+                    s.cron,
+                    desc,
+                    max_id = max_id
+                );
             }
-            Ok(())
-        }
-        CronCommand::Rm { id } => {
-            if !cron::CronJob::delete(&pool, &id).await? {
-                anyhow::bail!("cron job {id} not found");
-            }
-            tracing::info!("cron job {id} removed");
             Ok(())
         }
         CronCommand::Runs { id } => {
-            let rows = cron::CronRun::find_recent_for_cron(&pool, &id).await?;
+            let rows = if let Some(schedule_id) = &id {
+                cron::CronRun::recent_for_schedule(&pool, schedule_id).await?
+            } else {
+                cron::CronRun::recent_all(&pool).await?
+            };
             if rows.is_empty() {
-                tracing::info!("no runs for cron job {id}");
+                let label = id.as_deref().unwrap_or("any");
+                tracing::info!("no runs for schedule '{label}'");
                 return Ok(());
             }
+            let schedules = cron::load_all_schedules();
             for r in &rows {
-                let dur = r.finished_at.map_or(0, |f| f - r.started_at);
-                let code = r
-                    .exit_code
-                    .map_or_else(|| "-".to_string(), |c| c.to_string());
-                tracing::info!("{}  {}  {}  {code}  {dur}ms", r.id, r.session_id, r.status);
+                let started = chrono::DateTime::from_timestamp_millis(r.started_at)
+                    .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
+                    .unwrap_or_default();
+                let dur_ms = r.finished_at.map_or(0, |f| f - r.started_at);
+                let code = r.exit_code.map_or("-".to_string(), |c| c.to_string());
+                let desc = schedules
+                    .iter()
+                    .find(|s| s.id == r.cron_id)
+                    .and_then(|s| {
+                        if s.description.is_empty() {
+                            None
+                        } else {
+                            Some(&s.description)
+                        }
+                    })
+                    .unwrap_or(&r.cron_id);
+                tracing::info!(
+                    "{}  {}  {}  {}ms  {}  {}",
+                    desc,
+                    started,
+                    r.status,
+                    dur_ms,
+                    code,
+                    r.notes
+                );
             }
             Ok(())
         }

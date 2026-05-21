@@ -47,7 +47,7 @@ shell-words = "1.1"
 
 strum = { version = "0.28", features = ["derive"] }
 tachyonfx = "0.25"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "io-std", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "signal", "io-util", "io-std", "sync"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tui-textarea-2 = "0.11"

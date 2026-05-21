@@ -114,7 +114,7 @@ fn load_skills_from_dir(dir: &std::path::Path) -> Vec<Skill> {
     };
     entries
         .flatten()
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter(|e| e.path().is_dir())
         .filter_map(|e| {
             let md_path = e.path().join("SKILL.md");
             let raw = fs::read_to_string(&md_path).ok()?;
