@@ -17,6 +17,7 @@ use crate::tools::{
 use agentsdk::core::retry::RetryAction;
 use agentsdk::core::tools::Tool;
 use agentsdk::error::AgentSdkError;
+use agentsdk::openai::api::ChatCompletionRequestUserMessageContent;
 use agentsdk::{
     Agent as SdkAgent, AgentPlugin, MemoryHistoryPlugin, Message, PluginContext, PostToolAction,
     PreToolAction, ToolErrorAction,
@@ -254,7 +255,7 @@ impl PieAgent {
         query_str: &str,
         output_mode: OutputMode,
     ) -> Result<(String, String)> {
-        let mut current_query_raw = query_str.to_string();
+        let mut current_query_raw = jewels::redact(query_str);
 
         let Some(cfg) = CONFIG.get() else {
             let query = current_query_raw.clone();
@@ -278,8 +279,6 @@ impl PieAgent {
         if let Some(transformed) = q {
             current_query_raw = transformed;
         }
-
-        current_query_raw = jewels::redact(&current_query_raw);
 
         let mut query = current_query_raw.clone();
         let mut system = self
@@ -306,6 +305,37 @@ impl PieAgent {
         system = jewels::redact(&system);
 
         Ok((query, system))
+    }
+
+    fn redact_message(msg: &mut Message) {
+        match msg {
+            Message::UserMessage(u) => {
+                if let Some(ChatCompletionRequestUserMessageContent::String(s)) = &mut u.content {
+                    *s = jewels::redact(s);
+                }
+            }
+            Message::AssistantMessage(a) => {
+                if let Some(s) = &mut a.content {
+                    *s = jewels::redact(s);
+                }
+                if let Some(tool_calls) = &mut a.tool_calls {
+                    for tc in tool_calls {
+                        tc.function.arguments = jewels::redact(&tc.function.arguments);
+                    }
+                }
+            }
+            Message::ToolMessage(t) => {
+                if let Some(s) = &mut t.content {
+                    *s = jewels::redact(s);
+                }
+            }
+            Message::SystemMessage(s) => {
+                if let Some(content) = &mut s.content {
+                    *content = jewels::redact(content);
+                }
+            }
+            Message::FunctionMessage(_) => {}
+        }
     }
 
     pub fn stream<'a>(
@@ -354,24 +384,25 @@ impl PieAgent {
 
             let mut builder = self.build_sdk_agent(output_mode)?;
 
+            builder = builder.plugin(crate::plugin::SecretScanningPlugin::new());
+
             let history_plugin = MemoryHistoryPlugin::new();
-            for msg in self.session.to_messages() {
+            for mut msg in self.session.to_messages() {
+                Self::redact_message(&mut msg);
                 history_plugin.push(msg).await;
             }
-            builder = builder.plugin(history_plugin.clone());
-            builder = builder.plugin(crate::plugin::EmbeddedSystemPromptPlugin::new(&system));
-            builder = builder.plugin(crate::plugin::SystemPromptsPlugin::new());
-            builder = builder.plugin(crate::plugin::ConversationModePlugin::new(output_mode));
-            builder = builder.plugin(crate::plugin::SkillsPlugin::new());
-            builder = builder.plugin(crate::plugin::SecretScanningPlugin::new());
-            builder = builder.plugin(crate::plugin::DeveloperPlugin::new());
-            builder = builder.plugin(crate::plugin::HelperBinariesPlugin::new());
-
-            // Register the user plugin runner (handles PreCompletion, tool hooks, PostCompletion)
-            builder = builder.plugin(UserPluginRunner::new(
-                self.session.id.to_string(),
-                output_mode,
-            ));
+            builder = builder
+                .plugin(history_plugin.clone())
+                .plugin(crate::plugin::EmbeddedSystemPromptPlugin::new(&system))
+                .plugin(crate::plugin::SystemPromptsPlugin::new())
+                .plugin(crate::plugin::ConversationModePlugin::new(output_mode))
+                .plugin(crate::plugin::SkillsPlugin::new())
+                .plugin(crate::plugin::DeveloperPlugin::new())
+                .plugin(crate::plugin::HelperBinariesPlugin::new())
+                .plugin(UserPluginRunner::new(
+                    self.session.id.to_string(),
+                    output_mode,
+                ));
 
             if AgentConfig::is_debug() {
                 builder = builder.plugin(crate::plugin::DebugPlugin::new(

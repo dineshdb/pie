@@ -24,8 +24,9 @@ define_secrets! {
     "Terraform Cloud Token" => r"\b([a-zA-Z0-9]{40}\.atlasv1\.[a-zA-Z0-9]{60,})\b",
 
     // --- AI & LLM ---
-    "OpenAI API Key" => r"\b(sk-)[a-zA-Z0-9]{48}\b",
-    "Anthropic API Key" => r"\b(sk-ant-api03-)[a-zA-Z0-9\-_]{80,}\b",
+    "OpenAI API Key" => r"\b(sk-)[a-zA-Z0-9]{20,}\b",
+    "Anthropic API Key" => r"\b(sk-ant-api03-)[a-zA-Z0-9\-_]{20,}\b",
+    "OpenRouter API Key" => r"\b(sk-or-v1-)[a-f0-9]{64}\b",
 
     // --- Source Control & Registry ---
     "GitHub Personal Access Token" => r"\b(ghp_)[a-zA-Z0-9]{36}\b",
@@ -59,7 +60,7 @@ define_secrets! {
     "Bitly Access Token" => r"\b([a-f0-9]{40})\b",
 
     // --- Generic ---
-    "Generic API Key" => r"(?i)\b((?:api[_-]?key|token|secret|password|credential)[\s:=]+)[a-zA-Z0-9\-_]{16,}\b",
+    "Generic API Key" => r"(?i)\b((?:api[_-]?key|token|secret|password|credential)[\s:=]+)[a-zA-Z0-9\-_]{8,}\b",
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -185,5 +186,15 @@ mod tests {
         let text = "sk_live_1234567890abcdef12345678";
         let redacted = redact(text);
         assert_eq!(redacted, "sk_live_xxxxxxxxxxxxxxxxxxxxxxxx");
+    }
+
+    #[test]
+    fn test_redact_openrouter() {
+        let text = "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";
+        let redacted = redact(text);
+        assert_eq!(
+            redacted,
+            "sk-or-v1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        );
     }
 }
