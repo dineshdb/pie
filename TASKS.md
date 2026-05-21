@@ -17,3 +17,5 @@
 - [ ] Desktop Use (Mails, Calendar, Docs, Sheets)
 - [ ] Android Use
 - [ ] Channels (whatsapp, slack, etc)
+- [ ] Tools definition via AgentPlugin
+- [ ] MCP Support via upstream AgentPlugin
