@@ -215,13 +215,18 @@ impl Session {
         let ts = now_ms * 1000;
         let role_str = entry.role().as_str();
         let content = entry.content();
+        let redacted = if entry.role() == Role::Assistant {
+            content
+        } else {
+            jewels::redact(&content)
+        };
 
         sqlx::query!(
             "INSERT INTO messages (session_id, ts, role, content) VALUES (?, ?, ?, ?)",
             sid,
             ts,
             role_str,
-            content,
+            redacted,
         )
         .execute(&*self.pool)
         .await?;
@@ -269,12 +274,17 @@ impl Session {
     async fn insert_message(&self, session_id: &str, role: &str, content: &str) -> Result<()> {
         let now_ms = chrono::Utc::now().timestamp_millis();
         let ts = now_ms * 1000;
+        let redacted = if role == "assistant" {
+            content.to_string()
+        } else {
+            jewels::redact(content)
+        };
         sqlx::query!(
             "INSERT INTO messages (session_id, ts, role, content) VALUES (?, ?, ?, ?)",
             session_id,
             ts,
             role,
-            content,
+            redacted,
         )
         .execute(&*self.pool)
         .await?;
@@ -299,7 +309,12 @@ impl Session {
         if let Some(row) = row
             && let Ok(mut tc) = serde_json::from_str::<ToolCall>(&row.content)
         {
-            tc.output = Some(Ok(serde_json::Value::String(output)));
+            let final_output = if tc.tool_name == "websearch" {
+                output
+            } else {
+                jewels::redact(&output)
+            };
+            tc.output = Some(Ok(serde_json::Value::String(final_output)));
             let new_content = serde_json::to_string(&tc).unwrap_or(row.content);
             sqlx::query!(
                 "UPDATE messages SET content = ? WHERE session_id = ? AND role = 'tool' AND json_extract(content, '$.call_id') = ?",

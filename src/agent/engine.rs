@@ -315,26 +315,18 @@ impl PieAgent {
                 }
             }
             Message::AssistantMessage(a) => {
-                if let Some(s) = &mut a.content {
-                    *s = jewels::redact(s);
-                }
                 if let Some(tool_calls) = &mut a.tool_calls {
                     for tc in tool_calls {
                         tc.function.arguments = jewels::redact(&tc.function.arguments);
                     }
                 }
             }
-            Message::ToolMessage(t) => {
-                if let Some(s) = &mut t.content {
-                    *s = jewels::redact(s);
-                }
-            }
+            Message::ToolMessage(_) | Message::FunctionMessage(_) => {}
             Message::SystemMessage(s) => {
                 if let Some(content) = &mut s.content {
                     *content = jewels::redact(content);
                 }
             }
-            Message::FunctionMessage(_) => {}
         }
     }
 
@@ -383,8 +375,6 @@ impl PieAgent {
             }
 
             let mut builder = self.build_sdk_agent(output_mode)?;
-
-            builder = builder.plugin(crate::plugin::SecretScanningPlugin::new());
 
             let history_plugin = MemoryHistoryPlugin::new();
             for mut msg in self.session.to_messages() {
@@ -524,10 +514,16 @@ impl AgentPlugin for StreamPlugin {
             result.to_string()
         };
 
+        let output = if name == "websearch" {
+            output
+        } else {
+            jewels::redact(&crate::utils::anonymize_path(&output))
+        };
+
         let _ = self.event_tx.send(AgentEvent::ToolCall {
             name: name.to_string(),
             display: String::new(),
-            output: crate::utils::anonymize_path(&output),
+            output,
         });
         if name.starts_with("plan_") {
             let _ = self.event_tx.send(AgentEvent::PlanUpdate);

@@ -26,7 +26,8 @@ pub(crate) fn safe_lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard
 pub(crate) fn emit_tool_input(name: &str, params: &serde_json::Value) {
     let params_str = params.to_string();
     let anonymized = crate::utils::anonymize_path(&params_str);
-    tracing::debug!("TOOL: {name} {anonymized}");
+    let redacted = jewels::redact(&anonymized);
+    tracing::debug!("TOOL: {name} {redacted}");
 }
 
 // ── Sandbox execution helpers ──────────────────────────────────────────
@@ -48,11 +49,15 @@ pub(crate) fn run_sandboxed_command(cmd: &str, cfg: &p1e_sandbox::SandboxConfig)
     let result = cfg.build_safe_command(cmd, &bin_dirs);
     match result {
         Ok(mut c) => match c.output() {
-            Ok(out) => SandboxOutput {
-                stdout: String::from_utf8_lossy(&out.stdout).trim().to_string(),
-                stderr: String::from_utf8_lossy(&out.stderr).trim().to_string(),
-                exit_code: out.status.code().unwrap_or(-1),
-            },
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                SandboxOutput {
+                    stdout: jewels::redact(&crate::utils::anonymize_path(&stdout)),
+                    stderr: jewels::redact(&crate::utils::anonymize_path(&stderr)),
+                    exit_code: out.status.code().unwrap_or(-1),
+                }
+            }
             Err(e) => SandboxOutput {
                 stdout: String::new(),
                 stderr: e.to_string(),

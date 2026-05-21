@@ -6,6 +6,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn validate_path(path: &str) -> Result<PathBuf, String> {
+    if path.contains(".env") {
+        tracing::warn!("LLM is accessing environment file: {path}");
+        crate::ui::notify::notify("pie: Env File Access", &format!("LLM is accessing: {path}"));
+    }
+
     let p = Path::new(path);
     if p.is_absolute() {
         let current = std::env::current_dir().map_err(|e| e.to_string())?;
@@ -62,10 +67,11 @@ pub fn read_file_tool() -> anyhow::Result<Tool> {
                 .get(start.saturating_sub(1)..end)
                 .ok_or("Invalid line range")?;
             let result_content = slice.join("\n");
+            let redacted_content = jewels::redact(&result_content);
 
             Ok(json!({
                 "path": input.path,
-                "content": result_content,
+                "content": redacted_content,
                 "start_line": start,
                 "end_line": end,
                 "total_lines": lines.len()

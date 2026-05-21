@@ -296,11 +296,12 @@ fn execute_shell_direct(
             Ok(out) => {
                 let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                if stderr.is_empty() {
+                let combined = if stderr.is_empty() {
                     stdout
                 } else {
                     format!("{stdout}\n\nError:\n{stderr}")
-                }
+                };
+                jewels::redact(&crate::utils::anonymize_path(&combined))
             }
             Err(e) => format!("Failed to execute command: {e}"),
         };

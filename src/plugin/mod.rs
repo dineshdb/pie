@@ -3,7 +3,6 @@ mod debug;
 mod developer;
 mod externalplugin;
 mod helper_binaries;
-mod secret_scan;
 mod skills;
 mod system_prompts;
 
@@ -13,7 +12,6 @@ pub use debug::DebugPlugin;
 pub use developer::DeveloperPlugin;
 pub use externalplugin::ExternalPlugin;
 pub use helper_binaries::HelperBinariesPlugin;
-pub use secret_scan::SecretScanningPlugin;
 pub use skills::SkillsPlugin;
 pub use system_prompts::{EmbeddedSystemPromptPlugin, SystemPromptsPlugin};
 
