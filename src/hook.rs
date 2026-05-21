@@ -577,22 +577,19 @@ impl HookOutcome {
                 name,
                 exit_code,
                 message,
-            } => {
-                format!(
-                    "[Hook: {}] Warning (exit code {}):\n{}",
-                    name,
-                    exit_code.unwrap_or(-1),
-                    message.trim()
-                )
             }
-            HookOutcome::Error {
+            | HookOutcome::Error {
                 name,
                 exit_code,
                 message,
             } => {
+                let kind = if matches!(self, HookOutcome::Warning { .. }) {
+                    "Warning"
+                } else {
+                    "Error"
+                };
                 format!(
-                    "[Hook: {}] Error (exit code {}):\n{}",
-                    name,
+                    "[Hook: {name}] {kind} (exit code {}):\n{}",
                     exit_code.unwrap_or(-1),
                     message.trim()
                 )

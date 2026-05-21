@@ -35,6 +35,20 @@ impl Skill {
         resolved.reverse();
         resolved
     }
+
+    pub fn format_markdown(&self) -> String {
+        format!("## Skill: {}\n{}\n---\n", self.name, self.content)
+    }
+}
+
+/// Format a list of skills as a single markdown string.
+pub fn format_skills_markdown(skills: &[&Skill]) -> String {
+    use std::fmt::Write;
+    let mut output = String::new();
+    for skill in skills {
+        write!(output, "{}", skill.format_markdown()).ok();
+    }
+    output
 }
 
 /// Serde-deserializable frontmatter for skill files.

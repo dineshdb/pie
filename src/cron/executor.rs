@@ -72,13 +72,7 @@ pub async fn prompt_exec(
     let loaded_skills = Skill::resolve(&registry.skills, &mentions);
 
     for skill in &loaded_skills {
-        if let Err(e) = session
-            .add_system(&format!(
-                "## Loaded Skill: {}\n{}\n---\n{}",
-                skill.name, skill.description, skill.content
-            ))
-            .await
-        {
+        if let Err(e) = session.add_system(&skill.format_markdown()).await {
             tracing::warn!("failed to inject skill {}: {e}", skill.name);
         }
     }

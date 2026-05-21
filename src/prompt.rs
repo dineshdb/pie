@@ -52,16 +52,14 @@ pub struct SystemPromptCtx<'a> {
     pub extra_context: ExtraContext,
 }
 
-impl<'a> From<&SystemPrompt<'a>> for SystemPromptCtx<'a> {
-    fn from(sp: &SystemPrompt<'a>) -> Self {
+impl<'a> SystemPromptCtx<'a> {
+    pub fn new(sp: &'a SystemPrompt<'a>, steps: Vec<Step>) -> Self {
         let agent_name = sp.agent.map(|a| a.name.as_str());
         let agent_content = sp.agent.map(|a| a.content.as_str());
 
         let output_mode = sp
             .output_mode
             .unwrap_or_else(|| sp.agent.map_or(OutputMode::Md, |a| a.output_mode));
-
-        let steps = Vec::new();
 
         let plugin_system_prompts: HashMap<String, String> = sp
             .plugins
@@ -197,10 +195,7 @@ impl<'a> SystemPrompt<'a> {
         } else {
             Vec::new()
         };
-        let ctx = SystemPromptCtx {
-            steps,
-            ..SystemPromptCtx::from(self)
-        };
+        let ctx = SystemPromptCtx::new(self, steps);
         render_template(&ctx)
     }
 

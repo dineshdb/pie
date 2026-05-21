@@ -41,6 +41,7 @@ pub fn load_skills_tool(
             }
 
             let mut output = String::new();
+            let mut to_format = Vec::new();
             for skill in &resolved {
                 let mut guard = super::safe_lock(&loaded_skills);
                 if guard.contains(&skill.name) {
@@ -53,8 +54,9 @@ pub fn load_skills_tool(
                     continue;
                 }
                 guard.insert(skill.name.clone());
-                write!(output, "## Skill: {}\n{}\n---\n", skill.name, skill.content).ok();
+                to_format.push(*skill);
             }
+            output.push_str(&skill::format_skills_markdown(&to_format));
             Ok(json!(output))
         }))
         .build()?)

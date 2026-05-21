@@ -39,6 +39,19 @@ where
     s.serialize_str("[REDACTED]")
 }
 
+fn resolve_url(custom: Option<&String>, known: Option<&String>, fallback: &str) -> Option<Url> {
+    if let Some(url) = custom.and_then(|s| Url::parse(s).ok()) {
+        return Some(url);
+    }
+    if let Some(url) = known.and_then(|s| Url::parse(s).ok()) {
+        return Some(url);
+    }
+    if custom.is_none() && known.is_none() {
+        return fallback.parse().ok();
+    }
+    None
+}
+
 #[derive(Debug, serde::Serialize)]
 pub struct ResolvedConfig {
     pub provider: ResolvedProvider,
@@ -133,36 +146,22 @@ impl ResolvedProvider {
                 ("default".to_string(), None, None, None)
             };
 
-        let openai_url = custom_openai
-            .as_ref()
-            .and_then(|s| Url::parse(s).ok())
-            .or_else(|| known_data.and_then(|d| d.openai.as_ref().and_then(|s| Url::parse(s).ok())))
-            .or_else(|| {
-                if custom_openai.is_none() && known_data.is_none() {
-                    "http://localhost:11434/v1".parse().ok()
-                } else {
-                    None
-                }
-            })
-            .ok_or_else(|| {
-                AppError::Config(format!(
-                    "provider '{name}' not found or has no valid base URL"
-                ))
-            })?;
+        let openai_url = resolve_url(
+            custom_openai.as_ref(),
+            known_data.and_then(|d| d.openai.as_ref()),
+            "http://localhost:11434/v1",
+        )
+        .ok_or_else(|| {
+            AppError::Config(format!(
+                "provider '{name}' not found or has no valid base URL"
+            ))
+        })?;
 
-        let anthropic_url = custom_anthropic
-            .as_ref()
-            .and_then(|s| Url::parse(s).ok())
-            .or_else(|| {
-                known_data.and_then(|d| d.anthropic.as_ref().and_then(|s| Url::parse(s).ok()))
-            })
-            .or_else(|| {
-                if custom_anthropic.is_none() && known_data.is_none() {
-                    "http://localhost:11434".parse().ok()
-                } else {
-                    None
-                }
-            });
+        let anthropic_url = resolve_url(
+            custom_anthropic.as_ref(),
+            known_data.and_then(|d| d.anthropic.as_ref()),
+            "http://localhost:11434",
+        );
 
         Ok(Self {
             name,
