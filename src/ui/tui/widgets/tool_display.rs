@@ -23,8 +23,8 @@ impl ToolCallResult<'_> {
     pub fn new<'a>(name: &str, output: &'a str) -> ToolCallResult<'a> {
         match name {
             "shell" => parse_shell_output(output),
-            "load_skills" => ToolCallResult::LoadSkills,
-            "load_references" => ToolCallResult::LoadReferences,
+            "skills__load_skills" => ToolCallResult::LoadSkills,
+            "skills__load_references" => ToolCallResult::LoadReferences,
             _ => ToolCallResult::Other { output },
         }
     }

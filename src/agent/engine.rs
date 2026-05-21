@@ -9,19 +9,15 @@ use crate::prompt::SystemPrompt;
 use crate::registry::Registry;
 use crate::session::{HistoryEntry, Session};
 use crate::tools::plan::plan_tools;
-use crate::tools::{
-    execute_skill_script_tool, glob_tool, list_directory_tool, load_references_tool,
-    load_skills_tool, read_file_tool, replace_tool, shell, subagent_tool, websearch,
-    write_file_tool,
-};
+use crate::tools::{shell, subagent_tool, websearch};
 use agentsdk::core::tools::Tool;
 use agentsdk::openai::api::ChatCompletionRequestUserMessageContent;
 use agentsdk::{Agent as SdkAgent, MemoryHistoryPlugin, Message};
 use futures::future::BoxFuture;
 use p1e_sandbox::SandboxConfig;
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Clone)]
@@ -32,7 +28,6 @@ pub struct PieAgent {
     pub pool: Arc<DbPool>,
     pub session: Session,
     pub config: AgentConfig,
-    loaded_skills: Arc<Mutex<HashSet<String>>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -91,7 +86,6 @@ impl PieAgent {
             pool,
             session,
             config,
-            loaded_skills: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -132,19 +126,10 @@ impl PieAgent {
         let registry = self.registry.clone();
         let pool = self.pool.clone();
         let model = self.model.clone();
-        let loaded_skills = self.loaded_skills.clone();
         let session_id = self.session.id.to_string();
 
         let mut tools = vec![
-            read_file_tool()?,
-            write_file_tool()?,
-            replace_tool()?,
-            list_directory_tool()?,
-            glob_tool()?,
             shell(sandbox.clone())?,
-            load_skills_tool(registry.clone(), loaded_skills.clone())?,
-            load_references_tool(loaded_skills)?,
-            execute_skill_script_tool(sandbox.clone())?,
             subagent_tool(model, registry, sandbox.clone(), pool.clone())?,
             websearch(sandbox)?,
         ];
@@ -367,7 +352,11 @@ impl PieAgent {
                 .plugin(crate::plugin::EmbeddedSystemPromptPlugin::new(&system))
                 .plugin(crate::plugin::SystemPromptsPlugin::new())
                 .plugin(crate::plugin::ConversationModePlugin::new(output_mode))
-                .plugin(crate::plugin::SkillsPlugin::new())
+                .plugin(crate::plugin::SkillsPlugin::new(
+                    self.registry.clone(),
+                    self.sandbox.clone(),
+                ))
+                .plugin(crate::plugin::FileSystemPlugin::new())
                 .plugin(crate::plugin::DeveloperPlugin::new())
                 .plugin(crate::plugin::HelperBinariesPlugin::new())
                 .plugin(UserPluginRunner::new(

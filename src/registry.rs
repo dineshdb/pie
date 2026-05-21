@@ -65,10 +65,6 @@ pub struct Registry {
 static REGISTRY: OnceLock<Arc<Registry>> = OnceLock::new();
 
 impl Registry {
-    pub fn get() -> Option<Arc<Self>> {
-        REGISTRY.get().cloned()
-    }
-
     pub fn load() -> Arc<Self> {
         let agents = get_all_agents();
         let skills = get_all_skills();

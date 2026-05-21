@@ -94,7 +94,7 @@ impl AgentPlugin for DeveloperPlugin {
         });
 
         // test-first
-        if tool_name == "write_file" || tool_name == "replace" {
+        if tool_name == "filesystem__write_file" || tool_name == "filesystem__replace" {
             match Self::run_py("pie-guard", "test-first", &input, "default") {
                 Ok((code, _, stderr)) if code != 0 => {
                     tracing::warn!("test-first-check failed: {}", stderr);
