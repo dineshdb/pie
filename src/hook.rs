@@ -96,23 +96,10 @@ pub enum ExecutionStrategy {
     Parallel,
 }
 
-#[derive(Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct HookMatcher {
     pub tools: Option<Vec<String>>,
     pub file_pattern: Option<String>,
-}
-
-impl std::fmt::Debug for HookMatcher {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut s = f.debug_struct("HookMatcher");
-        if let Some(ref tools) = self.tools {
-            s.field("tools", tools);
-        }
-        if let Some(ref p) = self.file_pattern {
-            s.field("file_pattern", p);
-        }
-        s.finish()
-    }
 }
 
 /// Raw hook definition deserialized from TOML config.
@@ -137,15 +124,18 @@ pub struct HookDef {
 }
 
 /// Pre-computed environment for CLI hook execution.
-#[derive(Clone)]
+#[derive(Debug, Clone, Serialize)]
 struct CmdEnv {
     handler: String,
     is_action: bool,
+    #[serde(skip_serializing)]
     env_vars: Vec<(String, String)>,
+    #[serde(skip_serializing)]
     path_override: Option<std::ffi::OsString>,
 }
 
 /// Runtime hook with a pre-computed environment.
+#[derive(Debug, Clone, Serialize)]
 pub struct CommandHook {
     pub name: String,
     pub event: HookEvent,
@@ -154,38 +144,6 @@ pub struct CommandHook {
     pub scope: HookScope,
     pub strategy: ExecutionStrategy,
     cmd_env: CmdEnv,
-}
-
-impl Clone for CommandHook {
-    fn clone(&self) -> Self {
-        Self {
-            name: self.name.clone(),
-            event: self.event,
-            matcher: self.matcher.clone(),
-            on_failure: self.on_failure,
-            scope: self.scope,
-            strategy: self.strategy,
-            cmd_env: self.cmd_env.clone(),
-        }
-    }
-}
-
-// Forward Debug manually — closures don't impl Debug.
-impl std::fmt::Debug for CommandHook {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut s = f.debug_struct("Hook");
-        s.field("name", &self.name);
-        s.field("event", &self.event);
-        if let Some(ref m) = self.matcher {
-            s.field("matcher", m);
-        }
-        s.field("on_failure", &self.on_failure);
-        s.field("scope", &self.scope);
-        if self.strategy != ExecutionStrategy::default() {
-            s.field("strategy", &self.strategy);
-        }
-        s.finish_non_exhaustive()
-    }
 }
 
 impl From<HookDef> for CommandHook {

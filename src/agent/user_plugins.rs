@@ -158,6 +158,26 @@ impl UserPluginRunner {
         }
     }
 
+    async fn run_hook<R, F>(
+        &self,
+        plugins: &[ExternalPlugin],
+        event: HookEvent,
+        data: HookContextData,
+        f: F,
+    ) -> R
+    where
+        F: FnOnce(Vec<HookOutcome>, HookContextData) -> R,
+    {
+        let ctx = make_ctx(event, &self.session_id, self.output_mode, data);
+        match dispatch(&ctx, plugins).await {
+            Ok((outcomes, data)) => f(outcomes, data),
+            Err(e) => {
+                tracing::warn!("{event:?} hook error: {e}");
+                f(vec![], ctx.data)
+            }
+        }
+    }
+
     async fn run_pre_completion(
         &self,
         plugins: &[ExternalPlugin],
@@ -167,35 +187,24 @@ impl UserPluginRunner {
             system: None,
             query: Some(text.clone()),
         });
-        let ctx = make_ctx(
-            HookEvent::PreCompletion,
-            &self.session_id,
-            self.output_mode,
-            data,
-        );
-        match dispatch(&ctx, plugins).await {
-            Ok((outcomes, HookContextData::Prompt(p))) => {
-                for outcome in &outcomes {
-                    if let HookOutcome::Error { message, .. } = outcome {
-                        return CompletionAction::Reject {
-                            reason: message.clone(),
-                        };
-                    }
-                }
-                if let Some(transformed) = p.query
-                    && transformed != text
-                {
-                    CompletionAction::Accept(Some(transformed))
-                } else {
-                    CompletionAction::Accept(None)
+        self.run_hook(plugins, HookEvent::PreCompletion, data, |outcomes, data| {
+            for outcome in &outcomes {
+                if let HookOutcome::Error { message, .. } = outcome {
+                    return CompletionAction::Reject {
+                        reason: message.clone(),
+                    };
                 }
             }
-            Err(e) => {
-                tracing::warn!("completion.pre hook error: {e}");
+            if let HookContextData::Prompt(p) = data
+                && let Some(transformed) = p.query
+                && transformed != text
+            {
+                CompletionAction::Accept(Some(transformed))
+            } else {
                 CompletionAction::Accept(None)
             }
-            _ => CompletionAction::Accept(None),
-        }
+        })
+        .await
     }
 
     async fn run_pre_tool_use(
@@ -209,27 +218,19 @@ impl UserPluginRunner {
             input: Some(args.clone()),
             output: None,
         });
-        let ctx = make_ctx(
-            HookEvent::PreToolUse,
-            &self.session_id,
-            self.output_mode,
-            data,
-        );
-        match dispatch(&ctx, plugins).await {
-            Ok((outcomes, HookContextData::Tool(t))) => {
-                for outcome in &outcomes {
-                    if let HookOutcome::Error { message, .. } = outcome {
-                        return PreToolAction::Abort(message.clone());
-                    }
+        self.run_hook(plugins, HookEvent::PreToolUse, data, |outcomes, data| {
+            for outcome in &outcomes {
+                if let HookOutcome::Error { message, .. } = outcome {
+                    return PreToolAction::Abort(message.clone());
                 }
-                PreToolAction::Continue(t.input)
             }
-            Err(e) => {
-                tracing::warn!("tool.pre hook error: {e}");
+            if let HookContextData::Tool(t) = data {
+                PreToolAction::Continue(t.input)
+            } else {
                 PreToolAction::Continue(None)
             }
-            _ => PreToolAction::Continue(None),
-        }
+        })
+        .await
     }
 
     async fn run_post_tool_use(
@@ -244,30 +245,22 @@ impl UserPluginRunner {
             input: Some(params.clone()),
             output: Some(result.clone()),
         });
-        let ctx = make_ctx(
-            HookEvent::PostToolUse,
-            &self.session_id,
-            self.output_mode,
-            data,
-        );
-        match dispatch(&ctx, plugins).await {
-            Ok((outcomes, HookContextData::Tool(t))) => {
-                for outcome in &outcomes {
-                    if !matches!(
-                        outcome,
-                        HookOutcome::Success | HookOutcome::Transformed { .. }
-                    ) {
-                        tracing::warn!("tool.post hook: {}", outcome.format());
-                    }
+        self.run_hook(plugins, HookEvent::PostToolUse, data, |outcomes, data| {
+            for outcome in &outcomes {
+                if !matches!(
+                    outcome,
+                    HookOutcome::Success | HookOutcome::Transformed { .. }
+                ) {
+                    tracing::warn!("tool.post hook: {}", outcome.format());
                 }
-                PostToolAction::Continue(t.output)
             }
-            Err(e) => {
-                tracing::warn!("tool.post hook error: {e}");
+            if let HookContextData::Tool(t) = data {
+                PostToolAction::Continue(t.output)
+            } else {
                 PostToolAction::Continue(None)
             }
-            _ => PostToolAction::Continue(None),
-        }
+        })
+        .await
     }
 
     async fn run_post_completion(&self, plugins: &[ExternalPlugin], final_text: Option<String>) {
@@ -275,13 +268,8 @@ impl UserPluginRunner {
             system: None,
             query: final_text,
         });
-        let ctx = make_ctx(
-            HookEvent::PostCompletion,
-            &self.session_id,
-            self.output_mode,
-            data,
-        );
-        let _ = dispatch(&ctx, plugins).await;
+        self.run_hook(plugins, HookEvent::PostCompletion, data, |_, _| ())
+            .await;
     }
 }
 

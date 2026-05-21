@@ -20,6 +20,26 @@ const ENV_ANTHROPIC_AUTH_TOKEN: &str = "ANTHROPIC_AUTH_TOKEN";
 const ENV_ANTHROPIC_BASE_URL: &str = "ANTHROPIC_BASE_URL";
 const ENV_ANTHROPIC_MODEL: &str = "ANTHROPIC_MODEL";
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ResolvedProvider {
+    pub name: String,
+    pub model: String,
+    pub anthropic_url: Option<Url>,
+    pub openai_url: Url,
+    #[serde(serialize_with = "redact_api_key")]
+    pub api_key: Secret<String>,
+    #[allow(dead_code)]
+    pub temperature: Option<f32>,
+}
+
+fn redact_api_key<S>(_: &Secret<String>, s: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    s.serialize_str("[REDACTED]")
+}
+
+#[derive(Debug, serde::Serialize)]
 pub struct ResolvedConfig {
     pub provider: ResolvedProvider,
     pub model_tiers: HashMap<String, ResolvedProvider>,
@@ -29,34 +49,6 @@ pub struct ResolvedConfig {
     pub log_level: String,
     pub debug: bool,
     pub plugins: Vec<ExternalPlugin>,
-}
-
-impl std::fmt::Debug for ResolvedConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut s = f.debug_struct("ResolvedConfig");
-        s.field("provider", &self.provider);
-        if !self.model_tiers.is_empty() {
-            s.field("model_tiers", &self.model_tiers);
-        }
-        if self.max_steps != 25 {
-            s.field("max_steps", &self.max_steps);
-        }
-        let default_retry = super::types::RetryConfig::default();
-        if self.retry.rate_limit != default_retry.rate_limit {
-            s.field("retry.rate_limit", &self.retry.rate_limit);
-        }
-        if self.retry.api_error != default_retry.api_error {
-            s.field("retry.api_error", &self.retry.api_error);
-        }
-        s.field("output_format", &self.output_format);
-        s.field("log_level", &self.log_level);
-        if self.debug {
-            s.field("debug", &self.debug);
-        }
-        s.field("plugins", &self.plugins);
-
-        s.finish()
-    }
 }
 
 impl ResolvedConfig {
@@ -71,51 +63,6 @@ impl ResolvedConfig {
             return fallback.clone();
         };
         provider.build_client()
-    }
-}
-
-#[derive(Clone)]
-pub struct ResolvedProvider {
-    pub name: String,
-    pub model: String,
-    pub anthropic_url: Option<Url>,
-    pub openai_url: Url,
-    pub api_key: Secret<String>,
-    #[allow(dead_code)]
-    pub temperature: Option<f32>,
-}
-
-impl serde::Serialize for ResolvedProvider {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeStruct;
-        let mut state = serializer.serialize_struct("ResolvedProvider", 6)?;
-        state.serialize_field("name", &self.name)?;
-        state.serialize_field("model", &self.model)?;
-        state.serialize_field("anthropic_url", &self.anthropic_url)?;
-        state.serialize_field("openai_url", &self.openai_url)?;
-        state.serialize_field("api_key", "[REDACTED]")?;
-        state.serialize_field("temperature", &self.temperature)?;
-        state.end()
-    }
-}
-
-impl std::fmt::Debug for ResolvedProvider {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut s = f.debug_struct("ResolvedProvider");
-        s.field("name", &self.name);
-        s.field("model", &self.model);
-        if let Some(ref url) = self.anthropic_url {
-            s.field("anthropic_url", &url.to_string());
-        }
-        s.field("openai_url", &self.openai_url.to_string());
-        s.field("api_key", &"[REDACTED]".to_string());
-        if let Some(t) = self.temperature {
-            s.field("temperature", &t);
-        }
-        s.finish()
     }
 }
 

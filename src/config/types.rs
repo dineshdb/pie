@@ -181,7 +181,7 @@ pub struct GlobalAgentConfig {
     pub retry: RetryConfig,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct RetryConfig {
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
@@ -189,7 +189,7 @@ pub struct RetryConfig {
     pub api_error: ApiErrorConfig,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct RateLimitConfig {
     pub max_errors: u32,
@@ -205,7 +205,7 @@ impl Default for RateLimitConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ApiErrorConfig {
     pub max_errors: u32,
@@ -221,7 +221,7 @@ impl Default for ApiErrorConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(default)]
 pub struct LaunchConfig {
     pub sandbox: Option<SandboxConfig>,
