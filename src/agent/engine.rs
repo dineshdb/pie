@@ -9,7 +9,7 @@ use crate::prompt::SystemPrompt;
 use crate::registry::Registry;
 use crate::session::{HistoryEntry, Session};
 use crate::tools::plan::plan_tools;
-use crate::tools::{shell, subagent_tool, websearch};
+use crate::tools::{shell, websearch};
 use agentsdk::core::tools::Tool;
 use agentsdk::openai::api::ChatCompletionRequestUserMessageContent;
 use agentsdk::{Agent as SdkAgent, MemoryHistoryPlugin, Message};
@@ -123,16 +123,9 @@ impl PieAgent {
 
     fn build_tools(&self, _output_mode: OutputMode) -> Result<Vec<Tool>> {
         let sandbox = self.sandbox.clone();
-        let registry = self.registry.clone();
-        let pool = self.pool.clone();
-        let model = self.model.clone();
         let session_id = self.session.id.to_string();
 
-        let mut tools = vec![
-            shell(sandbox.clone())?,
-            subagent_tool(model, registry, sandbox.clone(), pool.clone())?,
-            websearch(sandbox)?,
-        ];
+        let mut tools = vec![shell(sandbox.clone())?, websearch(sandbox)?];
 
         for tool in plan_tools(self.pool.clone(), &session_id)? {
             tools.push(tool);
@@ -357,6 +350,12 @@ impl PieAgent {
                     self.sandbox.clone(),
                 ))
                 .plugin(crate::plugin::FileSystemPlugin::new())
+                .plugin(crate::plugin::SubAgentPlugin::new(
+                    self.model.clone(),
+                    self.registry.clone(),
+                    self.sandbox.clone(),
+                    self.pool.clone(),
+                ))
                 .plugin(crate::plugin::DeveloperPlugin::new())
                 .plugin(crate::plugin::HelperBinariesPlugin::new())
                 .plugin(UserPluginRunner::new(

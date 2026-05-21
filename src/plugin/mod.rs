@@ -5,6 +5,7 @@ mod externalplugin;
 mod filesystem;
 mod helper_binaries;
 mod skills;
+mod subagent;
 mod system_prompts;
 
 pub use crate::config::pie_home;
@@ -15,6 +16,7 @@ pub use externalplugin::ExternalPlugin;
 pub use filesystem::FileSystemPlugin;
 pub use helper_binaries::HelperBinariesPlugin;
 pub use skills::SkillsPlugin;
+pub use subagent::SubAgentPlugin;
 pub use system_prompts::{EmbeddedSystemPromptPlugin, SystemPromptsPlugin};
 
 use crate::hook::CommandHook;

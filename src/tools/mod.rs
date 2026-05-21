@@ -1,11 +1,8 @@
-mod hooks;
 pub mod plan;
 mod shell;
-pub(crate) mod subagent;
 mod websearch;
 
 pub use shell::shell;
-pub use subagent::subagent_tool;
 pub use websearch::websearch;
 
 /// Lock a mutex, recovering from poison instead of panicking.

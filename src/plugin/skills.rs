@@ -1,5 +1,5 @@
 use crate::config::EMBEDDED_PIE_DIR;
-use crate::registry::{CompletionKind, Registry};
+use crate::registry::Registry;
 use crate::skill::{Skill, format_skills_markdown};
 use agentsdk::core::plugin::PluginToolCall;
 use agentsdk::core::tools::ToolDefinition;
@@ -97,14 +97,8 @@ impl AgentPlugin for SkillsPlugin {
         let mut skills = Vec::new();
 
         for item in &self.registry.completions {
-            match item.kind {
-                CompletionKind::Builtin => {}
-                CompletionKind::Skill => {
-                    skills.push(format!("- [s] {}: {}", item.label, item.description));
-                }
-                CompletionKind::Agent => {
-                    skills.push(format!("- [a] {}: {}", item.label, item.description));
-                }
+            if matches!(item.kind, crate::registry::CompletionKind::Skill) {
+                skills.push(format!("- [s] {}: {}", item.label, item.description));
             }
         }
 
@@ -112,7 +106,7 @@ impl AgentPlugin for SkillsPlugin {
             return None;
         }
 
-        let content = format!("{SKILLS_AND_AGENTS}\n{}", skills.join("\n"));
+        let content = format!("{SKILLS_SECTION}\n{}", skills.join("\n"));
         Some(Cow::Owned(content))
     }
 }
@@ -272,15 +266,11 @@ fn validate_filename(name: &str, allowed_exts: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-const SKILLS_AND_AGENTS: &str = r"
-## Skills and Agents
-Skills are extra knowledge you can load on-demand using `load_skills` tool.
-
-Agents are specialized personas you can delegate to using `subagent` tool.
-Agents have their own context and provide only the reponse you want, keeping your context lean.
-
-Skills and Agents can't be invoked directly as tools.
-Available skills and agents:
+const SKILLS_SECTION: &str = r"
+## Skills
+Skills are extra knowledge you can load on-demand using `skills__load_skills` tool.
+Skills can't be invoked directly as tools.
+Available skills:
 ";
 
 #[derive(JsonSchema, Deserialize, Serialize)]
