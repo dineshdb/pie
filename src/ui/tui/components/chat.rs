@@ -140,30 +140,6 @@ impl ChatComponent {
         self.cached_lines.clear();
     }
 
-    pub fn reload_history(&mut self) {
-        let pool = self.pool.clone();
-        let sid = crate::session::SessionId::from(self.session_id.clone());
-        let result = crate::ui::tui::realm::run_sync(crate::session::Session::load(pool, sid));
-
-        if let Ok(session) = result {
-            let mut messages = vec![ChatMessage::system("Welcome to pie! Type ? for help.")];
-            for entry in session.history_entries() {
-                let msg = match entry.role() {
-                    crate::session::Role::User => ChatMessage::user(&entry.content()),
-                    crate::session::Role::Assistant => ChatMessage::assistant(&entry.content()),
-                    crate::session::Role::System => ChatMessage::system(&entry.content()),
-                    crate::session::Role::Tool => ChatMessage::tool(&entry.content()),
-                };
-                messages.push(msg);
-            }
-            self.messages = messages;
-            self.render_cache.clear();
-            self.response_idx = None;
-            self.cached_lines.clear();
-            self.chat_state.auto_scroll = true;
-        }
-    }
-
     pub fn stream_error(&mut self, err: &str) {
         self.finish_stream(format!("Error: {err}"));
     }

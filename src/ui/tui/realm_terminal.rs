@@ -91,9 +91,9 @@ fn process_msg(
             }
         }
 
-        Msg::StreamDone(_output) => {
+        Msg::StreamDone(output) => {
             if let Some(chat) = chat_mut!(app) {
-                chat.reload_history();
+                chat.finish_stream(output);
             }
             let query = input.finish_stream();
             crate::ui::notify::turn_complete(query.as_deref());
@@ -277,7 +277,15 @@ fn execute_shell_direct(
     let sandbox = input.sandbox_settings.clone();
     let tx = tx.clone();
     let command = command.to_string();
+    let pool = input.session_pool.clone();
+    let session_id = input.session_id.clone();
+
     tokio::spawn(async move {
+        // Persist the user command
+        if let Ok(mut session) = Session::load(pool.clone(), session_id.clone()).await {
+            let _ = session.add_user(&format!("!{command}")).await;
+        }
+
         let output = p1e_sandbox::build_shell_command(&command, &sandbox)
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("PAGER", "cat")
@@ -296,6 +304,12 @@ fn execute_shell_direct(
             }
             Err(e) => format!("Failed to execute command: {e}"),
         };
+
+        // Persist the assistant response
+        if let Ok(mut session) = Session::load(pool, session_id).await {
+            let _ = session.add_assistant(&result).await;
+        }
+
         let _ = tx.send(StreamEvent::Done(result));
     });
 }
