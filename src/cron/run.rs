@@ -6,6 +6,7 @@ use crate::registry::Registry;
 use crate::session::{HistoryEntry, Session};
 use chrono::Utc;
 use croner::Cron;
+use std::collections::HashSet;
 use std::fmt::Write as FmtWrite;
 use std::fs;
 use std::path::PathBuf;
@@ -110,6 +111,8 @@ pub async fn run_due_jobs(pool: Arc<DbPool>, registry: Arc<Registry>) -> anyhow:
             Arc::new(cfg)
         };
 
+        let grants: HashSet<_> = sched.grants.iter().cloned().collect();
+
         let exit_code = prompt_exec(
             &mut session,
             &sched.prompt,
@@ -117,6 +120,7 @@ pub async fn run_due_jobs(pool: Arc<DbPool>, registry: Arc<Registry>) -> anyhow:
             registry.clone(),
             pool.clone(),
             sandbox,
+            grants,
         )
         .await;
 

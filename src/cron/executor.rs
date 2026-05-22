@@ -4,7 +4,8 @@ use crate::db::DbPool;
 use crate::instructions::Instructions;
 use crate::registry::Registry;
 use crate::session::Session;
-use p1e_sandbox::SandboxConfig;
+use p1e_sandbox::{Permission, SandboxConfig};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 struct CwdGuard {
@@ -34,6 +35,7 @@ pub async fn prompt_exec(
     registry: Arc<Registry>,
     pool: Arc<DbPool>,
     sandbox: Arc<SandboxConfig>,
+    grants: HashSet<Permission>,
 ) -> i64 {
     let _guard = CwdGuard::new(cwd);
 
@@ -79,6 +81,7 @@ pub async fn prompt_exec(
         AgentConfig {
             max_steps: config.max_steps,
             retry: config.retry.clone(),
+            grants,
             ..AgentConfig::default()
         },
     );

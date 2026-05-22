@@ -12,7 +12,6 @@ pub struct Schedule {
     pub prompt: String,
     pub source_path: PathBuf,
     pub sandbox: Option<SandboxConfig>,
-    #[allow(dead_code)]
     pub grants: Vec<Permission>,
 }
 
