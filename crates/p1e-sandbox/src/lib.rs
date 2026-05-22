@@ -1,7 +1,99 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::path::Path;
 use std::process::Command;
 use std::sync::OnceLock;
+
+/// A capability that a skill declares it needs, and an agent/schedule must grant.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Permission {
+    Unsandboxed(String),
+    FilesystemRead(String),
+    FilesystemWrite(String),
+    Network(String),
+    AppleEvents,
+    NoSandbox,
+}
+
+impl Permission {
+    pub fn apply_to(&self, cfg: &mut SandboxConfig) {
+        match self {
+            Self::Unsandboxed(name) => {
+                cfg.no_sandbox = true;
+                if !cfg.allowed_bins.contains(name) {
+                    cfg.allowed_bins.push(name.clone());
+                }
+            }
+            Self::FilesystemRead(path) => {
+                if !cfg.allow_read.contains(path) {
+                    cfg.allow_read.push(path.clone());
+                }
+            }
+            Self::FilesystemWrite(path) => {
+                if !cfg.allow_write.contains(path) {
+                    cfg.allow_write.push(path.clone());
+                }
+            }
+            Self::Network(domain) => {
+                if !cfg.allowed_domains.contains(domain) {
+                    cfg.allowed_domains.push(domain.clone());
+                }
+            }
+            Self::AppleEvents => {
+                cfg.allow_apple_events = true;
+            }
+            Self::NoSandbox => {
+                cfg.no_sandbox = true;
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for Permission {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsandboxed(bin) => write!(f, "unsandboxed:{bin}"),
+            Self::FilesystemRead(path) => write!(f, "fs-read:{path}"),
+            Self::FilesystemWrite(path) => write!(f, "fs-write:{path}"),
+            Self::Network(domain) => write!(f, "network:{domain}"),
+            Self::AppleEvents => write!(f, "apple-events"),
+            Self::NoSandbox => write!(f, "no-sandbox"),
+        }
+    }
+}
+
+impl std::str::FromStr for Permission {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some(value) = s.strip_prefix("unsandboxed:") {
+            Ok(Self::Unsandboxed(value.to_string()))
+        } else if let Some(value) = s.strip_prefix("fs-read:") {
+            Ok(Self::FilesystemRead(value.to_string()))
+        } else if let Some(value) = s.strip_prefix("fs-write:") {
+            Ok(Self::FilesystemWrite(value.to_string()))
+        } else if let Some(value) = s.strip_prefix("network:") {
+            Ok(Self::Network(value.to_string()))
+        } else if s == "apple-events" {
+            Ok(Self::AppleEvents)
+        } else if s == "no-sandbox" {
+            Ok(Self::NoSandbox)
+        } else {
+            Err(format!("unknown permission: {s}"))
+        }
+    }
+}
+
+impl Serialize for Permission {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for Permission {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
 
 /// Sandbox configuration. Flat structure, deserialized from pie.toml `[sandbox]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,6 +107,15 @@ pub struct SandboxConfig {
     pub denied_domains: Vec<String>,
     pub allowed_bins: Vec<String>,
     pub disallowed_bins: Vec<String>,
+    /// Allow sending Apple Events to other applications (macOS only).
+    /// Adds `(allow appleevent-send)` to the sandbox profile.
+    #[serde(default)]
+    pub allow_apple_events: bool,
+    /// Skip sandbox-exec isolation entirely.
+    /// Use for skills that need macOS IPC (Apple Events, accessibility, etc.)
+    /// that sandbox-exec blocks regardless of profile.
+    #[serde(default)]
+    pub no_sandbox: bool,
 }
 
 impl Default for SandboxConfig {
@@ -55,6 +156,8 @@ impl Default for SandboxConfig {
             denied_domains: vec![],
             allowed_bins: vec![],
             disallowed_bins: vec!["sudo".into(), "su".into()],
+            allow_apple_events: false,
+            no_sandbox: false,
         }
     }
 }
@@ -96,6 +199,10 @@ impl SandboxConfig {
             errors: Vec::new(),
             mode,
         };
+
+        if self.no_sandbox {
+            return report;
+        }
 
         let words = match shell_words::split(cmd) {
             Ok(w) => w,
@@ -232,6 +339,27 @@ impl SandboxConfig {
         }
     }
 
+    /// Merge another `SandboxConfig` on top of this one.
+    /// Fields from `other` override or extend this config's fields.
+    pub fn merge(&mut self, other: &SandboxConfig) {
+        if other.allow_apple_events {
+            self.allow_apple_events = true;
+        }
+        if other.no_sandbox {
+            self.no_sandbox = true;
+        }
+        self.deny_read.extend_from_slice(&other.deny_read);
+        self.allow_read.extend_from_slice(&other.allow_read);
+        self.allow_write.extend_from_slice(&other.allow_write);
+        self.deny_write.extend_from_slice(&other.deny_write);
+        self.allowed_domains
+            .extend_from_slice(&other.allowed_domains);
+        self.denied_domains.extend_from_slice(&other.denied_domains);
+        self.allowed_bins.extend_from_slice(&other.allowed_bins);
+        self.disallowed_bins
+            .extend_from_slice(&other.disallowed_bins);
+    }
+
     /// Check if a candidate path falls within any of the allowed read or write paths.
     pub fn is_within_allowed_paths(&self, candidate: &str) -> std::io::Result<bool> {
         let candidate_path = Path::new(candidate);
@@ -299,6 +427,11 @@ fn find_duplicates(list: &[String], name: &str, warnings: &mut Vec<String>) {
 /// Build a sandboxed command using native OS sandboxing.
 /// Falls back to unsandboxed command if the sandbox tool is unavailable.
 pub fn build_command(program: &str, args: &[String], cfg: &SandboxConfig) -> Command {
+    if cfg.no_sandbox {
+        let mut c = Command::new(program);
+        c.args(args);
+        return c;
+    }
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     let available = *AVAILABLE.get_or_init(is_sandbox_tool_available);
 
@@ -415,6 +548,10 @@ pub(crate) mod platform {
                 let resolved = resolve_path(path);
                 lines.push(format!("(allow file-write* (subpath \"{resolved}\"))"));
             }
+        }
+
+        if cfg.allow_apple_events {
+            lines.push("(allow appleevent-send)".to_string());
         }
 
         for pattern in &cfg.deny_write {
@@ -584,5 +721,96 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn generate_macos_profile(cfg: &SandboxConfig) -> String {
         platform::generate_profile(cfg)
+    }
+
+    #[test]
+    fn permission_roundtrip_display_from_str() {
+        let perms = vec![
+            Permission::Unsandboxed("osascript".into()),
+            Permission::FilesystemRead("~/Library/Mail".into()),
+            Permission::FilesystemWrite("./output".into()),
+            Permission::Network("imap.gmail.com".into()),
+            Permission::AppleEvents,
+            Permission::NoSandbox,
+        ];
+        for perm in &perms {
+            let s = perm.to_string();
+            let parsed: Permission = s.parse().expect(&format!("parse: {s}"));
+            assert_eq!(*perm, parsed, "roundtrip failed for {s}");
+        }
+    }
+
+    #[test]
+    fn permission_from_str_rejects_unknown() {
+        assert!("bad-permission".parse::<Permission>().is_err());
+        assert!("".parse::<Permission>().is_err());
+    }
+
+    #[test]
+    fn permission_serialize_deserialize() {
+        let perms = vec![
+            Permission::Unsandboxed("osascript".into()),
+            Permission::AppleEvents,
+            Permission::NoSandbox,
+        ];
+        let json = serde_json::to_string(&perms).unwrap();
+        let parsed: Vec<Permission> = serde_json::from_str(&json).unwrap();
+        assert_eq!(perms, parsed);
+    }
+
+    #[test]
+    fn permission_apply_no_sandbox() {
+        let mut cfg = SandboxConfig::default();
+        assert!(!cfg.no_sandbox);
+        Permission::NoSandbox.apply_to(&mut cfg);
+        assert!(cfg.no_sandbox);
+    }
+
+    #[test]
+    fn permission_apply_apple_events() {
+        let mut cfg = SandboxConfig::default();
+        assert!(!cfg.allow_apple_events);
+        Permission::AppleEvents.apply_to(&mut cfg);
+        assert!(cfg.allow_apple_events);
+    }
+
+    #[test]
+    fn permission_apply_unsandboxed() {
+        let mut cfg = SandboxConfig::default();
+        assert!(!cfg.no_sandbox);
+        Permission::Unsandboxed("osascript".into()).apply_to(&mut cfg);
+        assert!(cfg.no_sandbox);
+        assert!(cfg.allowed_bins.contains(&"osascript".to_string()));
+    }
+
+    #[test]
+    fn permission_apply_fs_read() {
+        let mut cfg = SandboxConfig::default();
+        Permission::FilesystemRead("~/Library/Mail".into()).apply_to(&mut cfg);
+        assert!(cfg.allow_read.contains(&"~/Library/Mail".to_string()));
+    }
+
+    #[test]
+    fn permission_apply_fs_write() {
+        let mut cfg = SandboxConfig::default();
+        Permission::FilesystemWrite("./output".into()).apply_to(&mut cfg);
+        assert!(cfg.allow_write.contains(&"./output".to_string()));
+    }
+
+    #[test]
+    fn permission_apply_network() {
+        let mut cfg = SandboxConfig::default();
+        Permission::Network("imap.gmail.com".into()).apply_to(&mut cfg);
+        assert!(cfg.allowed_domains.contains(&"imap.gmail.com".to_string()));
+    }
+
+    #[test]
+    fn permission_equality_and_hash() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        assert!(set.insert(Permission::NoSandbox));
+        assert!(!set.insert(Permission::NoSandbox));
+        assert!(set.insert(Permission::AppleEvents));
+        assert_eq!(set.len(), 2);
     }
 }

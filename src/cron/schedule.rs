@@ -1,8 +1,8 @@
 use agentsdk_plugin_skills::split_frontmatter;
+use p1e_sandbox::{Permission, SandboxConfig};
 use serde::Deserialize;
 use std::path::PathBuf;
 
-/// A file-based schedule defined in a `.md` file with frontmatter.
 #[derive(Debug, Clone)]
 pub struct Schedule {
     pub id: String,
@@ -11,6 +11,9 @@ pub struct Schedule {
     pub enabled: bool,
     pub prompt: String,
     pub source_path: PathBuf,
+    pub sandbox: Option<SandboxConfig>,
+    #[allow(dead_code)]
+    pub grants: Vec<Permission>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -22,6 +25,10 @@ struct ScheduleFrontmatter {
     id: String,
     #[serde(default)]
     enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sandbox: Option<SandboxConfig>,
+    #[serde(default)]
+    grants: Vec<Permission>,
 }
 
 fn schedule_dirs() -> Vec<PathBuf> {
@@ -92,6 +99,8 @@ pub fn load_all_schedules() -> Vec<Schedule> {
                         enabled: meta.enabled,
                         prompt: body,
                         source_path: path,
+                        sandbox: meta.sandbox.clone(),
+                        grants: meta.grants.clone(),
                     };
                 }
                 continue;
@@ -103,6 +112,8 @@ pub fn load_all_schedules() -> Vec<Schedule> {
                 enabled: meta.enabled,
                 prompt: body,
                 source_path: path,
+                sandbox: meta.sandbox,
+                grants: meta.grants,
             });
         }
     }

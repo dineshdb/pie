@@ -4,6 +4,7 @@ use crate::db::DbPool;
 use crate::instructions::Instructions;
 use crate::registry::Registry;
 use crate::session::Session;
+use p1e_sandbox::SandboxConfig;
 use std::sync::Arc;
 
 struct CwdGuard {
@@ -32,6 +33,7 @@ pub async fn prompt_exec(
     cwd: &str,
     registry: Arc<Registry>,
     pool: Arc<DbPool>,
+    sandbox: Arc<SandboxConfig>,
 ) -> i64 {
     let _guard = CwdGuard::new(cwd);
 
@@ -66,7 +68,6 @@ pub async fn prompt_exec(
         tracing::warn!("failed to inject agent {}: {e}", agent.name);
     }
 
-    let sandbox = Arc::new(p1e_sandbox::SandboxConfig::default());
     let model = config.provider.build_client();
 
     let mut agent = PieAgent::new(

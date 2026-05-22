@@ -267,6 +267,8 @@ mod test_helpers {
             model: None,
             temperature: None,
             content: "You are a test agent.".to_string(),
+            sandbox: None,
+            grants: vec![],
         };
         let agents = vec![agent];
 

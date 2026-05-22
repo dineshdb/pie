@@ -2,6 +2,7 @@ use crate::config::EMBEDDED_PIE_DIR;
 use crate::instructions::Instructions;
 use agentsdk_plugin_skills::split_frontmatter;
 use include_dir::Dir;
+use p1e_sandbox::{Permission, SandboxConfig};
 use serde::Deserialize;
 use std::path::PathBuf;
 use strum::{AsRefStr, Display, EnumString};
@@ -106,6 +107,9 @@ pub struct Agent {
     pub model: Option<String>,
     pub temperature: Option<f32>,
     pub content: String,
+    pub sandbox: Option<SandboxConfig>,
+    #[allow(dead_code)]
+    pub grants: Vec<Permission>,
 }
 
 /// Serde-deserializable frontmatter for agent files.
@@ -118,6 +122,9 @@ struct AgentFrontmatter {
     output_mode: OutputMode,
     model: Option<String>,
     temperature: Option<f32>,
+    sandbox: Option<SandboxConfig>,
+    #[serde(default)]
+    grants: Vec<Permission>,
 }
 
 fn agents_root_global() -> PathBuf {
@@ -170,6 +177,8 @@ fn parse_agent(raw: &str, filename: &str) -> Option<Agent> {
         model: meta.model,
         temperature: meta.temperature,
         content,
+        sandbox: meta.sandbox,
+        grants: meta.grants,
     })
 }
 
@@ -317,6 +326,8 @@ mod tests {
                 model: None,
                 temperature: None,
                 content: "Be thorough.".into(),
+                sandbox: None,
+                grants: vec![],
             },
             Agent {
                 name: "planner".into(),
@@ -325,6 +336,8 @@ mod tests {
                 model: None,
                 temperature: None,
                 content: "Think step by step.".into(),
+                sandbox: None,
+                grants: vec![],
             },
         ];
         let instr = Instructions::new("/reviewer check this");
@@ -349,6 +362,8 @@ mod tests {
             model: None,
             temperature: None,
             content: String::new(),
+            sandbox: None,
+            grants: vec![],
         }];
         let instr = Instructions::new("nothing relevant");
         let mentioned = resolve_mentioned_agents(&instr, &agents);
@@ -364,6 +379,8 @@ mod tests {
             model: None,
             temperature: None,
             content: String::new(),
+            sandbox: None,
+            grants: vec![],
         }];
 
         // Test with name

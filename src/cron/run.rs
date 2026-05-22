@@ -100,12 +100,23 @@ pub async fn run_due_jobs(pool: Arc<DbPool>, registry: Arc<Registry>) -> anyhow:
             .and_then(|p| p.to_str())
             .unwrap_or(".");
 
+        let sandbox = {
+            let mut cfg = crate::config::build_sandbox(&crate::config::load_config()?)
+                .as_ref()
+                .clone();
+            if let Some(sb) = &sched.sandbox {
+                cfg.merge(sb);
+            }
+            Arc::new(cfg)
+        };
+
         let exit_code = prompt_exec(
             &mut session,
             &sched.prompt,
             cwd,
             registry.clone(),
             pool.clone(),
+            sandbox,
         )
         .await;
 
