@@ -229,6 +229,147 @@ where
     }
 }
 
+pub fn handle_exec(
+    _config: &ResolvedConfig,
+    _registry: &Arc<Registry>,
+    skill_name: Option<String>,
+    script_args: &[String],
+) -> anyhow::Result<()> {
+    let (skill, script, extra_args) = parse_exec_args(skill_name, script_args)?;
+
+    let ext = std::path::Path::new(&script)
+        .extension()
+        .and_then(|e| e.to_str())
+        .ok_or_else(|| anyhow::anyhow!("script '{script}' has no extension"))?;
+
+    let valid = ["sh", "bash", "py", "js", "ts", "rb", "pl"];
+    if !valid.iter().any(|a| ext.eq_ignore_ascii_case(a)) {
+        anyhow::bail!(
+            "invalid script extension '.{ext}': allowed: .sh, .bash, .py, .js, .ts, .rb, .pl"
+        );
+    }
+
+    let script_path = resolve_skill_script_path(&skill, &script)
+        .ok_or_else(|| anyhow::anyhow!("script '{script}' not found for skill '{skill}'"))?;
+
+    let dir = script_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("invalid script path"))?
+        .to_path_buf();
+
+    let mut extra_bin_dirs = Vec::new();
+    let bin_dir = dir.join("bin");
+    if bin_dir.is_dir() {
+        extra_bin_dirs.push(bin_dir);
+    }
+
+    let pie_config = crate::config::load_config()?;
+    let sandbox = crate::config::build_sandbox(&pie_config);
+
+    let dir_str = dir.to_string_lossy().to_string();
+    let mut sandbox_cfg = (*sandbox).clone();
+    if !sandbox_cfg.allow_read.contains(&dir_str) {
+        sandbox_cfg.allow_read.push(dir_str);
+    }
+
+    for bin in &extra_bin_dirs {
+        let bin_str = bin.to_string_lossy().to_string();
+        if !sandbox_cfg.allow_read.contains(&bin_str) {
+            sandbox_cfg.allow_read.push(bin_str);
+        }
+    }
+
+    let script_quoted = shell_quote(&script_path.to_string_lossy());
+    let cmd = if extra_args.is_empty() {
+        script_quoted
+    } else {
+        let args_quoted: Vec<String> = extra_args.iter().map(|a| shell_quote(a)).collect();
+        format!("{script_quoted} {}", args_quoted.join(" "))
+    };
+
+    let exit_code =
+        crate::tools::run_sandboxed_command_streaming(&cmd, &sandbox_cfg, &extra_bin_dirs)
+            .map_err(|e| anyhow::anyhow!("execution failed: {e}"))?;
+
+    std::process::exit(exit_code);
+}
+
+fn parse_exec_args(
+    skill_name: Option<String>,
+    script_args: &[String],
+) -> anyhow::Result<(String, String, Vec<String>)> {
+    let (skill, script, extra) = if let Some(skill) = skill_name {
+        let script = script_args
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("missing script name"))?;
+        (
+            skill,
+            script.clone(),
+            script_args.get(1..).unwrap_or_default().to_vec(),
+        )
+    } else {
+        let skill = script_args
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("missing skill name"))?;
+        let script = script_args
+            .get(1)
+            .ok_or_else(|| anyhow::anyhow!("missing script name"))?;
+        (
+            skill.clone(),
+            script.clone(),
+            script_args.get(2..).unwrap_or_default().to_vec(),
+        )
+    };
+    Ok((skill, script, extra))
+}
+
+fn resolve_skill_script_path(entity: &str, script: &str) -> Option<std::path::PathBuf> {
+    let candidates = |base: std::path::PathBuf| -> Vec<std::path::PathBuf> {
+        vec![base.join(script), base.join("bin").join(script)]
+    };
+
+    let find = |base: std::path::PathBuf| -> Option<std::path::PathBuf> {
+        candidates(base).into_iter().find(|p| p.exists())
+    };
+
+    if let Some(root) = crate::utils::git_repo_root() {
+        let base = std::path::PathBuf::from(root)
+            .join(".pie")
+            .join("skills")
+            .join(entity);
+        if let Some(p) = find(base) {
+            return Some(p);
+        }
+    }
+    if let Some(p) = find(crate::config::pie_home().join("skills").join(entity)) {
+        return Some(p);
+    }
+
+    if let Some(root) = crate::utils::git_repo_root() {
+        let base = std::path::PathBuf::from(root)
+            .join(".pie")
+            .join("agents")
+            .join(entity);
+        if let Some(p) = find(base) {
+            return Some(p);
+        }
+    }
+    find(crate::config::pie_home().join("agents").join(entity))
+}
+
+fn shell_quote(s: &str) -> String {
+    if s.is_empty() {
+        return "''".to_string();
+    }
+    if s.chars().all(|c| {
+        c.is_alphanumeric()
+            || matches!(c, '-' | '_' | '.' | '/' | ':' | '@' | '+' | '=' | ',' | '~')
+    }) {
+        return s.to_string();
+    }
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 pub fn handle_launch(
     config: &ResolvedConfig,
     all_args: &[String],

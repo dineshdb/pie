@@ -100,6 +100,16 @@ enum Commands {
         #[command(subcommand)]
         command: CronCommand,
     },
+    /// Execute a script from a skill directly (no LLM)
+    #[command(name = "x")]
+    Exec {
+        /// Skill name (use -s <skill> or as first positional argument)
+        #[arg(short = 's')]
+        skill: Option<String>,
+        /// Script to execute and optional arguments
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        script: Vec<String>,
+    },
 }
 
 #[derive(clap::Subcommand, Clone)]
@@ -200,6 +210,12 @@ async fn handle_command(
         Commands::Cron { command } => {
             init_stderr_subscriber(config.debug, &config.log_level);
             handle_cron(command, pool, registry.clone()).await
+        }
+        Commands::Exec { skill, script } => {
+            if config.debug {
+                init_stderr_subscriber(config.debug, &config.log_level);
+            }
+            cmd::handle_exec(config, registry, skill, &script)
         }
         Commands::Daemon { interval } => {
             init_stderr_subscriber(config.debug, &config.log_level);
