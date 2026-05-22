@@ -15,7 +15,7 @@ pub use externalplugin::ExternalPlugin;
 pub use helper_binaries::HelperBinariesPlugin;
 pub use permissions::{PermissionRequest, PermissionsPlugin};
 pub use subagent::SubAgentPlugin;
-pub use system_prompts::{EmbeddedSystemPromptPlugin, SystemPromptsPlugin};
+pub use system_prompts::{EmbeddedSystemPromptPlugin, build_agentsmd_plugin};
 
 use crate::hook::CommandHook;
 use crate::registry::PluginMetadata;

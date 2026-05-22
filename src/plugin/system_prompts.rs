@@ -1,47 +1,20 @@
-use crate::config::pie_home;
-use crate::utils::{find_upward_in_repo, load_file};
 use agentsdk::{AgentPlugin, Messages, PluginContext};
 use async_trait::async_trait;
 use std::borrow::Cow;
 
-#[derive(Debug, Default)]
-pub struct SystemPromptsPlugin;
-
-impl SystemPromptsPlugin {
-    pub fn new() -> Self {
-        Self
+pub fn build_agentsmd_plugin() -> anyhow::Result<agentsdk_plugin_agentsmd::AgentsMdPlugin> {
+    let mut search_paths = vec![format!(
+        "{}/AGENTS.md",
+        crate::config::pie_home().to_string_lossy()
+    )];
+    if let Some(root) = crate::utils::git_repo_root() {
+        search_paths.push(format!("{root}/AGENTS.md"));
     }
-}
-
-#[async_trait]
-impl AgentPlugin for SystemPromptsPlugin {
-    fn name(&self) -> &'static str {
-        "system_prompts"
-    }
-
-    async fn prepare_system_prompt(
-        &mut self,
-        _ctx: &PluginContext,
-        _history: &Messages,
-    ) -> Option<Cow<'static, str>> {
-        let global = load_file(pie_home().join("SYSTEM.md")).unwrap_or_default();
-        let local = find_upward_in_repo("SYSTEM.md").unwrap_or_default();
-
-        if global.is_empty() && local.is_empty() {
-            return None;
-        }
-
-        let mut parts = Vec::new();
-        if !global.is_empty() {
-            parts.push(format!("### Global System Prompts\n\n{global}"));
-        }
-        if !local.is_empty() {
-            parts.push(format!("### Project System Prompts\n\n{local}"));
-        }
-
-        let joined = parts.join("\n\n---\n\n");
-        Some(Cow::Owned(joined))
-    }
+    search_paths.push("AGENTS.md".into());
+    agentsdk_plugin_agentsmd::AgentsMdPlugin::builder()
+        .search_paths(search_paths)
+        .build()
+        .map_err(|e| anyhow::anyhow!("failed to build agentsmd plugin: {e}"))
 }
 
 #[derive(Debug)]

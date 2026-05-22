@@ -4,10 +4,6 @@ pub use path::*;
 
 use std::ops::ControlFlow;
 
-pub fn load_file(path: impl AsRef<std::path::Path>) -> Option<String> {
-    std::fs::read_to_string(path).ok()
-}
-
 /// Merge `incoming` items into `items` by name, overriding duplicates.
 pub fn merge_by_name<T, F>(
     items: &mut Vec<T>,
@@ -76,19 +72,6 @@ fn walk_upward<T>(mut check: impl FnMut(&std::path::Path) -> ControlFlow<Option<
         }
     }
     None
-}
-
-/// Walk from `PWD` upward to find a file, stopping at the git repo root or home directory.
-pub fn find_upward_in_repo(name: &str) -> Option<String> {
-    walk_upward(|dir| {
-        if let Some(content) = load_file(dir.join(name)) {
-            return ControlFlow::Break(Some(content));
-        }
-        if dir.join(".git").exists() {
-            return ControlFlow::Break(None);
-        }
-        ControlFlow::Continue(())
-    })
 }
 
 /// Find the git repo root by walking up from cwd looking for `.git`.

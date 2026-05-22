@@ -375,7 +375,7 @@ impl PieAgent {
             builder = builder
                 .plugin(history_plugin.clone())
                 .plugin(crate::plugin::EmbeddedSystemPromptPlugin::new(&system))
-                .plugin(crate::plugin::SystemPromptsPlugin::new())
+                .plugin(crate::plugin::build_agentsmd_plugin()?)
                 .plugin(crate::plugin::ConversationModePlugin::new(output_mode))
                 .plugin(crate::plugin::PermissionsPlugin::new(
                     self.registry.clone(),
