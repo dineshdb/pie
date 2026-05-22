@@ -38,6 +38,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentsdk-plugin-fs"
+version = "0.1.0"
+dependencies = [
+ "agentsdk",
+ "async-trait",
+ "glob",
+ "hecs",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "agentsdk-plugin-skills"
 version = "0.1.0"
 dependencies = [
@@ -2200,6 +2214,7 @@ name = "p1e"
 version = "0.3.0"
 dependencies = [
  "agentsdk",
+ "agentsdk-plugin-fs",
  "agentsdk-plugin-skills",
  "anyhow",
  "arboard",

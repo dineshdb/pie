@@ -14,6 +14,8 @@ use crate::tools::{shell, websearch};
 use agentsdk::core::tools::Tool;
 use agentsdk::openai::api::ChatCompletionRequestUserMessageContent;
 use agentsdk::{Agent as SdkAgent, MemoryHistoryPlugin, Message};
+use agentsdk_plugin_fs::FileSystemPlugin;
+use agentsdk_plugin_skills::SkillsPlugin;
 use futures::future::BoxFuture;
 use p1e_sandbox::{Permission, SandboxConfig};
 use serde::Deserialize;
@@ -364,6 +366,11 @@ impl PieAgent {
                 history_plugin.push(msg).await;
             }
 
+            let mut paths = vec![crate::config::pie_home().join("skills")];
+            if let Some(root) = crate::utils::git_repo_root() {
+                paths.push(std::path::PathBuf::from(root).join(".pie").join("skills"));
+            }
+
             let grants = self.resolve_grants();
             builder = builder
                 .plugin(history_plugin.clone())
@@ -375,8 +382,13 @@ impl PieAgent {
                     grants,
                     self.permission_tx.clone(),
                 ))
-                .plugin(crate::plugin::build_skills_plugin()?)
-                .plugin(crate::plugin::FileSystemPlugin::new())
+                .plugin(
+                    SkillsPlugin::builder()
+                        .search_paths(paths)
+                        .build()
+                        .map_err(|e| anyhow::anyhow!("failed to build skills plugin: {e}"))?,
+                )
+                .plugin(FileSystemPlugin::new())
                 .plugin(crate::plugin::SubAgentPlugin::new(
                     self.model.clone(),
                     self.registry.clone(),
