@@ -21,7 +21,6 @@ mod plugin;
 mod prompt;
 mod registry;
 mod session;
-mod skill;
 mod tools;
 mod ui;
 mod utils;

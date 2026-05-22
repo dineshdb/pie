@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agentsdk"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "agentsdk-macros",
  "async-stream",
@@ -35,6 +35,23 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "agentsdk-plugin-skills"
+version = "0.1.0"
+dependencies = [
+ "agentsdk",
+ "async-trait",
+ "derive_builder",
+ "hecs",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "shell-words",
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]
@@ -2037,7 +2054,7 @@ checksum = "6aa2c4e539b869820a2b82e1aef6ff40aa85e65decdd5185e83fb4b1249cd00f"
 
 [[package]]
 name = "o3gen"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "heck",
  "http",
@@ -2053,7 +2070,7 @@ dependencies = [
 
 [[package]]
 name = "o3gen-openai"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "derive_builder",
  "derive_more",
@@ -2183,6 +2200,7 @@ name = "p1e"
 version = "0.3.0"
 dependencies = [
  "agentsdk",
+ "agentsdk-plugin-skills",
  "anyhow",
  "arboard",
  "async-trait",

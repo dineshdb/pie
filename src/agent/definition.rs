@@ -1,6 +1,6 @@
 use crate::config::EMBEDDED_PIE_DIR;
 use crate::instructions::Instructions;
-use crate::skill::split_frontmatter;
+use agentsdk_plugin_skills::split_frontmatter;
 use include_dir::Dir;
 use serde::Deserialize;
 use std::path::PathBuf;

@@ -1,4 +1,4 @@
-use crate::skill::split_frontmatter;
+use agentsdk_plugin_skills::split_frontmatter;
 use serde::Deserialize;
 use std::path::PathBuf;
 

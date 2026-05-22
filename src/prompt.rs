@@ -1,8 +1,7 @@
 use crate::agent::{Agent, OutputMode};
 use crate::db::DbPool;
 use crate::instructions::Instructions;
-use crate::registry::PluginMetadata;
-use crate::skill::Skill;
+use crate::registry::{PluginMetadata, Skill};
 use crate::tools::plan::{PlanRepo, Step};
 use crate::utils::{AnonymizedPath, git_repo_root};
 use anyhow::{Context, Result};
@@ -184,7 +183,7 @@ impl<'a> SystemPrompt<'a> {
     /// Resolve all requirements (skills and their dependencies) from instructions.
     pub fn resolve(mut self, instructions: &Instructions) -> Self {
         let mentions: Vec<String> = instructions.mentions.iter().cloned().collect();
-        self.loaded_skills = Skill::resolve(self.skills, &mentions);
+        self.loaded_skills = crate::registry::resolve_skills(self.skills, &mentions);
         self
     }
 
@@ -234,7 +233,7 @@ fn render_template<T: Serialize>(ctx: &T) -> Result<String> {
 mod test_helpers {
     use super::*;
     use crate::agent::Agent;
-    use crate::skill::Skill;
+    use crate::registry::Skill;
 
     pub fn skill(name: &str, desc: &str, content: &str) -> Skill {
         Skill {
@@ -242,6 +241,9 @@ mod test_helpers {
             description: desc.to_string(),
             content: content.to_string(),
             needs: Vec::new(),
+            references: Vec::new(),
+            path: std::path::PathBuf::new(),
+            extra: HashMap::new(),
         }
     }
 

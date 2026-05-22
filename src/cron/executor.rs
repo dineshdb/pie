@@ -4,7 +4,6 @@ use crate::db::DbPool;
 use crate::instructions::Instructions;
 use crate::registry::Registry;
 use crate::session::Session;
-use crate::skill::Skill;
 use std::sync::Arc;
 
 struct CwdGuard {
@@ -43,10 +42,16 @@ pub async fn prompt_exec(
 
     let instructions = Instructions::new(prompt);
     let mentions: Vec<String> = instructions.mentions.iter().cloned().collect();
-    let loaded_skills = Skill::resolve(&registry.skills, &mentions);
+    let loaded_skills = crate::registry::resolve_skills(&registry.skills, &mentions);
 
     for skill in &loaded_skills {
-        if let Err(e) = session.add_system(&skill.format_markdown()).await {
+        if let Err(e) = session
+            .add_system(&format!(
+                "## Skill: {}\n{}\n---\n",
+                skill.name, skill.content
+            ))
+            .await
+        {
             tracing::warn!("failed to inject skill {}: {e}", skill.name);
         }
     }

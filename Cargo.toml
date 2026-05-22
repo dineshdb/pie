@@ -19,6 +19,7 @@ jewels = { path = "crates/jewels" }
 
 [dependencies]
 agentsdk = { path = "../agentsdk" }
+agentsdk-plugin-skills = { path = "../agentsdk/crates/agentsdk-plugin-skills" }
 anyhow = "1"
 arboard = "3"
 async-trait = "0.1"

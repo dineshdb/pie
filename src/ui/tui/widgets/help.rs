@@ -1,5 +1,5 @@
 use crate::agent::Agent;
-use crate::skill::Skill;
+use crate::registry::Skill;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::{Color, Modifier, Style};
 use tuirealm::ratatui::text::{Line, Span};

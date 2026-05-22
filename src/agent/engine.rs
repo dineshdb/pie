@@ -1,6 +1,6 @@
 use crate::agent::user_plugins::run_prompt_hook;
 use crate::agent::{AgentEvent, OutputMode, UserPluginRunner, find_subsume_candidate};
-use crate::config::CONFIG;
+use crate::config::{CONFIG, pie_home};
 use crate::db::DbPool;
 use crate::error::{AppError, Result};
 use crate::hook::HookEvent;
@@ -13,6 +13,7 @@ use crate::tools::{shell, websearch};
 use agentsdk::core::tools::Tool;
 use agentsdk::openai::api::ChatCompletionRequestUserMessageContent;
 use agentsdk::{Agent as SdkAgent, MemoryHistoryPlugin, Message};
+use agentsdk_plugin_skills::SkillsPlugin;
 use futures::future::BoxFuture;
 use p1e_sandbox::SandboxConfig;
 use serde::Deserialize;
@@ -340,15 +341,22 @@ impl PieAgent {
                 Self::redact_message(&mut msg);
                 history_plugin.push(msg).await;
             }
+
+            let mut paths = vec![pie_home().join("skills")];
+            if let Some(root) = crate::utils::git_repo_root() {
+                paths.push(std::path::PathBuf::from(root).join(".pie").join("skills"));
+            }
             builder = builder
                 .plugin(history_plugin.clone())
                 .plugin(crate::plugin::EmbeddedSystemPromptPlugin::new(&system))
                 .plugin(crate::plugin::SystemPromptsPlugin::new())
                 .plugin(crate::plugin::ConversationModePlugin::new(output_mode))
-                .plugin(crate::plugin::SkillsPlugin::new(
-                    self.registry.clone(),
-                    self.sandbox.clone(),
-                ))
+                .plugin(
+                    SkillsPlugin::builder()
+                        .search_paths(paths)
+                        .build()
+                        .map_err(|e| anyhow::anyhow!("failed to build skills plugin: {e}"))?,
+                )
                 .plugin(crate::plugin::FileSystemPlugin::new())
                 .plugin(crate::plugin::SubAgentPlugin::new(
                     self.model.clone(),

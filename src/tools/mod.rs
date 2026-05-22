@@ -5,13 +5,6 @@ mod websearch;
 pub use shell::shell;
 pub use websearch::websearch;
 
-/// Lock a mutex, recovering from poison instead of panicking.
-pub(crate) fn safe_lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
 /// Emit a `TOOL:` line with tool name and input parameters for test observability.
 pub(crate) fn emit_tool_input(name: &str, params: &serde_json::Value) {
     let params_str = params.to_string();
