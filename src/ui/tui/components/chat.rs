@@ -7,10 +7,12 @@ use crate::registry::Registry;
 use crate::tools::plan::Step;
 use crate::ui::tui::realm::{Msg, StreamEvent};
 use crate::ui::tui::state::ChatMessage;
+use crate::ui::tui::stream::PendingPermissions;
 use crate::ui::tui::widgets::chat::{self, ChatState, ChatView};
 use crate::ui::tui::widgets::render_cache::MessageRenderCache;
 use crate::ui::tui::widgets::tool_display::ToolCallResult;
 use std::sync::Arc;
+use tokio::sync::oneshot;
 use tuirealm::command::{Cmd, CmdResult};
 use tuirealm::component::{AppComponent, Component};
 use tuirealm::event::{Event, Key, KeyModifiers, MouseEvent, MouseEventKind};
@@ -36,7 +38,15 @@ pub enum ActiveDialog {
     None,
     Help { scroll_offset: u16 },
     ModelSelector(ModelSelectorState),
+    PermissionPrompt(PermissionPromptState),
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PermissionPromptState {
+    pub skill: String,
+    pub permissions: Vec<String>,
+}
+
 pub struct ChatComponent {
     pub messages: Vec<ChatMessage>,
     pub render_cache: MessageRenderCache,
@@ -52,6 +62,8 @@ pub struct ChatComponent {
     pub session_id: String,
     pub show_plan: bool,
     pub cached_plan_steps: Vec<Step>,
+    pub pending_permissions: PendingPermissions,
+    permission_response_tx: Option<oneshot::Sender<bool>>,
 }
 
 impl ChatComponent {
@@ -61,6 +73,7 @@ impl ChatComponent {
         registry: Arc<Registry>,
         pool: Arc<DbPool>,
         session_id: String,
+        pending_permissions: PendingPermissions,
     ) -> Self {
         Self {
             messages,
@@ -77,6 +90,8 @@ impl ChatComponent {
             session_id,
             show_plan: true,
             cached_plan_steps: Vec::new(),
+            pending_permissions,
+            permission_response_tx: None,
         }
     }
 
@@ -258,6 +273,27 @@ impl Component for ChatComponent {
                     area,
                 );
             }
+            ActiveDialog::PermissionPrompt(state) => {
+                let perm_lines: Vec<String> = state
+                    .permissions
+                    .iter()
+                    .map(|p| format!("  - {p}"))
+                    .collect();
+                let body = format!(
+                    "Skill '{}' requests:\n{}\n\n[Enter] Allow   [Esc/n] Deny",
+                    state.skill,
+                    perm_lines.join("\n")
+                );
+                let para = tuirealm::ratatui::widgets::Paragraph::new(body).style(
+                    tuirealm::ratatui::style::Style::default()
+                        .fg(tuirealm::ratatui::style::Color::Yellow),
+                );
+                frame.render_widget(
+                    super::super::widgets::dialog::Dialog::new(" Permission Required ", para)
+                        .with_size(70, 35),
+                    area,
+                );
+            }
         }
     }
 
@@ -411,6 +447,21 @@ impl ChatComponent {
                 }
                 Msg::Redraw
             }
+            StreamEvent::PermissionRequest => {
+                let req = self
+                    .pending_permissions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                if let Some(req) = req {
+                    self.permission_response_tx = Some(req.response_tx);
+                    self.active_dialog = ActiveDialog::PermissionPrompt(PermissionPromptState {
+                        skill: req.skill,
+                        permissions: req.permissions.iter().map(ToString::to_string).collect(),
+                    });
+                }
+                Msg::Redraw
+            }
         }
     }
 
@@ -426,6 +477,9 @@ impl ChatComponent {
             ActiveDialog::ModelSelector(state) => {
                 Self::handle_model_selector_keyboard_event(key, state)
             }
+            ActiveDialog::PermissionPrompt(_) => {
+                Some(self.handle_permission_prompt_keyboard_event(key))
+            }
         };
 
         if let Some(m) = msg {
@@ -435,6 +489,11 @@ impl ChatComponent {
             {
                 // If it was a close command, handle it here
                 if let Key::Esc | Key::Char('?') = key.code {
+                    self.active_dialog = ActiveDialog::None;
+                }
+                if let Key::Enter | Key::Char('n') = key.code
+                    && matches!(self.active_dialog, ActiveDialog::PermissionPrompt(_))
+                {
                     self.active_dialog = ActiveDialog::None;
                 }
             }
@@ -569,6 +628,26 @@ impl ChatComponent {
             _ => None,
         }
     }
+
+    fn handle_permission_prompt_keyboard_event(&mut self, key: &tuirealm::event::KeyEvent) -> Msg {
+        match (key.modifiers, &key.code) {
+            (KeyModifiers::NONE, Key::Enter) => {
+                if let Some(tx) = self.permission_response_tx.take() {
+                    let _ = tx.send(true);
+                }
+                self.active_dialog = ActiveDialog::None;
+                Msg::Redraw
+            }
+            (KeyModifiers::NONE, Key::Esc | Key::Char('n')) => {
+                if let Some(tx) = self.permission_response_tx.take() {
+                    let _ = tx.send(false);
+                }
+                self.active_dialog = ActiveDialog::None;
+                Msg::Redraw
+            }
+            _ => Msg::Redraw,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -589,6 +668,10 @@ mod tests {
         Arc::new(crate::db::create_test_pool().await.unwrap())
     }
 
+    fn test_pending() -> PendingPermissions {
+        Arc::new(std::sync::Mutex::new(None))
+    }
+
     #[tokio::test]
     async fn new_chat_has_welcome_message_first() {
         let messages = vec![ChatMessage::system("Welcome to pie! Type ? for help.")];
@@ -598,6 +681,7 @@ mod tests {
             test_registry(),
             test_pool().await,
             "test-session".to_string(),
+            test_pending(),
         );
         assert_eq!(chat.messages.len(), 1);
         assert_eq!(chat.messages[0].role, Role::System);
@@ -613,6 +697,7 @@ mod tests {
             test_registry(),
             test_pool().await,
             "test-session".to_string(),
+            test_pending(),
         );
         chat.chat_state.auto_scroll = false;
         chat.add_message(ChatMessage::user("test"));
@@ -630,6 +715,7 @@ mod tests {
             test_registry(),
             test_pool().await,
             "test-session".to_string(),
+            test_pending(),
         );
         assert!(chat.show_plan);
         chat.toggle_plan();
@@ -646,6 +732,7 @@ mod tests {
             test_registry(),
             test_pool().await,
             "test-session".to_string(),
+            test_pending(),
         );
         chat.start_response();
         assert!(chat.is_streaming());

@@ -349,6 +349,9 @@ pub async fn run_tui(
         .tick_interval(Duration::from_millis(20));
 
     let mut app = App::init(listener_cfg);
+
+    let pending_permissions = Arc::new(std::sync::Mutex::new(None));
+
     let mut input = InputComponent::new(
         model,
         provider,
@@ -357,6 +360,7 @@ pub async fn run_tui(
         max_steps,
         pie_config.provider.clone(),
         registry.clone(),
+        pending_permissions.clone(),
     );
     let current_model = input.provider.model.clone();
 
@@ -368,6 +372,7 @@ pub async fn run_tui(
             registry,
             session.pool().clone(),
             session.id.to_string(),
+            pending_permissions,
         )),
         vec![],
     )?;

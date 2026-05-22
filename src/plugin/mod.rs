@@ -4,6 +4,8 @@ mod developer;
 mod externalplugin;
 mod filesystem;
 mod helper_binaries;
+mod permissions;
+mod skills;
 mod subagent;
 mod system_prompts;
 
@@ -14,6 +16,8 @@ pub use developer::DeveloperPlugin;
 pub use externalplugin::ExternalPlugin;
 pub use filesystem::FileSystemPlugin;
 pub use helper_binaries::HelperBinariesPlugin;
+pub use permissions::{PermissionRequest, PermissionsPlugin};
+pub use skills::build_skills_plugin;
 pub use subagent::SubAgentPlugin;
 pub use system_prompts::{EmbeddedSystemPromptPlugin, SystemPromptsPlugin};
 

@@ -3,13 +3,11 @@ use tuirealm::application::Application;
 use tuirealm::event::{Event, KeyEvent};
 use tuirealm::listener::{Poll, PortResult};
 
-/// Component identifiers for tuirealm Application.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Id {
     Chat,
 }
 
-/// Custom events bridging tokio streaming into tuirealm.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamEvent {
     Delta(String),
@@ -22,6 +20,7 @@ pub enum StreamEvent {
     },
     PlanUpdate,
     ModelList(Vec<String>),
+    PermissionRequest,
 }
 
 /// Messages returned by `AppComponent::on()` — processed in the update function.

@@ -1,10 +1,11 @@
 use crate::agent::user_plugins::run_prompt_hook;
 use crate::agent::{AgentEvent, OutputMode, UserPluginRunner, find_subsume_candidate};
-use crate::config::{CONFIG, pie_home};
+use crate::config::CONFIG;
 use crate::db::DbPool;
 use crate::error::{AppError, Result};
 use crate::hook::HookEvent;
 use crate::instructions::Instructions;
+use crate::plugin::PermissionRequest;
 use crate::prompt::SystemPrompt;
 use crate::registry::Registry;
 use crate::session::{HistoryEntry, Session};
@@ -13,11 +14,10 @@ use crate::tools::{shell, websearch};
 use agentsdk::core::tools::Tool;
 use agentsdk::openai::api::ChatCompletionRequestUserMessageContent;
 use agentsdk::{Agent as SdkAgent, MemoryHistoryPlugin, Message};
-use agentsdk_plugin_skills::SkillsPlugin;
 use futures::future::BoxFuture;
-use p1e_sandbox::SandboxConfig;
+use p1e_sandbox::{Permission, SandboxConfig};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -29,6 +29,7 @@ pub struct PieAgent {
     pub pool: Arc<DbPool>,
     pub session: Session,
     pub config: AgentConfig,
+    permission_tx: Option<UnboundedSender<PermissionRequest>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -40,6 +41,8 @@ pub struct AgentConfig {
     pub depth: u32,
     pub max_retries: u32,
     pub retry: crate::config::RetryConfig,
+    #[serde(default)]
+    pub grants: HashSet<Permission>,
 }
 
 impl Default for AgentConfig {
@@ -51,6 +54,7 @@ impl Default for AgentConfig {
             depth: 0,
             max_retries: 3,
             retry: crate::config::RetryConfig::default(),
+            grants: HashSet::new(),
         }
     }
 }
@@ -87,7 +91,25 @@ impl PieAgent {
             pool,
             session,
             config,
+            permission_tx: None,
         }
+    }
+
+    pub fn with_permission_channel(mut self, tx: UnboundedSender<PermissionRequest>) -> Self {
+        self.permission_tx = Some(tx);
+        self
+    }
+
+    fn resolve_grants(&self) -> HashSet<Permission> {
+        let mut grants = self.config.grants.clone();
+        if let Some(name) = &self.config.agent_name
+            && let Some(agent) = self.registry.agents.iter().find(|a| &a.name == name)
+        {
+            for g in &agent.grants {
+                grants.insert(g.clone());
+            }
+        }
+        grants
     }
 
     fn merged_mentions(&self, query: &Instructions) -> Instructions {
@@ -342,21 +364,18 @@ impl PieAgent {
                 history_plugin.push(msg).await;
             }
 
-            let mut paths = vec![pie_home().join("skills")];
-            if let Some(root) = crate::utils::git_repo_root() {
-                paths.push(std::path::PathBuf::from(root).join(".pie").join("skills"));
-            }
+            let grants = self.resolve_grants();
             builder = builder
                 .plugin(history_plugin.clone())
                 .plugin(crate::plugin::EmbeddedSystemPromptPlugin::new(&system))
                 .plugin(crate::plugin::SystemPromptsPlugin::new())
                 .plugin(crate::plugin::ConversationModePlugin::new(output_mode))
-                .plugin(
-                    SkillsPlugin::builder()
-                        .search_paths(paths)
-                        .build()
-                        .map_err(|e| anyhow::anyhow!("failed to build skills plugin: {e}"))?,
-                )
+                .plugin(crate::plugin::PermissionsPlugin::new(
+                    self.registry.clone(),
+                    grants,
+                    self.permission_tx.clone(),
+                ))
+                .plugin(crate::plugin::build_skills_plugin()?)
                 .plugin(crate::plugin::FileSystemPlugin::new())
                 .plugin(crate::plugin::SubAgentPlugin::new(
                     self.model.clone(),
@@ -424,7 +443,25 @@ impl PieAgent {
         };
 
         let sub_session = Session::create_with_id(self.pool.clone(), sub_id).await?;
-        let config = AgentConfig::subagent(self.config.depth + 1, agent_name);
+
+        let mut grants = self.config.grants.clone();
+        if let Some(name) = &agent_name
+            && let Some(agent) = self.registry.agents.iter().find(|a| &a.name == name)
+        {
+            for g in &agent.grants {
+                grants.insert(g.clone());
+            }
+        }
+
+        let config = AgentConfig {
+            agent_name: agent_name.clone(),
+            history_limit: 10,
+            max_steps: 10,
+            depth: self.config.depth + 1,
+            max_retries: 3,
+            retry: crate::config::RetryConfig::default(),
+            grants,
+        };
 
         Ok(PieAgent::new(
             model,

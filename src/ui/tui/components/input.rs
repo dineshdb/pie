@@ -8,7 +8,7 @@ use crate::registry::Registry;
 use crate::session::{Session, SessionId};
 use crate::tools::plan::{PlanRepo, StepStatus};
 use crate::ui::tui::realm::{Msg, StreamEvent};
-use crate::ui::tui::stream::{StreamContext, spawn_stream};
+use crate::ui::tui::stream::{PendingPermissions, StreamContext, spawn_stream};
 use crate::ui::tui::widgets::completion::{
     CompletionPopup, CompletionState, Direction, slash_token_range,
 };
@@ -48,9 +48,11 @@ pub struct InputComponent {
     pub stream_abort: Option<mpsc::UnboundedSender<()>>,
     last_query: Option<String>,
     pub registry: Arc<Registry>,
+    pub pending_permissions: PendingPermissions,
 }
 
 impl InputComponent {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         model: agentsdk::OpenAI,
         provider: ResolvedProvider,
@@ -59,6 +61,7 @@ impl InputComponent {
         max_steps: u32,
         available_providers: HashMap<String, ProviderConfig>,
         registry: Arc<Registry>,
+        pending_permissions: PendingPermissions,
     ) -> Self {
         let session_id = session.id.clone();
         let session_pool = session.pool().clone();
@@ -94,6 +97,7 @@ impl InputComponent {
             stream_abort: None,
             last_query: None,
             registry,
+            pending_permissions,
         }
     }
 

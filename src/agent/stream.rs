@@ -1,4 +1,5 @@
 use crate::config::RetryConfig;
+use crate::plugin::PermissionRequest;
 use agentsdk::core::agent::{PostToolAction, PreToolAction, ToolErrorAction};
 use agentsdk::core::retry::RetryAction;
 use agentsdk::error::AgentSdkError;
@@ -6,7 +7,7 @@ use agentsdk::{AgentPlugin, PluginContext};
 use async_trait::async_trait;
 use tokio::sync::mpsc::UnboundedSender;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum AgentEvent {
     Delta(String),
     Done(String),
@@ -17,6 +18,8 @@ pub enum AgentEvent {
         output: String,
     },
     PlanUpdate,
+    #[expect(dead_code)]
+    PermissionRequest(PermissionRequest),
 }
 
 pub struct StreamPlugin {
