@@ -12,6 +12,7 @@ pub enum AgentEvent {
     Delta(String),
     Done(String),
     Error(String),
+    UserMessage(String),
     ToolCall {
         name: String,
         display: String,
@@ -46,15 +47,20 @@ impl AgentPlugin for StreamPlugin {
         "stream"
     }
 
-    async fn on_text_delta(&mut self, _ctx: &PluginContext, text: &str) {
+    async fn on_text_delta(&mut self, _ctx: &mut PluginContext, text: &str) {
         if !text.is_empty() {
             let _ = self.event_tx.send(AgentEvent::Delta(text.to_string()));
         }
     }
 
+    async fn on_user_message(&mut self, _ctx: &mut PluginContext, text: String) -> String {
+        let _ = self.event_tx.send(AgentEvent::UserMessage(text.clone()));
+        text
+    }
+
     async fn on_tool_pre_execute(
         &mut self,
-        _ctx: &PluginContext,
+        _ctx: &mut PluginContext,
         _id: &str,
         name: &str,
         arguments: &serde_json::Value,
@@ -70,7 +76,7 @@ impl AgentPlugin for StreamPlugin {
 
     async fn on_tool_post_execute(
         &mut self,
-        _ctx: &PluginContext,
+        _ctx: &mut PluginContext,
         _id: &str,
         name: &str,
         result: &serde_json::Value,
@@ -84,7 +90,7 @@ impl AgentPlugin for StreamPlugin {
         let output = if name == "websearch" {
             output
         } else {
-            jewels::redact(&crate::utils::anonymize_path(&output))
+            crate::plugin::JewelsPlugin::redact(&crate::utils::anonymize_path(&output))
         };
 
         let _ = self.event_tx.send(AgentEvent::ToolCall {
@@ -101,7 +107,7 @@ impl AgentPlugin for StreamPlugin {
 
     async fn on_tool_error(
         &mut self,
-        _ctx: &PluginContext,
+        _ctx: &mut PluginContext,
         _id: &str,
         name: &str,
         error: &str,
@@ -117,7 +123,11 @@ impl AgentPlugin for StreamPlugin {
         ToolErrorAction::Continue(None)
     }
 
-    async fn on_api_error(&mut self, _ctx: &PluginContext, error: &AgentSdkError) -> RetryAction {
+    async fn on_api_error(
+        &mut self,
+        _ctx: &mut PluginContext,
+        error: &AgentSdkError,
+    ) -> RetryAction {
         self.api_error_count += 1;
 
         if let Some(status) = error.status_code() {

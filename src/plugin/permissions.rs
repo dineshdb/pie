@@ -88,7 +88,7 @@ impl AgentPlugin for PermissionsPlugin {
 
     async fn on_tool_pre_execute(
         &mut self,
-        _ctx: &PluginContext,
+        _ctx: &mut PluginContext,
         _id: &str,
         tool_name: &str,
         args: &Value,

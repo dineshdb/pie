@@ -13,6 +13,7 @@ pub enum StreamEvent {
     Delta(String),
     Done(String),
     Error(String),
+    UserMessage(String),
     ToolCall {
         name: String,
         display: String,
@@ -30,6 +31,7 @@ pub enum Msg {
     Quit,
     CloseHelp,
 
+    UserMessage(String),
     StreamDone(String),
     StreamError(String),
 

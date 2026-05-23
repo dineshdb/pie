@@ -50,7 +50,7 @@ impl AgentPlugin for DeveloperPlugin {
 
     async fn prepare_system_prompt(
         &mut self,
-        _ctx: &PluginContext,
+        _ctx: &mut PluginContext,
         _history: &Messages,
     ) -> Option<Cow<'static, str>> {
         let mut combined = String::new();
@@ -81,7 +81,7 @@ impl AgentPlugin for DeveloperPlugin {
 
     async fn on_tool_pre_execute(
         &mut self,
-        _ctx: &PluginContext,
+        _ctx: &mut PluginContext,
         id: &str,
         tool_name: &str,
         args: &Value,

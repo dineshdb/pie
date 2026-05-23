@@ -3,6 +3,7 @@ mod debug;
 mod developer;
 mod externalplugin;
 mod helper_binaries;
+mod jewels;
 mod permissions;
 mod shell;
 mod subagent;
@@ -15,10 +16,13 @@ pub use debug::DebugPlugin;
 pub use developer::DeveloperPlugin;
 pub use externalplugin::ExternalPlugin;
 pub use helper_binaries::HelperBinariesPlugin;
+pub use jewels::JewelsPlugin;
 pub use permissions::{PermissionRequest, PermissionsPlugin};
 pub use shell::ShellPlugin;
 pub use subagent::SubAgentPlugin;
-pub use system_prompts::{EmbeddedSystemPromptPlugin, build_agentsmd_plugin};
+pub use system_prompts::{
+    EmbeddedSystemPromptPlugin, SystemPromptComponent, build_agentsmd_plugin,
+};
 pub use websearch::WebsearchPlugin;
 
 use crate::hook::CommandHook;

@@ -82,6 +82,13 @@ fn process_msg(
             return handle_submit(&text, app, input, tx);
         }
 
+        Msg::UserMessage(text) => {
+            if let Some(chat) = chat_mut!(app) {
+                chat.add_message(ChatMessage::user(&text));
+                chat.start_response();
+            }
+        }
+
         Msg::CopySelection => {
             if let Some(chat) = chat_mut!(app)
                 && let Some(text) = chat.get_selected_text()
@@ -172,6 +179,9 @@ fn handle_submit(
     match cmd.dispatch(&input.registry) {
         CommandAction::AddMessage(msg) => {
             if let Some(chat) = chat_mut!(app) {
+                // For AddMessage (built-in help/skills), we can show the original text
+                // or just skip adding the user message if it's a command.
+                // But for consistency, let's just let it be.
                 chat.add_message(ChatMessage::user(text));
                 chat.add_message(msg);
             }
@@ -195,10 +205,8 @@ fn handle_submit(
             }
         }
         CommandAction::Stream(query) => {
-            if let Some(chat) = chat_mut!(app) {
-                chat.add_message(ChatMessage::user(&query));
-                chat.start_response();
-            }
+            // No longer adding user message or starting response here.
+            // We wait for the Msg::UserMessage event from the agent's dispatch_user_message.
             input.start_stream(&query, tx);
         }
         CommandAction::Shell(command) => {
@@ -301,7 +309,7 @@ fn execute_shell_direct(
                 } else {
                     format!("{stdout}\n\nError:\n{stderr}")
                 };
-                jewels::redact(&crate::utils::anonymize_path(&combined))
+                crate::plugin::JewelsPlugin::redact(&crate::utils::anonymize_path(&combined))
             }
             Err(e) => format!("Failed to execute command: {e}"),
         };

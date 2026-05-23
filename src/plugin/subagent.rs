@@ -70,7 +70,7 @@ impl AgentPlugin for SubAgentPlugin {
 
     async fn prepare_system_prompt(
         &mut self,
-        _ctx: &PluginContext,
+        _ctx: &mut PluginContext,
         _history: &Messages,
     ) -> Option<Cow<'static, str>> {
         let mut agents = Vec::new();

@@ -17,6 +17,8 @@ pub fn build_agentsmd_plugin() -> anyhow::Result<agentsdk_plugin_agentsmd::Agent
         .map_err(|e| anyhow::anyhow!("failed to build agentsmd plugin: {e}"))
 }
 
+pub struct SystemPromptComponent(pub String);
+
 #[derive(Debug)]
 pub struct EmbeddedSystemPromptPlugin {
     prompt: String,
@@ -38,9 +40,12 @@ impl AgentPlugin for EmbeddedSystemPromptPlugin {
 
     async fn prepare_system_prompt(
         &mut self,
-        _ctx: &PluginContext,
+        ctx: &mut PluginContext,
         _history: &Messages,
     ) -> Option<Cow<'static, str>> {
+        if let Some(comp) = ctx.get::<SystemPromptComponent>() {
+            return Some(Cow::Owned(comp.0.clone()));
+        }
         Some(Cow::Owned(self.prompt.clone()))
     }
 }

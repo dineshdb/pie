@@ -19,6 +19,3 @@
 - [ ] Channels (whatsapp, slack, etc)
 - [ ] Tools definition via AgentPlugin
 - [ ] MCP Support via upstream AgentPlugin
-
-## Fix
-- [ ] jewels::redact for the sensitive information redaction

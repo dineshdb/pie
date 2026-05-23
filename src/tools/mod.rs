@@ -4,7 +4,7 @@ pub mod plan;
 pub(crate) fn emit_tool_input(name: &str, params: &serde_json::Value) {
     let params_str = params.to_string();
     let anonymized = crate::utils::anonymize_path(&params_str);
-    let redacted = jewels::redact(&anonymized);
+    let redacted = crate::plugin::JewelsPlugin::redact(&anonymized);
     tracing::debug!("TOOL: {name} {redacted}");
 }
 

@@ -373,6 +373,7 @@ impl ChatComponent {
 
     fn handle_user_event(&mut self, ev: &StreamEvent) -> Msg {
         match ev {
+            StreamEvent::UserMessage(s) => Msg::UserMessage(s.clone()),
             StreamEvent::Delta(s) => {
                 self.update_response(s);
                 Msg::Redraw

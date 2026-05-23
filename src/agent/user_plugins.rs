@@ -18,25 +18,6 @@ use std::collections::HashMap;
 pub struct UserPlugins(pub Vec<ExternalPlugin>);
 
 /// Run prompt hooks outside the agent loop (`PostUserQuery`, `PrePrompt`, `PostPrompt`).
-pub(crate) async fn run_prompt_hook(
-    plugins: &[ExternalPlugin],
-    event: HookEvent,
-    system: Option<&str>,
-    query: Option<&str>,
-    session_id: &str,
-    output_mode: OutputMode,
-) -> (Option<String>, Option<String>) {
-    let data = HookContextData::Prompt(PromptData {
-        system: system.map(String::from),
-        query: query.map(String::from),
-    });
-    let ctx = make_ctx(event, session_id, output_mode, data);
-    match dispatch(&ctx, plugins).await {
-        Ok((_, HookContextData::Prompt(p))) => (p.system, p.query),
-        _ => (None, None),
-    }
-}
-
 fn make_ctx(
     event: HookEvent,
     session_id: &str,
@@ -283,8 +264,27 @@ impl AgentPlugin for UserPluginRunner {
         let plugins = CONFIG.get().map(|c| c.plugins.clone()).unwrap_or_default();
         ctx.insert(UserPlugins(plugins));
     }
+    async fn on_user_message(&mut self, ctx: &mut PluginContext, text: String) -> String {
+        let Some(plugins) = ctx.get::<UserPlugins>() else {
+            return text;
+        };
+        let data = HookContextData::Prompt(PromptData {
+            system: None,
+            query: Some(text.clone()),
+        });
+        let h_ctx = make_ctx(
+            HookEvent::PostUserQuery,
+            &self.session_id,
+            self.output_mode,
+            data,
+        );
+        match dispatch(&h_ctx, &plugins.0).await {
+            Ok((_, HookContextData::Prompt(p))) => p.query.unwrap_or(text),
+            _ => text,
+        }
+    }
 
-    async fn on_completion(&mut self, ctx: &PluginContext, text: String) -> CompletionAction {
+    async fn on_completion(&mut self, ctx: &mut PluginContext, text: String) -> CompletionAction {
         let Some(plugins) = ctx.get::<UserPlugins>() else {
             return CompletionAction::Accept(None);
         };
@@ -293,7 +293,7 @@ impl AgentPlugin for UserPluginRunner {
 
     async fn on_tool_pre_execute(
         &mut self,
-        ctx: &PluginContext,
+        ctx: &mut PluginContext,
         id: &str,
         name: &str,
         args: &Value,
@@ -307,7 +307,7 @@ impl AgentPlugin for UserPluginRunner {
 
     async fn on_tool_post_execute(
         &mut self,
-        ctx: &PluginContext,
+        ctx: &mut PluginContext,
         id: &str,
         name: &str,
         result: &Value,

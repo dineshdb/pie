@@ -34,7 +34,9 @@ impl DebugPlugin {
         );
         let _ = std::fs::write(&this.log_path, header);
 
-        this.append_debug("System Prompt", system_prompt);
+        if !system_prompt.is_empty() {
+            this.append_debug("System Prompt", system_prompt);
+        }
         this
     }
 
@@ -63,9 +65,15 @@ impl AgentPlugin for DebugPlugin {
         "debug"
     }
 
+    async fn init(&mut self, ctx: &mut PluginContext) {
+        if let Some(comp) = ctx.get::<crate::plugin::SystemPromptComponent>() {
+            self.append_debug("System Prompt", &comp.0);
+        }
+    }
+
     async fn prepare_system_prompt(
         &mut self,
-        _ctx: &PluginContext,
+        _ctx: &mut PluginContext,
         history: &Messages,
     ) -> Option<Cow<'static, str>> {
         let mut content = String::from("### Full Conversation History\n\n");
@@ -122,7 +130,7 @@ impl AgentPlugin for DebugPlugin {
 
     async fn on_tool_pre_execute(
         &mut self,
-        _ctx: &PluginContext,
+        _ctx: &mut PluginContext,
         id: &str,
         name: &str,
         arguments: &serde_json::Value,
@@ -139,7 +147,7 @@ impl AgentPlugin for DebugPlugin {
 
     async fn on_tool_post_execute(
         &mut self,
-        _ctx: &PluginContext,
+        _ctx: &mut PluginContext,
         id: &str,
         name: &str,
         result: &serde_json::Value,
@@ -156,7 +164,7 @@ impl AgentPlugin for DebugPlugin {
 
     async fn on_tool_error(
         &mut self,
-        _ctx: &PluginContext,
+        _ctx: &mut PluginContext,
         id: &str,
         name: &str,
         error: &str,
@@ -170,7 +178,7 @@ impl AgentPlugin for DebugPlugin {
         ToolErrorAction::Continue(None)
     }
 
-    async fn on_completion(&mut self, _ctx: &PluginContext, text: String) -> CompletionAction {
+    async fn on_completion(&mut self, _ctx: &mut PluginContext, text: String) -> CompletionAction {
         tracing::info!(length = text.len(), "Completion received");
 
         let content = format!("**Response**:\n\n```markdown\n{text}\n```");

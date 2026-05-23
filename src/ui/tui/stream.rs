@@ -100,6 +100,9 @@ pub async fn spawn_stream(
                 AgentEvent::Error(e) => {
                     let _ = event_tx_clone.send(StreamEvent::Error(e));
                 }
+                AgentEvent::UserMessage(m) => {
+                    let _ = event_tx_clone.send(StreamEvent::UserMessage(m));
+                }
                 AgentEvent::ToolCall {
                     name,
                     display,

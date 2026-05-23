@@ -1,9 +1,7 @@
-use crate::agent::user_plugins::run_prompt_hook;
 use crate::agent::{AgentEvent, OutputMode, UserPluginRunner, find_subsume_candidate};
 use crate::config::CONFIG;
 use crate::db::DbPool;
 use crate::error::{AppError, Result};
-use crate::hook::HookEvent;
 use crate::instructions::Instructions;
 use crate::plugin::PermissionRequest;
 use crate::prompt::SystemPrompt;
@@ -11,7 +9,6 @@ use crate::registry::Registry;
 use crate::session::{HistoryEntry, Session};
 use crate::tools::plan::plan_tools;
 use agentsdk::core::tools::Tool;
-use agentsdk::openai::api::ChatCompletionRequestUserMessageContent;
 use agentsdk::{Agent as SdkAgent, MemoryHistoryPlugin, Message};
 use agentsdk_plugin_fs::FileSystemPlugin;
 use agentsdk_plugin_skills::SkillsPlugin;
@@ -243,86 +240,6 @@ impl PieAgent {
         })
     }
 
-    async fn prepare_query_and_system(
-        &self,
-        query_str: &str,
-        output_mode: OutputMode,
-    ) -> Result<(String, String)> {
-        let mut current_query_raw = jewels::redact(query_str);
-
-        let Some(cfg) = CONFIG.get() else {
-            let query = current_query_raw.clone();
-            let system = self
-                .prepare_system_prompt(&Instructions::new(query.clone()))
-                .await?;
-            return Ok((query, system));
-        };
-        let sid = &self.session.id.to_string();
-
-        // PostUserQuery: transform the raw query
-        let (_, q) = run_prompt_hook(
-            &cfg.plugins,
-            HookEvent::PostUserQuery,
-            None,
-            Some(&current_query_raw),
-            sid,
-            output_mode,
-        )
-        .await;
-        if let Some(transformed) = q {
-            current_query_raw = transformed;
-        }
-
-        let mut query = current_query_raw.clone();
-        let mut system = self
-            .prepare_system_prompt(&Instructions::new(query.clone()))
-            .await?;
-
-        // PrePrompt: transform system + query
-        let (s, q) = run_prompt_hook(
-            &cfg.plugins,
-            HookEvent::PrePrompt,
-            Some(&system),
-            Some(&query),
-            sid,
-            output_mode,
-        )
-        .await;
-        if let Some(s) = s {
-            system = s;
-        }
-        if let Some(q) = q {
-            query = q;
-        }
-
-        system = jewels::redact(&system);
-
-        Ok((query, system))
-    }
-
-    fn redact_message(msg: &mut Message) {
-        match msg {
-            Message::UserMessage(u) => {
-                if let Some(ChatCompletionRequestUserMessageContent::String(s)) = &mut u.content {
-                    *s = jewels::redact(s);
-                }
-            }
-            Message::AssistantMessage(a) => {
-                if let Some(tool_calls) = &mut a.tool_calls {
-                    for tc in tool_calls {
-                        tc.function.arguments = jewels::redact(&tc.function.arguments);
-                    }
-                }
-            }
-            Message::ToolMessage(_) | Message::FunctionMessage(_) => {}
-            Message::SystemMessage(s) => {
-                if let Some(content) = &mut s.content {
-                    *content = jewels::redact(content);
-                }
-            }
-        }
-    }
-
     pub fn stream<'a>(
         &'a mut self,
         query_str: &'a str,
@@ -330,48 +247,21 @@ impl PieAgent {
         event_tx: UnboundedSender<AgentEvent>,
     ) -> BoxFuture<'a, Result<String>> {
         Box::pin(async move {
-            let query = Instructions::new(query_str);
+            let query_instructions = Instructions::new(query_str);
 
             if self.config.depth < 2
-                && let Some(agent_name) = find_subsume_candidate(&query, &self.registry.agents)
+                && let Some(agent_name) =
+                    find_subsume_candidate(&query_instructions, &self.registry.agents)
                 && self.config.agent_name.as_ref() != Some(&agent_name)
             {
                 let mut subagent = self.spawn_subagent(Some(agent_name)).await?;
                 return subagent.stream(query_str, output_mode, event_tx).await;
             }
 
-            let (query, _system) = self
-                .prepare_query_and_system(query_str, output_mode)
-                .await?;
-
-            // The system prompt is re-derived by EmbeddedSystemPromptPlugin inside the agent.
-            // We still need it for the plugin registration below.
-            let system = self
-                .prepare_system_prompt(&Instructions::new(query.clone()))
-                .await?;
-            let system = jewels::redact(&system);
-
-            self.session.add_user(&query).await?;
-
-            // PostPrompt: fire-and-forget after prompt sent
-            if let Some(cfg) = CONFIG.get() {
-                let sid = self.session.id.to_string();
-                run_prompt_hook(
-                    &cfg.plugins,
-                    HookEvent::PostPrompt,
-                    Some(&system),
-                    Some(&query),
-                    &sid,
-                    output_mode,
-                )
-                .await;
-            }
-
             let mut builder = self.build_sdk_agent(output_mode)?;
 
             let history_plugin = MemoryHistoryPlugin::new();
-            for mut msg in self.session.to_messages() {
-                Self::redact_message(&mut msg);
+            for msg in self.session.to_messages() {
                 history_plugin.push(msg).await;
             }
 
@@ -383,7 +273,10 @@ impl PieAgent {
             let grants = self.resolve_grants();
             builder = builder
                 .plugin(history_plugin.clone())
-                .plugin(crate::plugin::EmbeddedSystemPromptPlugin::new(&system))
+                .plugin(crate::plugin::JewelsPlugin::new())
+                .plugin(crate::plugin::EmbeddedSystemPromptPlugin::new(
+                    include_str!("../../.pie/SYSTEM.md"),
+                ))
                 .plugin(crate::plugin::build_agentsmd_plugin()?)
                 .plugin(crate::plugin::ConversationModePlugin::new(output_mode))
                 .plugin(crate::plugin::PermissionsPlugin::new(
@@ -416,7 +309,7 @@ impl PieAgent {
             if AgentConfig::is_debug() {
                 builder = builder.plugin(crate::plugin::DebugPlugin::new(
                     &self.session.id.to_string(),
-                    &system,
+                    "",
                 ));
             }
 
@@ -427,6 +320,25 @@ impl PieAgent {
             let mut agent = builder
                 .build()
                 .map_err(|e| AppError::Config(e.to_string()))?;
+
+            // Dispatch user message to plugins for transformation/redaction
+            let query = agent.dispatch_user_message(query_str).await;
+
+            // Deriving system prompt from the transformed query
+            let system = self
+                .prepare_system_prompt(&Instructions::new(query.clone()))
+                .await?;
+
+            // Inject the system prompt into the agent's context
+            if let Some(entity) = agent.entity
+                && let Some(mut world) = agent.world.take()
+            {
+                let _ = world.insert_one(entity, crate::plugin::SystemPromptComponent(system));
+                agent.world = Some(world);
+            }
+
+            self.session.add_user(&query).await?;
+
             let _output = agent.run().await?;
 
             let final_messages = history_plugin.messages().await;

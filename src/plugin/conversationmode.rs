@@ -22,7 +22,7 @@ impl AgentPlugin for ConversationModePlugin {
 
     async fn prepare_system_prompt(
         &mut self,
-        _ctx: &PluginContext,
+        _ctx: &mut PluginContext,
         _history: &Messages,
     ) -> Option<Cow<'static, str>> {
         Some(Cow::Owned(self.output_mode.prompt()))

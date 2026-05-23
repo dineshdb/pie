@@ -59,7 +59,7 @@ impl AgentPlugin for HelperBinariesPlugin {
 
     async fn prepare_system_prompt(
         &mut self,
-        _ctx: &PluginContext,
+        _ctx: &mut PluginContext,
         _history: &Messages,
     ) -> Option<Cow<'static, str>> {
         if self.scan_cache.is_empty() {
