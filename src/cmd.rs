@@ -1,6 +1,7 @@
 use crate::config::ResolvedConfig;
 use crate::registry::Registry;
 use crate::utils::output::OutputFormat;
+use p1e_sandbox::Permission;
 use serde::Serialize;
 use std::sync::Arc;
 use strum::{AsRefStr, EnumIter, EnumString};
@@ -231,11 +232,11 @@ where
 
 pub fn handle_exec(
     _config: &ResolvedConfig,
-    _registry: &Arc<Registry>,
+    registry: &Arc<Registry>,
     skill_name: Option<String>,
     script_args: &[String],
 ) -> anyhow::Result<()> {
-    let (skill, script, extra_args) = parse_exec_args(skill_name, script_args)?;
+    let (skill_name_resolved, script, extra_args) = parse_exec_args(skill_name, script_args)?;
 
     let ext = std::path::Path::new(&script)
         .extension()
@@ -249,8 +250,10 @@ pub fn handle_exec(
         );
     }
 
-    let script_path = resolve_skill_script_path(&skill, &script)
-        .ok_or_else(|| anyhow::anyhow!("script '{script}' not found for skill '{skill}'"))?;
+    let script_path =
+        resolve_skill_script_path(&skill_name_resolved, &script).ok_or_else(|| {
+            anyhow::anyhow!("script '{script}' not found for skill '{skill_name_resolved}'")
+        })?;
 
     let dir = script_path
         .parent()
@@ -266,8 +269,36 @@ pub fn handle_exec(
     let pie_config = crate::config::load_config()?;
     let sandbox = crate::config::build_sandbox(&pie_config);
 
-    let dir_str = dir.to_string_lossy().to_string();
     let mut sandbox_cfg = (*sandbox).clone();
+
+    // Merge permissions from skill or agent
+    if let Some(skill) = registry
+        .skills
+        .iter()
+        .find(|s| s.name == skill_name_resolved)
+    {
+        if let Some(perms_val) = skill.extra.get("permissions") {
+            let perms: Vec<Permission> = serde_json::from_value(perms_val.clone())?;
+            for perm in perms {
+                perm.apply_to(&mut sandbox_cfg);
+            }
+        }
+    } else if let Some(agent) = registry
+        .agents
+        .iter()
+        .find(|a| a.name == skill_name_resolved)
+    {
+        for perm in &agent.grants {
+            perm.apply_to(&mut sandbox_cfg);
+        }
+        if let Some(agent_sandbox) = &agent.sandbox {
+            sandbox_cfg.merge(agent_sandbox);
+        }
+    } else {
+        anyhow::bail!("skill or agent '{skill_name_resolved}' not found");
+    }
+
+    let dir_str = dir.to_string_lossy().to_string();
     if !sandbox_cfg.allow_read.contains(&dir_str) {
         sandbox_cfg.allow_read.push(dir_str);
     }

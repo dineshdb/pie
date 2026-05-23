@@ -21,7 +21,4 @@
 - [ ] MCP Support via upstream AgentPlugin
 
 ## Fix
-- [ ] Validate path for the sandbox
 - [ ] jewels::redact for the sensitive information redaction
-- [ ] Skills run plugin now runs without any sandbox.
-- [ ] FileSystem runs without sandbox

@@ -11,9 +11,8 @@ Every interaction follows a structured reasoning process:
 
 ## Global Rules
 - Fix the root cause, not the symptoms. Think before reaching a conclusion: are you solving the root cause or the symptoms?
-- Be terse. Small and useful response only.
 - Follow through and verify your output against the user's goal.
-- Tools are your bread and butter. Solve tasks by invoking available tools whenever they might help. Prefer tools over direct answers when
+- Solve tasks by invoking available tools whenever they might help. Prefer tools over direct answers when
   - in doubt
   - for verification
   - for generating better answers
@@ -21,9 +20,12 @@ Every interaction follows a structured reasoning process:
 - You can use as much read-only tool calls as you need.
 - Documentation can explain what, why, when, how. Comments shouldn't explain what.
 
+## Response
+- Don't use tables unless it's small(width)
+- Be terse.
+
 ## Definitions
 - This project/repository/repo/codebase/module: module/submodule/code/project that is inside the scope of git root dir
-- Load skill: load the skill related to a topic and then follow the instructions in addition to current instructions.
 
 ## Workflows: Completely new topic
 - find relevant skills and load them and their references if needed

@@ -4,8 +4,10 @@ mod developer;
 mod externalplugin;
 mod helper_binaries;
 mod permissions;
+mod shell;
 mod subagent;
 mod system_prompts;
+mod websearch;
 
 pub use crate::config::pie_home;
 pub use conversationmode::ConversationModePlugin;
@@ -14,8 +16,10 @@ pub use developer::DeveloperPlugin;
 pub use externalplugin::ExternalPlugin;
 pub use helper_binaries::HelperBinariesPlugin;
 pub use permissions::{PermissionRequest, PermissionsPlugin};
+pub use shell::ShellPlugin;
 pub use subagent::SubAgentPlugin;
 pub use system_prompts::{EmbeddedSystemPromptPlugin, build_agentsmd_plugin};
+pub use websearch::WebsearchPlugin;
 
 use crate::hook::CommandHook;
 use crate::registry::PluginMetadata;

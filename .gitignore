@@ -3,3 +3,4 @@ build/
 target/
 .claude/
 .fastembed_cache
+.antigravitycli

@@ -1,3 +1,5 @@
+use agentsdk::core::sandbox::{SandboxError, SandboxOutput, SandboxProvider};
+use async_trait::async_trait;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::path::Path;
 use std::process::Command;
@@ -11,39 +13,57 @@ pub enum Permission {
     FilesystemWrite(String),
     Network(String),
     AppleEvents,
-    NoSandbox,
 }
 
 impl Permission {
     pub fn apply_to(&self, cfg: &mut SandboxConfig) {
+        if !cfg.permissions.contains(self) {
+            cfg.permissions.push(self.clone());
+        }
+
         match self {
-            Self::Unsandboxed(name) => {
-                cfg.no_sandbox = true;
-                if !cfg.allowed_bins.contains(name) {
-                    cfg.allowed_bins.push(name.clone());
-                }
+            Self::FilesystemRead(path) if !cfg.allow_read.contains(path) => {
+                cfg.allow_read.push(path.clone());
             }
-            Self::FilesystemRead(path) => {
-                if !cfg.allow_read.contains(path) {
-                    cfg.allow_read.push(path.clone());
-                }
+            Self::FilesystemWrite(path) if !cfg.allow_write.contains(path) => {
+                cfg.allow_write.push(path.clone());
             }
-            Self::FilesystemWrite(path) => {
-                if !cfg.allow_write.contains(path) {
-                    cfg.allow_write.push(path.clone());
-                }
+            Self::Network(domain) if !cfg.allowed_domains.contains(domain) => {
+                cfg.allowed_domains.push(domain.clone());
             }
-            Self::Network(domain) => {
-                if !cfg.allowed_domains.contains(domain) {
-                    cfg.allowed_domains.push(domain.clone());
-                }
-            }
-            Self::AppleEvents => {
-                cfg.allow_apple_events = true;
-            }
-            Self::NoSandbox => {
-                cfg.no_sandbox = true;
-            }
+            _ => {}
+        }
+    }
+}
+
+impl std::str::FromStr for Permission {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // Handle schemes (both URI and colon format)
+        if let Some(value) = s
+            .strip_prefix("unsandboxed://")
+            .or_else(|| s.strip_prefix("unsandboxed:"))
+        {
+            Ok(Self::Unsandboxed(value.to_string()))
+        } else if let Some(value) = s
+            .strip_prefix("fs-read://")
+            .or_else(|| s.strip_prefix("fs-read:"))
+        {
+            Ok(Self::FilesystemRead(value.to_string()))
+        } else if let Some(value) = s
+            .strip_prefix("fs-write://")
+            .or_else(|| s.strip_prefix("fs-write:"))
+        {
+            Ok(Self::FilesystemWrite(value.to_string()))
+        } else if let Some(value) = s
+            .strip_prefix("network://")
+            .or_else(|| s.strip_prefix("network:"))
+        {
+            Ok(Self::Network(value.to_string()))
+        } else if s == "apple-events" || s == "apple-events://" {
+            Ok(Self::AppleEvents)
+        } else {
+            Err(format!("unknown permission: {s}"))
         }
     }
 }
@@ -56,28 +76,6 @@ impl std::fmt::Display for Permission {
             Self::FilesystemWrite(path) => write!(f, "fs-write:{path}"),
             Self::Network(domain) => write!(f, "network:{domain}"),
             Self::AppleEvents => write!(f, "apple-events"),
-            Self::NoSandbox => write!(f, "no-sandbox"),
-        }
-    }
-}
-
-impl std::str::FromStr for Permission {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let Some(value) = s.strip_prefix("unsandboxed:") {
-            Ok(Self::Unsandboxed(value.to_string()))
-        } else if let Some(value) = s.strip_prefix("fs-read:") {
-            Ok(Self::FilesystemRead(value.to_string()))
-        } else if let Some(value) = s.strip_prefix("fs-write:") {
-            Ok(Self::FilesystemWrite(value.to_string()))
-        } else if let Some(value) = s.strip_prefix("network:") {
-            Ok(Self::Network(value.to_string()))
-        } else if s == "apple-events" {
-            Ok(Self::AppleEvents)
-        } else if s == "no-sandbox" {
-            Ok(Self::NoSandbox)
-        } else {
-            Err(format!("unknown permission: {s}"))
         }
     }
 }
@@ -107,15 +105,8 @@ pub struct SandboxConfig {
     pub denied_domains: Vec<String>,
     pub allowed_bins: Vec<String>,
     pub disallowed_bins: Vec<String>,
-    /// Allow sending Apple Events to other applications (macOS only).
-    /// Adds `(allow appleevent-send)` to the sandbox profile.
     #[serde(default)]
-    pub allow_apple_events: bool,
-    /// Skip sandbox-exec isolation entirely.
-    /// Use for skills that need macOS IPC (Apple Events, accessibility, etc.)
-    /// that sandbox-exec blocks regardless of profile.
-    #[serde(default)]
-    pub no_sandbox: bool,
+    pub permissions: Vec<Permission>,
 }
 
 impl Default for SandboxConfig {
@@ -156,8 +147,7 @@ impl Default for SandboxConfig {
             denied_domains: vec![],
             allowed_bins: vec![],
             disallowed_bins: vec!["sudo".into(), "su".into()],
-            allow_apple_events: false,
-            no_sandbox: false,
+            permissions: vec![],
         }
     }
 }
@@ -199,10 +189,6 @@ impl SandboxConfig {
             errors: Vec::new(),
             mode,
         };
-
-        if self.no_sandbox {
-            return report;
-        }
 
         let words = match shell_words::split(cmd) {
             Ok(w) => w,
@@ -342,12 +328,6 @@ impl SandboxConfig {
     /// Merge another `SandboxConfig` on top of this one.
     /// Fields from `other` override or extend this config's fields.
     pub fn merge(&mut self, other: &SandboxConfig) {
-        if other.allow_apple_events {
-            self.allow_apple_events = true;
-        }
-        if other.no_sandbox {
-            self.no_sandbox = true;
-        }
         self.deny_read.extend_from_slice(&other.deny_read);
         self.allow_read.extend_from_slice(&other.allow_read);
         self.allow_write.extend_from_slice(&other.allow_write);
@@ -358,6 +338,11 @@ impl SandboxConfig {
         self.allowed_bins.extend_from_slice(&other.allowed_bins);
         self.disallowed_bins
             .extend_from_slice(&other.disallowed_bins);
+        for perm in &other.permissions {
+            if !self.permissions.contains(perm) {
+                self.permissions.push(perm.clone());
+            }
+        }
     }
 
     /// Check if a candidate path falls within any of the allowed read or write paths.
@@ -427,7 +412,15 @@ fn find_duplicates(list: &[String], name: &str, warnings: &mut Vec<String>) {
 /// Build a sandboxed command using native OS sandboxing.
 /// Falls back to unsandboxed command if the sandbox tool is unavailable.
 pub fn build_command(program: &str, args: &[String], cfg: &SandboxConfig) -> Command {
-    if cfg.no_sandbox {
+    let should_sandbox = !cfg.permissions.iter().any(|p| {
+        if let Permission::Unsandboxed(b) = p {
+            b == program || program.ends_with(&format!("/{b}"))
+        } else {
+            false
+        }
+    });
+
+    if !should_sandbox {
         let mut c = Command::new(program);
         c.args(args);
         return c;
@@ -447,6 +440,26 @@ pub fn build_command(program: &str, args: &[String], cfg: &SandboxConfig) -> Com
 
 /// Build a sandboxed shell command (via `bash -c`).
 pub fn build_shell_command(cmd: &str, cfg: &SandboxConfig) -> Command {
+    let mut should_sandbox_bash = true;
+    if let Ok(words) = shell_words::split(cmd)
+        && let Some(first) = words.first()
+        && cfg.permissions.iter().any(|p| {
+            if let Permission::Unsandboxed(b) = p {
+                b == first || first.ends_with(&format!("/{b}"))
+            } else {
+                false
+            }
+        })
+    {
+        should_sandbox_bash = false;
+    }
+
+    if !should_sandbox_bash {
+        let mut c = Command::new("bash");
+        c.args(["-c", cmd]);
+        return c;
+    }
+
     build_command("bash", &["-c".into(), cmd.into()], cfg)
 }
 
@@ -550,7 +563,11 @@ pub(crate) mod platform {
             }
         }
 
-        if cfg.allow_apple_events {
+        let allow_apple_events = cfg
+            .permissions
+            .iter()
+            .any(|p| matches!(p, Permission::AppleEvents));
+        if allow_apple_events {
             lines.push("(allow appleevent-send)".to_string());
         }
 
@@ -639,6 +656,107 @@ fn is_sandbox_tool_available() -> bool {
 
 fn build_sandboxed(program: &str, args: &[String], cfg: &SandboxConfig) -> Command {
     plat::build(program, args, cfg)
+}
+
+pub struct PlatformSandbox {
+    config: SandboxConfig,
+    bin_dirs: Vec<std::path::PathBuf>,
+}
+
+impl PlatformSandbox {
+    pub fn new(config: SandboxConfig) -> Self {
+        Self {
+            config,
+            bin_dirs: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_bin_dirs(mut self, dirs: Vec<std::path::PathBuf>) -> Self {
+        self.bin_dirs = dirs;
+        self
+    }
+
+    pub fn check_read_access(&self, path: &Path) -> Result<(), SandboxError> {
+        let path_str = path.to_string_lossy();
+        if self
+            .config
+            .is_within_allowed_paths(&path_str)
+            .unwrap_or(false)
+        {
+            Ok(())
+        } else {
+            Err(SandboxError::ReadDenied(path_str.into_owned()))
+        }
+    }
+
+    pub fn check_write_access(&self, path: &Path) -> Result<(), SandboxError> {
+        let path_str = path.to_string_lossy();
+        if self
+            .config
+            .is_within_allowed_paths(&path_str)
+            .unwrap_or(false)
+        {
+            Ok(())
+        } else {
+            Err(SandboxError::WriteDenied(path_str.into_owned()))
+        }
+    }
+}
+
+#[async_trait]
+impl SandboxProvider for PlatformSandbox {
+    fn read(&self, path: &Path) -> Result<String, SandboxError> {
+        self.check_read_access(path)?;
+        Ok(std::fs::read_to_string(path)?)
+    }
+
+    fn write(&self, path: &Path, content: &str) -> Result<(), SandboxError> {
+        self.check_write_access(path)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        Ok(std::fs::write(path, content)?)
+    }
+
+    fn list(&self, path: &Path) -> Result<Vec<(String, bool)>, SandboxError> {
+        self.check_read_access(path)?;
+        let mut entries = Vec::new();
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let is_dir = entry.file_type()?.is_dir();
+            entries.push((name, is_dir));
+        }
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(entries)
+    }
+
+    fn glob(&self, pattern: &str) -> Result<Vec<String>, SandboxError> {
+        let entries = glob::glob(pattern).map_err(std::io::Error::other)?;
+        let mut paths = Vec::new();
+        for entry in entries {
+            let path = entry.map_err(std::io::Error::other)?;
+            self.check_read_access(&path)?;
+            paths.push(path.to_string_lossy().into_owned());
+        }
+        Ok(paths)
+    }
+
+    async fn exec(&self, cmd: &str) -> Result<SandboxOutput, SandboxError> {
+        let command = self
+            .config
+            .build_safe_command(cmd, &self.bin_dirs)
+            .map_err(SandboxError::CommandDenied)?;
+
+        let output = tokio::process::Command::from(command).output().await?;
+
+        Ok(SandboxOutput {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            exit_code: output.status.code().unwrap_or(-1),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -731,12 +849,33 @@ mod tests {
             Permission::FilesystemWrite("./output".into()),
             Permission::Network("imap.gmail.com".into()),
             Permission::AppleEvents,
-            Permission::NoSandbox,
         ];
         for perm in &perms {
             let s = perm.to_string();
-            let parsed: Permission = s.parse().expect(&format!("parse: {s}"));
+            let parsed: Permission = s.parse().unwrap_or_else(|_| panic!("parse: {s}"));
             assert_eq!(*perm, parsed, "roundtrip failed for {s}");
+        }
+    }
+
+    #[test]
+    fn permission_from_str_backwards_compatibility() {
+        let cases = [
+            (
+                "unsandboxed:osascript",
+                Permission::Unsandboxed("osascript".into()),
+            ),
+            ("fs-read:/tmp", Permission::FilesystemRead("/tmp".into())),
+            ("fs-write:/var", Permission::FilesystemWrite("/var".into())),
+            (
+                "network:google.com",
+                Permission::Network("google.com".into()),
+            ),
+            ("apple-events", Permission::AppleEvents),
+        ];
+
+        for (input, expected) in cases {
+            let parsed: Permission = input.parse().unwrap();
+            assert_eq!(parsed, expected);
         }
     }
 
@@ -751,7 +890,6 @@ mod tests {
         let perms = vec![
             Permission::Unsandboxed("osascript".into()),
             Permission::AppleEvents,
-            Permission::NoSandbox,
         ];
         let json = serde_json::to_string(&perms).unwrap();
         let parsed: Vec<Permission> = serde_json::from_str(&json).unwrap();
@@ -759,28 +897,20 @@ mod tests {
     }
 
     #[test]
-    fn permission_apply_no_sandbox() {
-        let mut cfg = SandboxConfig::default();
-        assert!(!cfg.no_sandbox);
-        Permission::NoSandbox.apply_to(&mut cfg);
-        assert!(cfg.no_sandbox);
-    }
-
-    #[test]
     fn permission_apply_apple_events() {
         let mut cfg = SandboxConfig::default();
-        assert!(!cfg.allow_apple_events);
         Permission::AppleEvents.apply_to(&mut cfg);
-        assert!(cfg.allow_apple_events);
+        assert!(cfg.permissions.contains(&Permission::AppleEvents));
     }
 
     #[test]
     fn permission_apply_unsandboxed() {
         let mut cfg = SandboxConfig::default();
-        assert!(!cfg.no_sandbox);
         Permission::Unsandboxed("osascript".into()).apply_to(&mut cfg);
-        assert!(cfg.no_sandbox);
-        assert!(cfg.allowed_bins.contains(&"osascript".to_string()));
+        assert!(
+            cfg.permissions
+                .contains(&Permission::Unsandboxed("osascript".into()))
+        );
     }
 
     #[test]
@@ -808,9 +938,9 @@ mod tests {
     fn permission_equality_and_hash() {
         use std::collections::HashSet;
         let mut set = HashSet::new();
-        assert!(set.insert(Permission::NoSandbox));
-        assert!(!set.insert(Permission::NoSandbox));
         assert!(set.insert(Permission::AppleEvents));
+        assert!(!set.insert(Permission::AppleEvents));
+        assert!(set.insert(Permission::Unsandboxed("osascript".into())));
         assert_eq!(set.len(), 2);
     }
 }

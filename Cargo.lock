@@ -17,6 +17,7 @@ dependencies = [
  "async-trait",
  "derive_builder",
  "futures",
+ "glob",
  "hecs",
  "o3gen-openai",
  "reqwest",
@@ -2275,10 +2276,14 @@ dependencies = [
 name = "p1e-sandbox"
 version = "0.2.0"
 dependencies = [
+ "agentsdk",
+ "async-trait",
  "dirs",
+ "glob",
  "serde",
  "serde_json",
  "shell-words",
+ "tokio",
  "tracing",
 ]
 
@@ -3746,6 +3751,7 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
+ "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",

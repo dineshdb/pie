@@ -10,7 +10,6 @@ use crate::prompt::SystemPrompt;
 use crate::registry::Registry;
 use crate::session::{HistoryEntry, Session};
 use crate::tools::plan::plan_tools;
-use crate::tools::{shell, websearch};
 use agentsdk::core::tools::Tool;
 use agentsdk::openai::api::ChatCompletionRequestUserMessageContent;
 use agentsdk::{Agent as SdkAgent, MemoryHistoryPlugin, Message};
@@ -147,10 +146,8 @@ impl PieAgent {
     }
 
     fn build_tools(&self, _output_mode: OutputMode) -> Result<Vec<Tool>> {
-        let sandbox = self.sandbox.clone();
         let session_id = self.session.id.to_string();
-
-        let mut tools = vec![shell(sandbox.clone())?, websearch(sandbox)?];
+        let mut tools = vec![];
 
         for tool in plan_tools(self.pool.clone(), &session_id)? {
             tools.push(tool);
@@ -168,14 +165,26 @@ impl PieAgent {
             execs.insert(t.definition.name.clone(), t.execute);
         }
 
-        Ok(SdkAgent::builder().client(self.model.clone()).options(
-            agentsdk::AgentOptions::builder()
-                .max_iterations(self.config.max_steps as usize)
-                .tool_definitions(Arc::new(defs))
-                .tool_executors(Arc::new(execs))
-                .build()
-                .map_err(|e| AppError::Config(e.to_string()))?,
-        ))
+        let mut bin_dirs = vec![crate::config::pie_home().join("bin")];
+        if let Some(git_root) = crate::utils::git_repo_root() {
+            bin_dirs.push(std::path::PathBuf::from(git_root).join(".pie").join("bin"));
+        }
+
+        let sandbox: Box<dyn agentsdk::core::sandbox::SandboxProvider> = Box::new(
+            p1e_sandbox::PlatformSandbox::new((*self.sandbox).clone()).with_bin_dirs(bin_dirs),
+        );
+
+        Ok(SdkAgent::builder()
+            .client(self.model.clone())
+            .component(agentsdk::core::sandbox::Sandbox(sandbox))
+            .options(
+                agentsdk::AgentOptions::builder()
+                    .max_iterations(self.config.max_steps as usize)
+                    .tool_definitions(Arc::new(defs))
+                    .tool_executors(Arc::new(execs))
+                    .build()
+                    .map_err(|e| AppError::Config(e.to_string()))?,
+            ))
     }
 
     pub fn run<'a>(&'a mut self, query_str: &'a str) -> BoxFuture<'a, Result<String>> {
@@ -389,6 +398,8 @@ impl PieAgent {
                         .map_err(|e| anyhow::anyhow!("failed to build skills plugin: {e}"))?,
                 )
                 .plugin(FileSystemPlugin::new())
+                .plugin(crate::plugin::ShellPlugin::new())
+                .plugin(crate::plugin::WebsearchPlugin::new())
                 .plugin(crate::plugin::SubAgentPlugin::new(
                     self.model.clone(),
                     self.registry.clone(),
