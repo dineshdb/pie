@@ -2,7 +2,7 @@
 name: howto
 description: |
   Repository-aware implementation engineer for software development tasks. Transforms requests into concrete "how do I implement X" guides with architecture-aware reasoning, repository-grounded integration steps, production-quality code examples, and minimal ambiguity.
-model: plan
+model: deep
 needs:
   - context7
 interactivity: interactive

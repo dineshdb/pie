@@ -258,6 +258,11 @@ impl PieAgent {
                 return subagent.stream(query_str, output_mode, event_tx).await;
             }
 
+            // Deriving system prompt from the query string
+            let system = self
+                .prepare_system_prompt(&Instructions::new(query_str))
+                .await?;
+
             let mut builder = self.build_sdk_agent(output_mode)?;
 
             let history_plugin = MemoryHistoryPlugin::new();
@@ -309,7 +314,7 @@ impl PieAgent {
             if AgentConfig::is_debug() {
                 builder = builder.plugin(crate::plugin::DebugPlugin::new(
                     &self.session.id.to_string(),
-                    "",
+                    &system,
                 ));
             }
 
@@ -324,20 +329,17 @@ impl PieAgent {
             // Dispatch user message to plugins for transformation/redaction
             let query = agent.dispatch_user_message(query_str).await;
 
-            // Deriving system prompt from the transformed query
-            let system = self
-                .prepare_system_prompt(&Instructions::new(query.clone()))
-                .await?;
+            // Add the current query to history and session
+            history_plugin.push(agentsdk::core::messages::user(&query)).await;
+            self.session.add_user(&query).await?;
 
             // Inject the system prompt into the agent's context
             if let Some(entity) = agent.entity
                 && let Some(mut world) = agent.world.take()
             {
-                let _ = world.insert_one(entity, crate::plugin::SystemPromptComponent(system));
+                let _ = world.insert_one(entity, crate::plugin::SystemPromptComponent(system.clone()));
                 agent.world = Some(world);
             }
-
-            self.session.add_user(&query).await?;
 
             let _output = agent.run().await?;
 

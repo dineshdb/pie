@@ -73,12 +73,13 @@ impl<'a> SystemPromptCtx<'a> {
         let (date, pwd, os, arch, hostname) = SystemPrompt::env_vars();
         let pwd = AnonymizedPath::from(pwd);
 
-        let repo_root = git_repo_root().map(AnonymizedPath::from);
-        let project_files = if let Some(ref root) = repo_root {
-            discover_project_files(root.as_str())
+        let repo_root_real = git_repo_root();
+        let project_files = if let Some(ref root) = repo_root_real {
+            discover_project_files(root)
         } else {
             Vec::new()
         };
+        let repo_root = repo_root_real.map(AnonymizedPath::from);
 
         let mut environment = HashMap::new();
         for (k, v) in std::env::vars() {
@@ -182,7 +183,16 @@ impl<'a> SystemPrompt<'a> {
 
     /// Resolve all requirements (skills and their dependencies) from instructions.
     pub fn resolve(mut self, instructions: &Instructions) -> Self {
-        let mentions: Vec<String> = instructions.mentions.iter().cloned().collect();
+        let mut mentions: Vec<String> = instructions.mentions.iter().cloned().collect();
+
+        if let Some(agent) = self.agent {
+            for need in &agent.needs {
+                if !mentions.contains(need) {
+                    mentions.push(need.clone());
+                }
+            }
+        }
+
         let resolved = crate::registry::resolve_skills(self.skills, &mentions);
         self.loaded_skills = resolved.iter().map(|&s| s.clone()).collect();
         self
@@ -268,6 +278,8 @@ mod test_helpers {
             model: None,
             temperature: None,
             content: "You are a test agent.".to_string(),
+            needs: vec![],
+            tools: vec![],
             sandbox: None,
             grants: vec![],
         };

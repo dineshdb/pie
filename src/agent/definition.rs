@@ -107,6 +107,8 @@ pub struct Agent {
     pub model: Option<String>,
     pub temperature: Option<f32>,
     pub content: String,
+    pub needs: Vec<String>,
+    pub tools: Vec<String>,
     pub sandbox: Option<SandboxConfig>,
     #[allow(dead_code)]
     pub grants: Vec<Permission>,
@@ -122,6 +124,8 @@ struct AgentFrontmatter {
     output_mode: OutputMode,
     model: Option<String>,
     temperature: Option<f32>,
+    needs: Vec<String>,
+    tools: Vec<String>,
     sandbox: Option<SandboxConfig>,
     #[serde(default)]
     grants: Vec<Permission>,
@@ -177,6 +181,8 @@ fn parse_agent(raw: &str, filename: &str) -> Option<Agent> {
         model: meta.model,
         temperature: meta.temperature,
         content,
+        needs: meta.needs,
+        tools: meta.tools,
         sandbox: meta.sandbox,
         grants: meta.grants,
     })
@@ -326,6 +332,8 @@ mod tests {
                 model: None,
                 temperature: None,
                 content: "Be thorough.".into(),
+                needs: vec![],
+                tools: vec![],
                 sandbox: None,
                 grants: vec![],
             },
@@ -336,6 +344,8 @@ mod tests {
                 model: None,
                 temperature: None,
                 content: "Think step by step.".into(),
+                needs: vec![],
+                tools: vec![],
                 sandbox: None,
                 grants: vec![],
             },
@@ -362,6 +372,8 @@ mod tests {
             model: None,
             temperature: None,
             content: String::new(),
+            needs: vec![],
+            tools: vec![],
             sandbox: None,
             grants: vec![],
         }];
@@ -379,6 +391,8 @@ mod tests {
             model: None,
             temperature: None,
             content: String::new(),
+            needs: vec![],
+            tools: vec![],
             sandbox: None,
             grants: vec![],
         }];
