@@ -15,9 +15,6 @@ pub struct CronRun {
     pub notes: String,
 }
 
-const SELECT: &str =
-    "SELECT id, cron_id, session_id, status, started_at, finished_at, exit_code, notes";
-
 impl CronRun {
     pub async fn cleanup_stale(pool: &Arc<DbPool>) -> Result<(), sqlx::Error> {
         let cutoff = Utc::now().timestamp_millis() - 3_600_000; // 1 hour ago
@@ -76,9 +73,9 @@ impl CronRun {
         pool: &Arc<DbPool>,
         schedule_id: &str,
     ) -> Result<Option<Self>, sqlx::Error> {
-        sqlx::query_as::<_, Self>(&format!(
-            "{SELECT} FROM cron_runs WHERE cron_id = ? ORDER BY started_at DESC LIMIT 1"
-        ))
+        sqlx::query_as::<_, Self>(
+            "SELECT id, cron_id, session_id, status, started_at, finished_at, exit_code, notes FROM cron_runs WHERE cron_id = ? ORDER BY started_at DESC LIMIT 1"
+        )
         .bind(schedule_id)
         .fetch_optional(&**pool)
         .await
@@ -100,18 +97,18 @@ impl CronRun {
         pool: &Arc<DbPool>,
         schedule_id: &str,
     ) -> Result<Vec<Self>, sqlx::Error> {
-        sqlx::query_as::<_, Self>(&format!(
-            "{SELECT} FROM cron_runs WHERE cron_id = ? ORDER BY started_at DESC LIMIT 20"
-        ))
+        sqlx::query_as::<_, Self>(
+            "SELECT id, cron_id, session_id, status, started_at, finished_at, exit_code, notes FROM cron_runs WHERE cron_id = ? ORDER BY started_at DESC LIMIT 20"
+        )
         .bind(schedule_id)
         .fetch_all(&**pool)
         .await
     }
 
     pub async fn recent_all(pool: &Arc<DbPool>) -> Result<Vec<Self>, sqlx::Error> {
-        sqlx::query_as::<_, Self>(&format!(
-            "{SELECT} FROM cron_runs ORDER BY started_at DESC LIMIT 10"
-        ))
+        sqlx::query_as::<_, Self>(
+            "SELECT id, cron_id, session_id, status, started_at, finished_at, exit_code, notes FROM cron_runs ORDER BY started_at DESC LIMIT 10"
+        )
         .fetch_all(&**pool)
         .await
     }

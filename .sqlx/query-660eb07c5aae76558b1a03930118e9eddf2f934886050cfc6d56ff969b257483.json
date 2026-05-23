@@ -6,12 +6,24 @@
       {
         "name": "name",
         "ordinal": 0,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "steps",
+            "name": "name"
+          }
+        }
       },
       {
         "name": "status",
         "ordinal": 1,
-        "type_info": "Text"
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "steps",
+            "name": "status"
+          }
+        }
       }
     ],
     "parameters": {
