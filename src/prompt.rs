@@ -45,7 +45,7 @@ pub struct SystemPromptCtx<'a> {
     pub output_mode: OutputMode,
     pub skills: &'a [Skill],
     pub agents: &'a [Agent],
-    pub loaded_skills: Vec<&'a Skill>,
+    pub loaded_skills: &'a [Skill],
     pub steps: Vec<Step>,
     pub plugin_system_prompts: HashMap<String, String>,
     pub extra_context: ExtraContext,
@@ -104,7 +104,7 @@ impl<'a> SystemPromptCtx<'a> {
             output_mode,
             skills: sp.skills,
             agents: sp.agents,
-            loaded_skills: sp.loaded_skills.clone(),
+            loaded_skills: &sp.loaded_skills,
             steps,
             plugin_system_prompts,
             extra_context,
@@ -138,7 +138,7 @@ pub struct SystemPrompt<'a> {
     skills: &'a [Skill],
     agents: &'a [Agent],
     plugins: &'a [PluginMetadata],
-    pub loaded_skills: Vec<&'a Skill>,
+    pub loaded_skills: Vec<Skill>,
     agent: Option<&'a Agent>,
     output_mode: Option<OutputMode>,
     pool: Option<Arc<DbPool>>,
@@ -183,7 +183,8 @@ impl<'a> SystemPrompt<'a> {
     /// Resolve all requirements (skills and their dependencies) from instructions.
     pub fn resolve(mut self, instructions: &Instructions) -> Self {
         let mentions: Vec<String> = instructions.mentions.iter().cloned().collect();
-        self.loaded_skills = crate::registry::resolve_skills(self.skills, &mentions);
+        let resolved = crate::registry::resolve_skills(self.skills, &mentions);
+        self.loaded_skills = resolved.iter().map(|&s| s.clone()).collect();
         self
     }
 
@@ -242,8 +243,8 @@ mod test_helpers {
             content: content.to_string(),
             needs: Vec::new(),
             references: Vec::new(),
-            path: std::path::PathBuf::new(),
             extra: HashMap::new(),
+            path: std::path::PathBuf::new(),
         }
     }
 

@@ -90,13 +90,23 @@ fn build_skills_list(registry: &crate::registry::Registry) -> String {
     let mut parts = Vec::new();
 
     if !registry.agents.is_empty() {
-        let names: Vec<&str> = registry.agents.iter().map(|a| a.name.as_str()).collect();
-        parts.push(format!("Agents: {}", names.join(", ")));
+        parts.push("Agents:".to_string());
+        for agent in &registry.agents {
+            parts.push(format!(" - {}: {}", agent.name, agent.description));
+        }
     }
 
     if !registry.skills.is_empty() {
-        let names: Vec<&str> = registry.skills.iter().map(|s| s.name.as_str()).collect();
-        parts.push(format!("Skills: {}", names.join(", ")));
+        if !parts.is_empty() {
+            parts.push(String::new());
+        }
+        parts.push("Skills:".to_string());
+        for skill in &registry.skills {
+            parts.push(format!(" - {}: {}", skill.name, skill.description));
+            for r in &skill.references {
+                parts.push(format!("   - {}: {}", r.title, r.path));
+            }
+        }
     }
 
     if parts.is_empty() {

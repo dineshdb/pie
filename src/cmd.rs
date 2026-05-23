@@ -168,6 +168,8 @@ struct SkillsOutput {
 struct SkillInfo {
     name: String,
     description: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    references: Vec<crate::registry::Reference>,
 }
 
 pub fn handle_skills(config: &ResolvedConfig, registry: &Arc<Registry>) {
@@ -179,6 +181,7 @@ pub fn handle_skills(config: &ResolvedConfig, registry: &Arc<Registry>) {
                 .map(|s| SkillInfo {
                     name: s.name.clone(),
                     description: s.description.clone(),
+                    references: s.references.clone(),
                 })
                 .collect(),
             agents: registry
@@ -187,6 +190,7 @@ pub fn handle_skills(config: &ResolvedConfig, registry: &Arc<Registry>) {
                 .map(|a| SkillInfo {
                     name: a.name.clone(),
                     description: a.description.clone(),
+                    references: Vec::new(),
                 })
                 .collect(),
         };
@@ -201,13 +205,13 @@ pub fn handle_skills(config: &ResolvedConfig, registry: &Arc<Registry>) {
     let agents = &registry.agents;
 
     print_named_section("Available skills", skills.iter(), |s| {
-        (&s.name, &s.description)
+        (&s.name, &s.description, &s.references)
     });
     if !skills.is_empty() && !agents.is_empty() {
         println!();
     }
     print_named_section("Available agents", agents.iter(), |a| {
-        (&a.name, &a.description)
+        (&a.name, &a.description, &[])
     });
 
     if skills.is_empty() && agents.is_empty() {
@@ -215,9 +219,9 @@ pub fn handle_skills(config: &ResolvedConfig, registry: &Arc<Registry>) {
     }
 }
 
-fn print_named_section<T, F>(header: &str, items: impl Iterator<Item = T>, get_info: F)
+fn print_named_section<'a, T, F>(header: &str, items: impl Iterator<Item = T>, get_info: F)
 where
-    F: Fn(&T) -> (&String, &String),
+    F: Fn(&T) -> (&'a String, &'a String, &'a [crate::registry::Reference]),
 {
     let collected: Vec<_> = items.collect();
     if collected.is_empty() {
@@ -225,8 +229,11 @@ where
     }
     println!("{header}:");
     for item in &collected {
-        let (name, desc) = get_info(item);
+        let (name, desc, refs) = get_info(item);
         println!(" - {name}: {desc}");
+        for r in refs {
+            println!("   - {}: {}", r.title, r.path);
+        }
     }
 }
 

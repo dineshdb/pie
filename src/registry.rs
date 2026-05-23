@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use strum::IntoEnumIterator;
 
-pub use agentsdk_plugin_skills::Skill;
+pub use agentsdk_plugin_skills::{Reference, Skill};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CompletionKind {

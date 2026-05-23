@@ -46,9 +46,9 @@ pub async fn prompt_exec(
 
     let instructions = Instructions::new(prompt);
     let mentions: Vec<String> = instructions.mentions.iter().cloned().collect();
-    let loaded_skills = crate::registry::resolve_skills(&registry.skills, &mentions);
+    let resolved_skills = crate::registry::resolve_skills(&registry.skills, &mentions);
 
-    for skill in &loaded_skills {
+    for skill in resolved_skills {
         if let Err(e) = session
             .add_system(&format!(
                 "## Skill: {}\n{}\n---\n",
@@ -56,7 +56,7 @@ pub async fn prompt_exec(
             ))
             .await
         {
-            tracing::warn!("failed to inject skill {}: {e}", skill.name);
+            tracing::error!("failed to add skill context to session: {e}");
         }
     }
 
