@@ -55,27 +55,24 @@ impl Instructions {
 
             // Mention starts with [a-zA-Z]
             let start = i + 1;
-            let Some(&first) = bytes.get(start) else {
-                i += 1;
-                continue;
-            };
-            if !first.is_ascii_alphabetic() {
-                i += 1;
-                continue;
-            }
-
-            // Collect [a-zA-Z0-9_-]*
-            let mut end = start;
-            while let Some(&c) = bytes.get(end) {
-                if c.is_ascii_alphanumeric() || c == b'-' || c == b'_' {
-                    end += 1;
-                } else {
-                    break;
+            match bytes.get(start) {
+                Some(first) if first.is_ascii_alphabetic() => {
+                    // Collect [a-zA-Z0-9_-]*
+                    let mut end = start;
+                    while let Some(&c) = bytes.get(end) {
+                        if c.is_ascii_alphanumeric() || c == b'-' || c == b'_' {
+                            end += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    mentions.insert(input[start..end].to_string());
+                    i = end;
+                }
+                _ => {
+                    i += 1;
                 }
             }
-
-            mentions.insert(input[start..end].to_string());
-            i = end;
         }
 
         mentions

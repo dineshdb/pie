@@ -55,7 +55,8 @@ pub struct ChatComponent {
     pub active_dialog: ActiveDialog,
     pub current_model: String,
     pub last_area: Rect,
-    pub cached_lines: Vec<tuirealm::ratatui::text::Line<'static>>,
+    pub render_plan: Vec<chat::ChatRenderItem>,
+    pub total_height: usize,
     pub last_width: usize,
     pub registry: Arc<Registry>,
     pub pool: Arc<DbPool>,
@@ -83,7 +84,8 @@ impl ChatComponent {
             active_dialog: ActiveDialog::None,
             current_model,
             last_area: Rect::default(),
-            cached_lines: Vec::new(),
+            render_plan: Vec::new(),
+            total_height: 0,
             last_width: 0,
             registry,
             pool,
@@ -97,7 +99,7 @@ impl ChatComponent {
 
     pub fn toggle_plan(&mut self) {
         self.show_plan = !self.show_plan;
-        self.cached_lines.clear();
+        self.render_plan.clear();
     }
 
     pub fn set_help_dialog(&mut self) {
@@ -115,7 +117,7 @@ impl ChatComponent {
         self.messages.push(msg);
         self.render_cache.push();
         self.chat_state.auto_scroll = true;
-        self.cached_lines.clear();
+        self.render_plan.clear();
     }
     pub fn clear_messages(&mut self) {
         self.messages.clear();
@@ -123,7 +125,7 @@ impl ChatComponent {
         self.response_idx = None;
         self.chat_state.scroll_offset = 0;
         self.chat_state.auto_scroll = true;
-        self.cached_lines.clear();
+        self.render_plan.clear();
     }
 
     // ── Streaming lifecycle ──────────────────────────────────────────
@@ -131,7 +133,7 @@ impl ChatComponent {
     pub fn start_response(&mut self) {
         self.add_message(ChatMessage::response());
         self.response_idx = Some(self.messages.len() - 1);
-        self.cached_lines.clear();
+        self.render_plan.clear();
     }
 
     pub fn update_response(&mut self, delta: &str) {
@@ -140,7 +142,7 @@ impl ChatComponent {
         {
             msg.content.push_str(delta);
             self.chat_state.scroll_to_bottom();
-            self.cached_lines.clear();
+            self.render_plan.clear();
         }
     }
     pub fn finish_stream(&mut self, output: String) {
@@ -152,7 +154,7 @@ impl ChatComponent {
             self.render_cache.invalidate(idx);
         }
         self.response_idx = None;
-        self.cached_lines.clear();
+        self.render_plan.clear();
     }
 
     pub fn stream_error(&mut self, err: &str) {
@@ -193,16 +195,21 @@ impl ChatComponent {
     pub fn get_selected_text(&self) -> Option<String> {
         self.chat_state
             .selection
-            .map(|sel| sel.get_selected_text(&self.cached_lines))
+            .map(|sel| sel.get_selected_text(&self.messages, &self.render_cache, &self.render_plan))
     }
 }
 
 impl Component for ChatComponent {
     fn view(&mut self, frame: &mut Frame, area: Rect) {
-        // 1. Rebuild cache only if width changed or content changed (cache cleared elsewhere)
-        if self.cached_lines.is_empty() || self.last_width != area.width as usize {
-            self.cached_lines =
-                chat::build_chat_lines(&self.messages, &mut self.render_cache, area.width as usize);
+        // 1. Rebuild plan only if width changed or content changed (plan cleared elsewhere)
+        if self.render_plan.is_empty() || self.last_width != area.width as usize {
+            let (plan, height) = chat::build_render_plan(
+                &self.messages,
+                &mut self.render_cache,
+                area.width as usize,
+            );
+            self.render_plan = plan;
+            self.total_height = height;
             self.last_width = area.width as usize;
         }
         self.last_area = area;
@@ -210,7 +217,9 @@ impl Component for ChatComponent {
         // 2. Render visible part
         frame.render_stateful_widget(
             ChatView {
-                lines: &self.cached_lines,
+                cache: &mut self.render_cache,
+                render_plan: &self.render_plan,
+                total_height: self.total_height,
             },
             area,
             &mut self.chat_state,
@@ -410,7 +419,7 @@ impl ChatComponent {
                     use crate::tools::plan::PlanRepo;
                     pool.load_steps(&session_id).await.unwrap_or_default()
                 });
-                self.cached_lines.clear();
+                self.render_plan.clear();
                 Msg::Redraw
             }
             StreamEvent::ModelList(models) => {

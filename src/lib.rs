@@ -186,38 +186,27 @@ async fn handle_command(
     registry: &Arc<Registry>,
     pool: Arc<DbPool>,
 ) -> anyhow::Result<()> {
+    // Commands that don't need interactive UI usually want stderr logging
+    if !matches!(cmd, Commands::Daemon { .. }) || config.debug {
+        init_stderr_subscriber(config.debug, &config.log_level);
+    }
+
     match cmd {
         Commands::Status => {
-            init_stderr_subscriber(config.debug, &config.log_level);
             cmd::handle_status(config, registry);
             Ok(())
         }
         Commands::Skills => {
-            init_stderr_subscriber(config.debug, &config.log_level);
             cmd::handle_skills(config, registry);
             Ok(())
         }
         Commands::Launch {
             all_args,
             no_sandbox,
-        } => {
-            if config.debug {
-                init_stderr_subscriber(config.debug, &config.log_level);
-            }
-            cmd::handle_launch(config, &all_args, no_sandbox)
-        }
-        Commands::Cron { command } => {
-            init_stderr_subscriber(config.debug, &config.log_level);
-            handle_cron(command, pool, registry.clone()).await
-        }
-        Commands::Exec { skill, script } => {
-            if config.debug {
-                init_stderr_subscriber(config.debug, &config.log_level);
-            }
-            cmd::handle_exec(config, registry, skill, &script)
-        }
+        } => cmd::handle_launch(config, &all_args, no_sandbox),
+        Commands::Cron { command } => handle_cron(command, pool, registry.clone()).await,
+        Commands::Exec { skill, script } => cmd::handle_exec(config, registry, skill, &script),
         Commands::Daemon { interval } => {
-            init_stderr_subscriber(config.debug, &config.log_level);
             if !config.debug {
                 tracing::info!(
                     "pie daemon starting (interval: {interval}s, pid: {})",
@@ -241,36 +230,33 @@ async fn handle_cron(
                 tracing::info!("no schedules found");
                 return Ok(());
             }
+
             let max_id = schedules.iter().map(|s| s.id.len()).max().unwrap_or(4);
             for s in &schedules {
                 let status = if s.enabled { "enabled " } else { "disabled" };
-                let desc = if s.description.is_empty() {
-                    ""
-                } else {
-                    &s.description
-                };
                 tracing::info!(
                     "{:max_id$}  {}  {}  {}",
                     s.id,
                     status,
                     s.cron,
-                    desc,
+                    s.description,
                     max_id = max_id
                 );
             }
             Ok(())
         }
         CronCommand::Runs { id } => {
-            let rows = if let Some(schedule_id) = &id {
-                cron::CronRun::recent_for_schedule(&pool, schedule_id).await?
-            } else {
-                cron::CronRun::recent_all(&pool).await?
+            let rows = match &id {
+                Some(schedule_id) => cron::CronRun::recent_for_schedule(&pool, schedule_id).await?,
+                None => cron::CronRun::recent_all(&pool).await?,
             };
+
             if rows.is_empty() {
                 let label = id.as_deref().unwrap_or("any");
                 tracing::info!("no runs for schedule '{label}'");
                 return Ok(());
             }
+
             let schedules = cron::load_all_schedules();
             for r in &rows {
                 let started = chrono::DateTime::from_timestamp_millis(r.started_at)
@@ -281,14 +267,9 @@ async fn handle_cron(
                 let desc = schedules
                     .iter()
                     .find(|s| s.id == r.cron_id)
-                    .and_then(|s| {
-                        if s.description.is_empty() {
-                            None
-                        } else {
-                            Some(&s.description)
-                        }
-                    })
+                    .and_then(|s| (!s.description.is_empty()).then_some(&s.description))
                     .unwrap_or(&r.cron_id);
+
                 tracing::info!(
                     "{}  {}  {}  {}ms  {}  {}",
                     desc,
@@ -319,24 +300,16 @@ async fn run_single_shot(
     let piped_stdin = read_piped_stdin();
 
     let cli_query = cli.query.join(" ");
-    let query = if cli_query.is_empty() {
-        piped_stdin.as_deref().unwrap_or_default().to_string()
-    } else {
-        cli_query
-    };
-
-    let full_query = if query.is_empty() && piped_stdin.is_none() {
+    if cli_query.is_empty() && piped_stdin.is_none() {
         anyhow::bail!(
             "No query provided. Use `pie` for interactive mode or pass a query with --md or --json."
         );
-    } else {
-        match piped_stdin.as_deref() {
-            Some(stdin) if !query.is_empty() => {
-                format!("## Stdin\n```\n{stdin}\n```\n\n{query}")
-            }
-            Some(stdin) => stdin.to_string(),
-            None => query,
-        }
+    }
+
+    let full_query = match (piped_stdin.as_deref(), cli_query.is_empty()) {
+        (Some(stdin), false) => format!("## Stdin\n```\n{stdin}\n```\n\n{cli_query}"),
+        (Some(stdin), true) => stdin.to_string(),
+        (None, _) => cli_query,
     };
 
     let query = Instructions::new(full_query);

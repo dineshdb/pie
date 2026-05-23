@@ -3,9 +3,8 @@ use crate::ui::tui::state::ChatMessage;
 use crate::ui::tui::widgets::render_cache::MessageRenderCache;
 use tuirealm::ratatui::buffer::Buffer;
 use tuirealm::ratatui::layout::Rect;
-use tuirealm::ratatui::style::{Color, Modifier, Style};
-use tuirealm::ratatui::text::{Line, Span};
-use tuirealm::ratatui::widgets::{Paragraph, StatefulWidget, Widget};
+use tuirealm::ratatui::style::Modifier;
+use tuirealm::ratatui::widgets::{StatefulWidget, Widget};
 
 const PREFIX_WIDTH: usize = 2;
 const RIGHT_PAD: usize = 1;
@@ -51,7 +50,12 @@ impl Selection {
         true
     }
 
-    pub fn get_selected_text(&self, lines: &[Line<'_>]) -> String {
+    pub fn get_selected_text(
+        &self,
+        _messages: &[ChatMessage],
+        cache: &MessageRenderCache,
+        render_plan: &[ChatRenderItem],
+    ) -> String {
         let (s, e) = if self.start.row < self.end.row
             || (self.start.row == self.end.row && self.start.col <= self.end.col)
         {
@@ -61,22 +65,52 @@ impl Selection {
         };
 
         let mut result = Vec::new();
-        for row in s.row..=e.row {
-            if let Some(line) = lines.get(row) {
-                let line_text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-                let chars: Vec<char> = line_text.chars().collect();
-                let start_col = if row == s.row { s.col } else { 0 };
-                let end_col = if row == e.row { e.col } else { chars.len() };
+        let mut current_line = 0;
 
-                if start_col < chars.len() {
-                    let end_idx = end_col.min(chars.len());
-                    if start_col < end_idx
-                        && let Some(sub) = chars.get(start_col..end_idx)
-                    {
-                        result.push(sub.iter().collect::<String>());
+        for item in render_plan {
+            let item_height = item.height;
+            if current_line + item_height <= s.row {
+                current_line += item_height;
+                continue;
+            }
+            if current_line > e.row {
+                break;
+            }
+
+            match item.kind {
+                ChatRenderKind::Message(msg_idx) => {
+                    if let Some(lines) = cache.get_lines(msg_idx) {
+                        for (i, line) in lines.iter().enumerate() {
+                            let abs_row = current_line + i;
+                            if abs_row >= s.row && abs_row <= e.row {
+                                let line_text: String =
+                                    line.spans.iter().map(|s| s.content.as_ref()).collect();
+                                let chars: Vec<char> = line_text.chars().collect();
+                                let start_col = if abs_row == s.row { s.col } else { 0 };
+                                let end_col = if abs_row == e.row { e.col } else { chars.len() };
+
+                                if start_col < chars.len() {
+                                    let end_idx = end_col.min(chars.len());
+                                    if start_col < end_idx
+                                        && let Some(sub) = chars.get(start_col..end_idx)
+                                    {
+                                        result.push(sub.iter().collect::<String>());
+                                    }
+                                } else if abs_row >= s.row && abs_row <= e.row {
+                                    // Empty line or selection beyond text
+                                    result.push(String::new());
+                                }
+                            }
+                        }
+                    }
+                }
+                ChatRenderKind::EmptyLine => {
+                    if current_line >= s.row && current_line <= e.row {
+                        result.push(String::new());
                     }
                 }
             }
+            current_line += item_height;
         }
         result.join("\n")
     }
@@ -129,8 +163,22 @@ impl ChatState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatRenderKind {
+    Message(usize),
+    EmptyLine,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChatRenderItem {
+    pub kind: ChatRenderKind,
+    pub height: usize,
+}
+
 pub struct ChatView<'a> {
-    pub lines: &'a [Line<'static>],
+    pub cache: &'a mut MessageRenderCache,
+    pub render_plan: &'a [ChatRenderItem],
+    pub total_height: usize,
 }
 
 impl StatefulWidget for ChatView<'_> {
@@ -139,73 +187,128 @@ impl StatefulWidget for ChatView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         let inner_height = area.height;
         #[allow(clippy::cast_possible_truncation)]
-        let total_lines = self.lines.len() as u16;
+        let total_lines = self.total_height as u16;
         let max_scroll = total_lines.saturating_sub(inner_height);
 
-        if state.auto_scroll {
-            state.scroll_offset = max_scroll;
+        state.scroll_offset = if state.auto_scroll {
+            max_scroll
         } else {
-            state.scroll_offset = state.scroll_offset.min(max_scroll);
-        }
+            state.scroll_offset.min(max_scroll)
+        };
 
         let visible_start = state.scroll_offset as usize;
-        let visible_count = inner_height as usize;
-        let visible_end = (visible_start + visible_count).min(self.lines.len());
+        let visible_end = visible_start + inner_height as usize;
 
-        // 1. Fast background render: only clone VISIBLE lines for Paragraph.
-        // This is O(visible_height) instead of O(total_history).
-        let visible_lines: Vec<Line> = self
-            .lines
-            .get(visible_start..visible_end)
-            .unwrap_or(&[])
-            .to_vec();
+        // 1. Render visible part from the render plan
+        let mut current_line = 0;
+        for item in self.render_plan {
+            let item_height = item.height;
 
-        Paragraph::new(visible_lines).render(area, buf);
+            if current_line + item_height <= visible_start {
+                current_line += item_height;
+                continue;
+            }
+            if current_line >= visible_end {
+                break;
+            }
+
+            if let ChatRenderKind::Message(msg_idx) = item.kind
+                && let Some(lines) = self.cache.get_lines(msg_idx)
+            {
+                for (i, line) in lines.iter().enumerate() {
+                    let abs_line = current_line + i;
+                    if abs_line < visible_start {
+                        continue;
+                    }
+                    if abs_line >= visible_end {
+                        break;
+                    }
+
+                    #[allow(clippy::cast_possible_truncation)]
+                    let y = (abs_line - visible_start) as u16;
+                    line.render(Rect::new(area.x, area.y + y, area.width, 1), buf);
+                }
+            }
+            current_line += item_height;
+        }
 
         // 2. Focused second pass: only apply REVERSED to selection cells
-        if let Some(ref sel) = state.selection {
-            let s_row = sel.start.row.min(sel.end.row);
-            let e_row = sel.start.row.max(sel.end.row);
+        let Some(sel) = state.selection else {
+            return;
+        };
 
-            let overlap_start = s_row.max(visible_start);
-            let overlap_end = e_row.min(visible_end.saturating_sub(1));
+        let (s, e) = if sel.start.row < sel.end.row
+            || (sel.start.row == sel.end.row && sel.start.col <= sel.end.col)
+        {
+            (sel.start, sel.end)
+        } else {
+            (sel.end, sel.start)
+        };
 
-            if overlap_start <= overlap_end {
-                for abs_row in overlap_start..=overlap_end {
-                    let y = abs_row - visible_start;
-                    if let Some(line) = self.lines.get(abs_row) {
-                        let mut x = 0;
-                        for span in &line.spans {
-                            let mut span_x = 0;
-                            for ch in span.content.chars() {
-                                let col = x + span_x;
-                                if sel.contains(abs_row, col)
-                                    && let Some(cell) = buf.cell_mut((
-                                        area.x + u16::try_from(col).unwrap_or(u16::MAX),
-                                        area.y + u16::try_from(y).unwrap_or(u16::MAX),
-                                    ))
-                                {
-                                    let style = cell.style().add_modifier(Modifier::REVERSED);
-                                    cell.set_style(style);
-                                }
-                                span_x += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
+        let overlap_start = s.row.max(visible_start);
+        let overlap_end = e.row.min(visible_end.saturating_sub(1));
+
+        if overlap_start > overlap_end {
+            return;
+        }
+
+        let mut current_line = 0;
+        for item in self.render_plan {
+            let item_height = item.height;
+
+            if current_line + item_height <= overlap_start {
+                current_line += item_height;
+                continue;
+            }
+            if current_line > overlap_end {
+                break;
+            }
+
+            if let ChatRenderKind::Message(msg_idx) = item.kind
+                && let Some(lines) = self.cache.get_lines(msg_idx)
+            {
+                for (i, line) in lines.iter().enumerate() {
+                    let abs_row = current_line + i;
+                    if abs_row < overlap_start {
+                        continue;
+                    }
+                    if abs_row > overlap_end {
+                        break;
+                    }
+
+                    #[allow(clippy::cast_possible_truncation)]
+                    let y = abs_row.saturating_sub(visible_start) as u16;
+                    let mut x = 0;
+                    for span in &line.spans {
+                        let mut span_x = 0;
+                        for ch in span.content.chars() {
+                            let col = x + span_x;
+                            if sel.contains(abs_row, col)
+                                && let Some(cell) = buf.cell_mut((
+                                    area.x + u16::try_from(col).unwrap_or(u16::MAX),
+                                    area.y + y,
+                                ))
+                            {
+                                let style = cell.style().add_modifier(Modifier::REVERSED);
+                                cell.set_style(style);
                             }
-                            x += span_x;
+                            span_x += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
                         }
+                        x += span_x;
                     }
                 }
             }
+            current_line += item_height;
         }
     }
 }
 
-/// Build rendered chat lines from messages.
-/// Response messages are rendered last so tool calls appear above the response.
-pub fn build_chat_lines(
+/// Build render plan from messages.
+pub fn build_render_plan(
     messages: &[ChatMessage],
     cache: &mut MessageRenderCache,
     area_width: usize,
-) -> Vec<Line<'static>> {
+) -> (Vec<ChatRenderItem>, usize) {
     let width = area_width.saturating_sub(PREFIX_WIDTH + RIGHT_PAD);
 
     // Build render order: regular messages in order, then response message last
@@ -224,101 +327,49 @@ pub fn build_chat_lines(
     }
 
     let last_rendered = order.len().saturating_sub(1);
-    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut items = Vec::new();
+    let mut total_height = 0;
 
     for (render_pos, &msg_idx) in order.iter().enumerate() {
         let Some(msg) = messages.get(msg_idx) else {
             continue;
         };
 
-        if msg.role == Role::Tool {
-            append_tool_lines(&mut lines, &msg.content, width);
-        } else if msg.role == Role::System && msg.content.starts_with("Welcome to") {
-            append_welcome_line(&mut lines, &msg.content, width);
-        } else {
-            // Add a gap before the assistant response (streaming or finalized)
-            if msg.role == Role::Assistant && !lines.is_empty() {
-                lines.push(Line::raw(""));
-            }
-            let is_latest = render_pos == last_rendered;
-            let rendered = cache.get_or_render(msg.role, &msg.content, is_latest, msg_idx, width);
-            lines.extend(rendered.iter().cloned());
+        // Add a gap before the assistant response
+        if msg.role == Role::Assistant && !items.is_empty() {
+            items.push(ChatRenderItem {
+                kind: ChatRenderKind::EmptyLine,
+                height: 1,
+            });
+            total_height += 1;
         }
+
+        let is_latest = render_pos == last_rendered;
+        let rendered = cache.get_or_render(msg.role, &msg.content, is_latest, msg_idx, width);
+        let height = rendered.len();
+        items.push(ChatRenderItem {
+            kind: ChatRenderKind::Message(msg_idx),
+            height,
+        });
+        total_height += height;
 
         // Blank separator: only before user messages
         if let Some(&next_idx) = order.get(render_pos + 1)
             && let Some(next) = messages.get(next_idx)
             && next.role == Role::User
         {
-            lines.push(Line::raw(""));
+            items.push(ChatRenderItem {
+                kind: ChatRenderKind::EmptyLine,
+                height: 1,
+            });
+            total_height += 1;
         }
     }
 
-    lines
-}
-
-fn append_welcome_line(lines: &mut Vec<Line<'static>>, content: &str, _width: usize) {
-    let yellow = Style::default().fg(Color::Yellow);
-    let cyan = Style::default().fg(Color::Cyan);
-    let green = Style::default().fg(Color::Green);
-
-    // "Welcome to pie! Type ? for help."
-    let mut spans = vec![
-        Span::styled("  ", Style::default().fg(Color::DarkGray)), // Match prefix width
-    ];
-    let mut rest = content;
-    while let Some(pos) = rest.find("pie") {
-        if pos > 0 {
-            spans.push(Span::styled(rest[..pos].to_string(), yellow));
-        }
-        spans.push(Span::styled("pie", cyan));
-        rest = &rest[pos + 3..];
-    }
-    if let Some(pos) = rest.find('?') {
-        if pos > 0 {
-            spans.push(Span::styled(rest[..pos].to_string(), yellow));
-        }
-        spans.push(Span::styled("?", green));
-        rest = &rest[pos + 1..];
-    }
-    if !rest.is_empty() {
-        spans.push(Span::styled(rest.to_string(), yellow));
-    }
-    lines.push(Line::from(spans));
-}
-
-/// Render a tool call as exactly two lines using color to distinguish them:
-/// ```text
-///   name(params)            ← magenta
-///     output text...        ← dark gray
-/// ```
-fn append_tool_lines(lines: &mut Vec<Line<'static>>, content: &str, width: usize) {
-    let (call, output) = content.split_once(" → ").unwrap_or((content, ""));
-
-    let call_text = truncate_str(call, width);
-    let prefix = Span::styled("  ", Style::default().fg(Color::DarkGray));
-
-    lines.push(Line::from(vec![
-        prefix.clone(),
-        Span::styled(call_text, Style::default().fg(Color::Magenta)),
-    ]));
-
-    if !output.is_empty() {
-        let output_text = truncate_str(output, width.saturating_sub(4));
-        let dim = Style::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::DIM);
-        lines.push(Line::from(vec![
-            prefix,
-            Span::styled("└ ", dim),
-            Span::styled(output_text, dim),
-        ]));
-    }
+    (items, total_height)
 }
 
 // ── Helpers ─────────────────────────────────────────────────────
-
-pub(crate) use super::truncate_str;
 
 #[cfg(test)]
 mod tests {
@@ -333,8 +384,12 @@ mod tests {
         let mut state = ChatState::new();
         terminal
             .draw(|f| {
-                let lines = build_chat_lines(messages, &mut cache, width as usize);
-                let view = ChatView { lines: &lines };
+                let (plan, total_height) = build_render_plan(messages, &mut cache, width as usize);
+                let view = ChatView {
+                    cache: &mut cache,
+                    render_plan: &plan,
+                    total_height,
+                };
                 f.render_stateful_widget(view, f.area(), &mut state);
             })
             .unwrap();

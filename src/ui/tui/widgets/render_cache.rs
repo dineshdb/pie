@@ -47,7 +47,11 @@ impl MessageRenderCache {
             let prefix = message_prefix(role, is_latest);
             let cont_prefix = continuation_prefix();
 
-            let raw_lines = if matches!(role, Role::Assistant) && !content.is_empty() {
+            let raw_lines = if role == Role::Tool {
+                render_tool_lines(content, width)
+            } else if role == Role::System && content.starts_with("Welcome to") {
+                render_welcome_lines(content)
+            } else if role == Role::Assistant && !content.is_empty() {
                 super::markdown::render_markdown(content, width, color)
             } else {
                 content
@@ -110,6 +114,13 @@ impl MessageRenderCache {
             *entry = None;
         }
     }
+
+    pub fn get_lines(&self, index: usize) -> Option<&[Line<'static>]> {
+        self.entries
+            .get(index)
+            .and_then(|e| e.as_ref())
+            .map(|c| c.lines.as_slice())
+    }
 }
 
 fn role_color(role: Role) -> Color {
@@ -138,4 +149,59 @@ fn message_prefix(role: Role, is_latest: bool) -> tuirealm::ratatui::text::Span<
 
 fn continuation_prefix() -> tuirealm::ratatui::text::Span<'static> {
     tuirealm::ratatui::text::Span::styled("  ", Style::default().fg(Color::DarkGray))
+}
+
+fn render_tool_lines(content: &str, width: usize) -> Vec<Line<'static>> {
+    use tuirealm::ratatui::style::Modifier;
+    use tuirealm::ratatui::text::Span;
+
+    let mut lines = Vec::new();
+    let (call, output) = content.split_once(" → ").unwrap_or((content, ""));
+
+    let call_text = super::truncate_str(call, width);
+    lines.push(Line::from(vec![Span::styled(
+        call_text,
+        Style::default().fg(Color::Magenta),
+    )]));
+
+    if !output.is_empty() {
+        let output_text = super::truncate_str(output, width.saturating_sub(4));
+        let dim = Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::DIM);
+        lines.push(Line::from(vec![
+            Span::styled("└ ", dim),
+            Span::styled(output_text, dim),
+        ]));
+    }
+    lines
+}
+
+fn render_welcome_lines(content: &str) -> Vec<Line<'static>> {
+    use tuirealm::ratatui::text::Span;
+
+    let yellow = Style::default().fg(Color::Yellow);
+    let cyan = Style::default().fg(Color::Cyan);
+    let green = Style::default().fg(Color::Green);
+
+    let mut spans = Vec::new();
+    let mut rest = content;
+    while let Some(pos) = rest.find("pie") {
+        if pos > 0 {
+            spans.push(Span::styled(rest[..pos].to_string(), yellow));
+        }
+        spans.push(Span::styled("pie", cyan));
+        rest = &rest[pos + 3..];
+    }
+    if let Some(pos) = rest.find('?') {
+        if pos > 0 {
+            spans.push(Span::styled(rest[..pos].to_string(), yellow));
+        }
+        spans.push(Span::styled("?", green));
+        rest = &rest[pos + 1..];
+    }
+    if !rest.is_empty() {
+        spans.push(Span::styled(rest.to_string(), yellow));
+    }
+    vec![Line::from(spans)]
 }
