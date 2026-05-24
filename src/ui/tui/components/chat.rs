@@ -119,6 +119,20 @@ impl ChatComponent {
         self.chat_state.auto_scroll = true;
         self.render_plan.clear();
     }
+
+    pub fn update_last_user_message(&mut self, content: String) {
+        if let Some((idx, msg)) = self
+            .messages
+            .iter_mut()
+            .enumerate()
+            .rev()
+            .find(|(_, m)| m.role == crate::session::Role::User)
+        {
+            msg.content = content;
+            self.render_cache.invalidate(idx);
+            self.render_plan.clear();
+        }
+    }
     pub fn clear_messages(&mut self) {
         self.messages.clear();
         self.render_cache.clear();
@@ -714,6 +728,22 @@ mod tests {
             chat.chat_state.auto_scroll,
             "add_message should enable auto_scroll"
         );
+    }
+
+    #[tokio::test]
+    async fn update_last_user_message() {
+        let mut chat = ChatComponent::new(
+            vec![ChatMessage::system("Welcome")],
+            "test-model".to_string(),
+            test_registry(),
+            test_pool().await,
+            "test-session".to_string(),
+            test_pending(),
+        );
+        chat.add_message(ChatMessage::user("original"));
+        chat.update_last_user_message("updated".to_string());
+        assert_eq!(chat.messages[1].content, "updated");
+        assert_eq!(chat.messages[1].role, Role::User);
     }
 
     #[tokio::test]

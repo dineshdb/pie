@@ -84,8 +84,7 @@ fn process_msg(
 
         Msg::UserMessage(text) => {
             if let Some(chat) = chat_mut!(app) {
-                chat.add_message(ChatMessage::user(&text));
-                chat.start_response();
+                chat.update_last_user_message(text);
             }
         }
 
@@ -205,8 +204,10 @@ fn handle_submit(
             }
         }
         CommandAction::Stream(query) => {
-            // No longer adding user message or starting response here.
-            // We wait for the Msg::UserMessage event from the agent's dispatch_user_message.
+            if let Some(chat) = chat_mut!(app) {
+                chat.add_message(ChatMessage::user(&query));
+                chat.start_response();
+            }
             input.start_stream(&query, tx);
         }
         CommandAction::Shell(command) => {
