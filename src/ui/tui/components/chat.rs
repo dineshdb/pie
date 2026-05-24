@@ -2,9 +2,7 @@
 //!
 //! Owns the message list, render cache, scroll state, and streaming response tracking.
 
-use crate::db::DbPool;
 use crate::registry::Registry;
-use crate::tools::plan::Step;
 use crate::ui::tui::realm::{Msg, StreamEvent};
 use crate::ui::tui::state::ChatMessage;
 use crate::ui::tui::stream::PendingPermissions;
@@ -59,10 +57,6 @@ pub struct ChatComponent {
     pub total_height: usize,
     pub last_width: usize,
     pub registry: Arc<Registry>,
-    pub pool: Arc<DbPool>,
-    pub session_id: String,
-    pub show_plan: bool,
-    pub cached_plan_steps: Vec<Step>,
     pub pending_permissions: PendingPermissions,
     permission_response_tx: Option<oneshot::Sender<bool>>,
 }
@@ -72,8 +66,6 @@ impl ChatComponent {
         messages: Vec<ChatMessage>,
         current_model: String,
         registry: Arc<Registry>,
-        pool: Arc<DbPool>,
-        session_id: String,
         pending_permissions: PendingPermissions,
     ) -> Self {
         Self {
@@ -88,18 +80,9 @@ impl ChatComponent {
             total_height: 0,
             last_width: 0,
             registry,
-            pool,
-            session_id,
-            show_plan: true,
-            cached_plan_steps: Vec::new(),
             pending_permissions,
             permission_response_tx: None,
         }
-    }
-
-    pub fn toggle_plan(&mut self) {
-        self.show_plan = !self.show_plan;
-        self.render_plan.clear();
     }
 
     pub fn set_help_dialog(&mut self) {
@@ -426,16 +409,6 @@ impl ChatComponent {
                 self.add_message(ChatMessage::tool(&content));
                 Msg::Redraw
             }
-            StreamEvent::PlanUpdate => {
-                let pool = self.pool.clone();
-                let session_id = self.session_id.clone();
-                self.cached_plan_steps = crate::ui::tui::realm::run_sync(async {
-                    use crate::tools::plan::PlanRepo;
-                    pool.load_steps(&session_id).await.unwrap_or_default()
-                });
-                self.render_plan.clear();
-                Msg::Redraw
-            }
             StreamEvent::ModelList(models) => {
                 tracing::info!(count = models.len(), "received ModelList in ChatComponent");
                 if let ActiveDialog::ModelSelector(state) = &self.active_dialog {
@@ -531,10 +504,6 @@ impl ChatComponent {
             }
             (KeyModifiers::NONE, Key::PageDown) => {
                 self.scroll_down(20);
-                Msg::Redraw
-            }
-            (KeyModifiers::CONTROL, Key::Char('t')) => {
-                self.toggle_plan();
                 Msg::Redraw
             }
             _ => Msg::KeyboardToInput(*key),
@@ -687,10 +656,6 @@ mod tests {
         })
     }
 
-    async fn test_pool() -> Arc<DbPool> {
-        Arc::new(crate::db::create_test_pool().await.unwrap())
-    }
-
     fn test_pending() -> PendingPermissions {
         Arc::new(std::sync::Mutex::new(None))
     }
@@ -702,14 +667,11 @@ mod tests {
             messages,
             "test-model".to_string(),
             test_registry(),
-            test_pool().await,
-            "test-session".to_string(),
             test_pending(),
         );
         assert_eq!(chat.messages.len(), 1);
         assert_eq!(chat.messages[0].role, Role::System);
         assert!(chat.messages[0].content.contains("Welcome"));
-        assert!(chat.show_plan);
     }
 
     #[tokio::test]
@@ -718,8 +680,6 @@ mod tests {
             vec![ChatMessage::system("Welcome")],
             "test-model".to_string(),
             test_registry(),
-            test_pool().await,
-            "test-session".to_string(),
             test_pending(),
         );
         chat.chat_state.auto_scroll = false;
@@ -736,8 +696,6 @@ mod tests {
             vec![ChatMessage::system("Welcome")],
             "test-model".to_string(),
             test_registry(),
-            test_pool().await,
-            "test-session".to_string(),
             test_pending(),
         );
         chat.add_message(ChatMessage::user("original"));
@@ -747,30 +705,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn toggle_plan_state() {
-        let mut chat = ChatComponent::new(
-            vec![],
-            "test-model".to_string(),
-            test_registry(),
-            test_pool().await,
-            "test-session".to_string(),
-            test_pending(),
-        );
-        assert!(chat.show_plan);
-        chat.toggle_plan();
-        assert!(!chat.show_plan);
-        chat.toggle_plan();
-        assert!(chat.show_plan);
-    }
-
-    #[tokio::test]
     async fn start_and_finish_stream() {
         let mut chat = ChatComponent::new(
             vec![],
             "test-model".to_string(),
             test_registry(),
-            test_pool().await,
-            "test-session".to_string(),
             test_pending(),
         );
         chat.start_response();

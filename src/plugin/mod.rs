@@ -1,4 +1,3 @@
-mod conversationmode;
 mod debug;
 mod developer;
 mod helper_binaries;
@@ -10,7 +9,6 @@ mod subagent;
 mod system_prompts;
 mod websearch;
 
-pub use conversationmode::ConversationModePlugin;
 pub use debug::DebugPlugin;
 pub use developer::DeveloperPlugin;
 pub use helper_binaries::HelperBinariesPlugin;

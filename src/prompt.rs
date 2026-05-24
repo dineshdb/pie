@@ -1,14 +1,12 @@
 use crate::agent::{Agent, OutputMode};
-use crate::db::DbPool;
 use crate::instructions::Instructions;
 use crate::registry::Skill;
-use crate::tools::plan::{PlanRepo, Step};
 use crate::utils::{AnonymizedPath, git_repo_root};
 use anyhow::{Context, Result};
 use minijinja::Environment;
 use serde::Serialize;
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../.pie/SYSTEM.md");
 
@@ -46,12 +44,11 @@ pub struct SystemPromptCtx<'a> {
     pub skills: &'a [Skill],
     pub agents: &'a [Agent],
     pub loaded_skills: &'a [Skill],
-    pub steps: Vec<Step>,
     pub extra_context: ExtraContext,
 }
 
 impl<'a> SystemPromptCtx<'a> {
-    pub fn new(sp: &'a SystemPrompt<'a>, steps: Vec<Step>) -> Self {
+    pub fn new(sp: &'a SystemPrompt<'a>) -> Self {
         let agent_name = sp.agent.map(|a| a.name.as_str());
         let agent_content = sp.agent.map(|a| a.content.as_str());
 
@@ -95,7 +92,6 @@ impl<'a> SystemPromptCtx<'a> {
             skills: sp.skills,
             agents: sp.agents,
             loaded_skills: &sp.loaded_skills,
-            steps,
             extra_context,
         }
     }
@@ -129,8 +125,6 @@ pub struct SystemPrompt<'a> {
     pub loaded_skills: Vec<Skill>,
     agent: Option<&'a Agent>,
     output_mode: Option<OutputMode>,
-    pool: Option<Arc<DbPool>>,
-    session_id: Option<String>,
 }
 
 impl<'a> SystemPrompt<'a> {
@@ -142,16 +136,7 @@ impl<'a> SystemPrompt<'a> {
             loaded_skills: Vec::new(),
             agent: None,
             output_mode: None,
-            pool: None,
-            session_id: None,
         }
-    }
-
-    /// Add plan repository for context.
-    pub fn with_plan(mut self, pool: Arc<DbPool>, session_id: String) -> Self {
-        self.pool = Some(pool);
-        self.session_id = Some(session_id);
-        self
     }
 
     /// Use a specific agent persona.
@@ -185,13 +170,8 @@ impl<'a> SystemPrompt<'a> {
     }
 
     /// Render the final system prompt string.
-    pub async fn render(&self) -> Result<String> {
-        let steps = if let (Some(pool), Some(session_id)) = (&self.pool, &self.session_id) {
-            pool.load_steps(session_id).await.unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        let ctx = SystemPromptCtx::new(self, steps);
+    pub fn render(&self) -> Result<String> {
+        let ctx = SystemPromptCtx::new(self);
         render_template(&ctx)
     }
 
@@ -246,17 +226,15 @@ mod test_helpers {
 
     /// Render the main agent prompt with deterministic values.
     #[allow(clippy::expect_used)]
-    pub async fn render_main(skills: &[Skill], output_mode: OutputMode) -> String {
+    pub fn render_main(skills: &[Skill], output_mode: OutputMode) -> String {
         SystemPrompt::new(skills, &[])
             .with_output_mode(output_mode)
             .render()
-            .await
             .expect("test render main")
     }
 
     /// Render the subagent prompt with deterministic values.
-    #[allow(clippy::expect_used)]
-    pub async fn render_sub() -> String {
+    pub fn render_sub() -> String {
         let agent = Agent {
             name: "test-agent".to_string(),
             description: "test".to_string(),
@@ -274,7 +252,6 @@ mod test_helpers {
         SystemPrompt::new(&[], &agents)
             .with_agent(Some("test-agent"))
             .render()
-            .await
             .expect("test render sub")
     }
 }
@@ -286,7 +263,7 @@ mod tests {
 
     #[tokio::test]
     async fn subagent_with_agent_name_includes_persona() {
-        let result = render_sub().await;
+        let result = render_sub();
         let role = result.split("Agent Role").nth(1).unwrap_or("");
         assert!(
             role.contains("You are a test agent."),
@@ -298,7 +275,7 @@ mod tests {
 
     #[tokio::test]
     async fn main_agent_does_not_hardcode_repo_instructions() {
-        let result = render_main(&[], OutputMode::Md).await;
+        let result = render_main(&[], OutputMode::Md);
         assert!(
             !result.contains("/my/project"),
             "repo root must not be hardcoded in system prompt"
@@ -307,7 +284,7 @@ mod tests {
 
     #[tokio::test]
     async fn main_agent_outside_repo_has_no_repo_instructions() {
-        let result = render_main(&[], OutputMode::Md).await;
+        let result = render_main(&[], OutputMode::Md);
         assert!(
             !result.contains("git repo"),
             "should not mention git repo when not in one"
@@ -316,7 +293,7 @@ mod tests {
 
     #[tokio::test]
     async fn subagent_in_repo_cannot_delegate_further() {
-        let result = render_sub().await;
+        let result = render_sub();
         let repo_section = result.split("git repo").nth(1).unwrap_or("");
         assert!(
             !repo_section.contains("subagent"),
@@ -327,14 +304,14 @@ mod tests {
     #[tokio::test]
     async fn runtime_context_includes_date_and_working_directory() {
         unsafe { std::env::set_var("PWD", "/test/project") };
-        let result = render_main(&[], OutputMode::Md).await;
+        let result = render_main(&[], OutputMode::Md);
         assert!(result.contains('-'), "date must appear");
         assert!(result.contains("/test/project"), "pwd must appear");
     }
 
     #[tokio::test]
     async fn all_template_variables_resolve() {
-        let result = render_main(&[skill("bash", "commands", "content")], OutputMode::Md).await;
+        let result = render_main(&[skill("bash", "commands", "content")], OutputMode::Md);
         assert!(!result.contains("{%"), "unrendered Jinja block tag");
         assert!(!result.contains("{{"), "unrendered Jinja expression");
     }

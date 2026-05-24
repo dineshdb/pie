@@ -1,4 +1,4 @@
-use crate::agent::{AgentConfig, AgentEvent, OutputMode, PieAgent};
+use crate::agent::{AgentConfig, AgentEvent, PieAgent};
 use crate::plugin::PermissionRequest;
 use crate::session::{Session, SessionId};
 use crate::ui::tui::components::input::InputComponent;
@@ -114,16 +114,13 @@ pub async fn spawn_stream(
                         output,
                     });
                 }
-                AgentEvent::PlanUpdate => {
-                    let _ = event_tx_clone.send(StreamEvent::PlanUpdate);
-                }
                 AgentEvent::PermissionRequest(_) => {}
             }
         }
     });
 
     tokio::select! {
-        res = agent.stream(&query, OutputMode::Interactive, agent_tx) => {
+        res = agent.stream(&query, agent_tx) => {
             if let Err(e) = res {
                 let _ = event_tx.send(StreamEvent::Error(e.to_string()));
             }

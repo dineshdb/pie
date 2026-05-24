@@ -6,7 +6,6 @@
 use crate::config::{ProviderConfig, ResolvedProvider, pie_home};
 use crate::registry::Registry;
 use crate::session::{Session, SessionId};
-use crate::tools::plan::{PlanRepo, StepStatus};
 use crate::ui::tui::realm::{Msg, StreamEvent};
 use crate::ui::tui::stream::{PendingPermissions, StreamContext, spawn_stream};
 use crate::ui::tui::widgets::completion::{
@@ -380,47 +379,15 @@ impl InputComponent {
         self.model = self.provider.build_client();
     }
 
-    pub fn active_steps(&self, is_streaming: bool) -> Vec<String> {
+    pub fn active_steps(is_streaming: bool) -> Vec<String> {
         if !is_streaming {
             return vec![];
         }
-
-        let steps = crate::ui::tui::realm::run_sync(
-            self.session_pool.load_steps(&self.session_id.to_string()),
-        )
-        .unwrap_or_default();
-
-        let active: Vec<String> = steps
-            .iter()
-            .filter(|p| p.status == StepStatus::InProgress)
-            .map(|p| p.name.clone())
-            .collect();
-        if !active.is_empty() {
-            return active;
-        }
-
-        if steps.is_empty() {
-            return vec!["Planning".to_string()];
-        }
-
-        steps
-            .iter()
-            .rfind(|p| {
-                matches!(
-                    p.status,
-                    StepStatus::Completed | StepStatus::Failed | StepStatus::Skipped
-                )
-            })
-            .map(|p| vec![p.name.clone()])
-            .unwrap_or_default()
+        vec!["Thinking".to_string()]
     }
 
     /// Reset to a new session: update `session_id`, create fresh history, clear input.
     pub fn reset_session(&mut self, session_id: SessionId) {
-        let _ = crate::ui::tui::realm::run_sync(PlanRepo::delete_steps(
-            &*self.session_pool,
-            &session_id.to_string(),
-        ));
         let history_dir = pie_home().join("history");
         let history_path = history_dir.join(format!("{session_id}.txt"));
         self.session_id = session_id;

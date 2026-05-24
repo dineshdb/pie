@@ -1,5 +1,3 @@
-pub mod plan;
-
 // ── Sandbox execution helpers ──────────────────────────────────────────
 
 fn default_bin_dirs() -> Vec<std::path::PathBuf> {

@@ -18,7 +18,6 @@ pub enum AgentEvent {
         display: String,
         output: String,
     },
-    PlanUpdate,
     #[expect(dead_code)]
     PermissionRequest(PermissionRequest),
 }
@@ -106,9 +105,6 @@ impl AgentPlugin for StreamPlugin {
             display: String::new(),
             output,
         });
-        if name.starts_with("plan_") {
-            let _ = self.event_tx.send(AgentEvent::PlanUpdate);
-        }
 
         PostToolAction::Continue(None)
     }

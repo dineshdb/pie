@@ -18,7 +18,7 @@ impl WebsearchPlugin {
 }
 
 const SEARCH_DESCRIPTION: &str = r"
-Search the web using DuckDuckGo (ddgr) and return results in Markdown format.
+Gather more info from  the web for more context.
 Use for finding information not in the locally.
 Try to use specific variation of the query first but if you don't find answers you're looking for, go for more generic and broader variation.
 ";

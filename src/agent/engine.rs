@@ -1,4 +1,4 @@
-use crate::agent::{AgentEvent, OutputMode, find_subsume_candidate};
+use crate::agent::{AgentEvent, find_subsume_candidate};
 use crate::config::CONFIG;
 use crate::db::DbPool;
 use crate::error::{AppError, Result};
@@ -7,16 +7,14 @@ use crate::plugin::PermissionRequest;
 use crate::prompt::SystemPrompt;
 use crate::registry::Registry;
 use crate::session::{HistoryContent, Session};
-use crate::tools::plan::plan_tools;
 use agentsdk::core::Sandbox;
-use agentsdk::core::tools::Tool;
 use agentsdk::{Agent as SdkAgent, MemoryHistoryPlugin, Message};
 use agentsdk_plugin_fs::FileSystemPlugin;
 use agentsdk_plugin_skills::SkillsPlugin;
 use futures::future::BoxFuture;
 use p1e_sandbox::{Permission, SandboxConfig};
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -128,37 +126,17 @@ impl PieAgent {
         merged
     }
 
-    async fn prepare_system_prompt(&self, query: &Instructions) -> Result<String> {
+    fn prepare_system_prompt(&self, query: &Instructions) -> Result<String> {
         let query_mentions = self.merged_mentions(query);
 
         let sp = SystemPrompt::new(&self.registry.skills, &self.registry.agents)
-            .with_plan(self.pool.clone(), self.session.id.to_string())
             .with_agent(self.config.agent_name.as_deref())
             .resolve(&query_mentions);
 
-        Ok(sp.render().await?)
+        Ok(sp.render()?)
     }
 
-    fn build_tools(&self, _output_mode: OutputMode) -> Result<Vec<Tool>> {
-        let session_id = self.session.id.to_string();
-        let mut tools = vec![];
-
-        for tool in plan_tools(self.pool.clone(), &session_id)? {
-            tools.push(tool);
-        }
-
-        Ok(tools)
-    }
-
-    fn build_sdk_agent(&self, output_mode: OutputMode) -> Result<agentsdk::AgentBuilder> {
-        let tools = self.build_tools(output_mode)?;
-        let mut defs = Vec::with_capacity(tools.len());
-        let mut execs = HashMap::with_capacity(tools.len());
-        for t in tools {
-            defs.push(t.definition.clone());
-            execs.insert(t.definition.name.clone(), t.execute);
-        }
-
+    fn build_sdk_agent(&self) -> Result<agentsdk::AgentBuilder> {
         let mut bin_dirs = vec![crate::config::pie_home().join("bin")];
         if let Some(git_root) = crate::utils::git_repo_root() {
             bin_dirs.push(std::path::PathBuf::from(git_root).join(".pie").join("bin"));
@@ -174,8 +152,6 @@ impl PieAgent {
             .options(
                 agentsdk::AgentOptions::builder()
                     .max_iterations(self.config.max_steps as usize)
-                    .tool_definitions(Arc::new(defs))
-                    .tool_executors(Arc::new(execs))
                     .build()
                     .map_err(|e| AppError::Config(e.to_string()))?,
             ))
@@ -193,7 +169,7 @@ impl PieAgent {
                 query_str.to_string()
             };
 
-            self.stream(&query, OutputMode::Md, event_tx).await
+            self.stream(&query, event_tx).await
         })
     }
 
@@ -213,7 +189,7 @@ impl PieAgent {
                 query_str.to_string()
             };
 
-            let _ = self.stream(&query, OutputMode::Json, event_tx).await?;
+            let _ = self.stream(&query, event_tx).await?;
 
             let mut history = self.session.to_messages();
 
@@ -240,11 +216,10 @@ impl PieAgent {
     pub fn stream<'a>(
         &'a mut self,
         query_str: &'a str,
-        output_mode: OutputMode,
         event_tx: UnboundedSender<AgentEvent>,
     ) -> BoxFuture<'a, Result<String>> {
         Box::pin(async move {
-            let mut builder = self.build_sdk_agent(output_mode)?;
+            let mut builder = self.build_sdk_agent()?;
 
             let history_plugin = MemoryHistoryPlugin::new();
             for msg in self.session.to_messages() {
@@ -264,7 +239,6 @@ impl PieAgent {
                     include_str!("../../.pie/SYSTEM.md"),
                 ))
                 .plugin(crate::plugin::build_agentsmd_plugin()?)
-                .plugin(crate::plugin::ConversationModePlugin::new(output_mode))
                 .plugin(crate::plugin::PermissionsPlugin::new(
                     self.registry.clone(),
                     grants,
@@ -320,11 +294,11 @@ impl PieAgent {
                 && self.config.agent_name.as_ref() != Some(&agent_name)
             {
                 let mut subagent = self.spawn_subagent(Some(agent_name)).await?;
-                return subagent.stream(&query, output_mode, event_tx).await;
+                return subagent.stream(&query, event_tx).await;
             }
 
             // Deriving system prompt from the query string (slow)
-            let system = self.prepare_system_prompt(&query_instructions).await?;
+            let system = self.prepare_system_prompt(&query_instructions)?;
 
             // Inject the system prompt into the agent's context
             if let Some(entity) = agent.entity

@@ -15,7 +15,6 @@ use crate::ui::tui::components::chat::{ActiveDialog, ChatComponent, ModelSelecto
 use crate::ui::tui::components::input::InputComponent;
 use crate::ui::tui::realm::{App, Id, Msg, StreamEvent, StreamPort, run_sync};
 use crate::ui::tui::state::ChatMessage;
-use crate::ui::tui::widgets::plan_list::PlanView;
 use crate::ui::tui::widgets::status_bar::StatusBar;
 use anyhow::{Context, Result};
 use arboard::Clipboard;
@@ -27,12 +26,10 @@ use tokio::sync::mpsc;
 use tuirealm::application::PollStrategy;
 use tuirealm::event::{Key, KeyModifiers};
 use tuirealm::listener::EventListenerCfg;
-use tuirealm::props::{Color, Style};
 use tuirealm::ratatui::backend::CrosstermBackend;
 use tuirealm::ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use tuirealm::ratatui::crossterm::execute;
 use tuirealm::ratatui::layout::{Constraint, Direction, Layout};
-use tuirealm::ratatui::widgets::{Block, BorderType, Borders};
 
 type Terminal = tuirealm::ratatui::Terminal<CrosstermBackend<std::io::Stdout>>;
 
@@ -379,8 +376,6 @@ pub async fn run_tui(
             messages,
             current_model,
             registry,
-            session.pool().clone(),
-            session.id.to_string(),
             pending_permissions,
         )),
         vec![],
@@ -467,25 +462,11 @@ fn render(app: &mut App, input: &mut InputComponent, terminal: &mut Terminal) ->
         let input_lines = input.input_line_count().clamp(1, 8) as u16;
         let input_height = input_lines;
 
-        let (show_plan, step_count) = if let Some(chat) = chat_ref!(app) {
-            let steps = chat.cached_plan_steps.clone();
-            (chat.show_plan && !steps.is_empty(), steps.len())
-        } else {
-            (false, 0)
-        };
-
-        let mut constraints = vec![
-            Constraint::Min(5),    // Messages
-            Constraint::Length(1), // Status Bar
+        let constraints = vec![
+            Constraint::Min(5),               // Messages
+            Constraint::Length(1),            // Status Bar
+            Constraint::Length(input_height), // Input
         ];
-
-        if show_plan {
-            #[allow(clippy::cast_possible_truncation)]
-            let plan_height = (step_count as u16 + 1).min(10); // +1 for top border
-            constraints.push(Constraint::Length(plan_height));
-        }
-
-        constraints.push(Constraint::Length(input_height)); // Input
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -494,36 +475,15 @@ fn render(app: &mut App, input: &mut InputComponent, terminal: &mut Terminal) ->
 
         let messages_area = chunks.first().copied().unwrap_or(area);
         let status_bar_area = chunks.get(1).copied().unwrap_or(area);
-
-        let (plan_area, input_area) = if show_plan {
-            (
-                chunks.get(2).copied(),
-                chunks.get(3).copied().unwrap_or(area),
-            )
-        } else {
-            (None, chunks.get(2).copied().unwrap_or(area))
-        };
+        let input_area = chunks.get(2).copied().unwrap_or(area);
 
         app.view(&Id::Chat, f, messages_area);
 
         // Status Bar rendering
         let is_streaming = chat_ref!(app).is_some_and(ChatComponent::is_streaming);
-        let active_steps = input.active_steps(is_streaming);
+        let active_steps = InputComponent::active_steps(is_streaming);
         let status_bar = StatusBar::new(active_steps, is_streaming, input.spinner_frame);
         f.render_widget(status_bar, status_bar_area);
-
-        if let Some(p_area) = plan_area
-            && let Some(chat) = chat_ref!(app)
-        {
-            let plan_view = PlanView::new(chat.cached_plan_steps.clone()).block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .border_style(Style::default().fg(Color::DarkGray))
-                    .border_type(BorderType::Plain)
-                    .title(" Plan "),
-            );
-            f.render_widget(plan_view, p_area);
-        }
 
         input.render(f, input_area, is_streaming);
     })?;

@@ -19,7 +19,6 @@ pub enum StreamEvent {
         display: String,
         output: String,
     },
-    PlanUpdate,
     ModelList(Vec<String>),
     PermissionRequest,
 }
