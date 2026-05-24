@@ -1,7 +1,7 @@
 use crate::agent::{Agent, OutputMode};
 use crate::db::DbPool;
 use crate::instructions::Instructions;
-use crate::registry::{PluginMetadata, Skill};
+use crate::registry::Skill;
 use crate::tools::plan::{PlanRepo, Step};
 use crate::utils::{AnonymizedPath, git_repo_root};
 use anyhow::{Context, Result};
@@ -47,7 +47,6 @@ pub struct SystemPromptCtx<'a> {
     pub agents: &'a [Agent],
     pub loaded_skills: &'a [Skill],
     pub steps: Vec<Step>,
-    pub plugin_system_prompts: HashMap<String, String>,
     pub extra_context: ExtraContext,
 }
 
@@ -59,16 +58,6 @@ impl<'a> SystemPromptCtx<'a> {
         let output_mode = sp
             .output_mode
             .unwrap_or_else(|| sp.agent.map_or(OutputMode::Md, |a| a.output_mode));
-
-        let plugin_system_prompts: HashMap<String, String> = sp
-            .plugins
-            .iter()
-            .filter_map(|p| {
-                p.system_prompt
-                    .as_ref()
-                    .map(|sp_text| (p.name.clone(), sp_text.clone()))
-            })
-            .collect();
 
         let (date, pwd, os, arch, hostname) = SystemPrompt::env_vars();
         let pwd = AnonymizedPath::from(pwd);
@@ -107,7 +96,6 @@ impl<'a> SystemPromptCtx<'a> {
             agents: sp.agents,
             loaded_skills: &sp.loaded_skills,
             steps,
-            plugin_system_prompts,
             extra_context,
         }
     }
@@ -138,7 +126,6 @@ fn discover_project_files(root: &str) -> Vec<String> {
 pub struct SystemPrompt<'a> {
     skills: &'a [Skill],
     agents: &'a [Agent],
-    plugins: &'a [PluginMetadata],
     pub loaded_skills: Vec<Skill>,
     agent: Option<&'a Agent>,
     output_mode: Option<OutputMode>,
@@ -148,11 +135,10 @@ pub struct SystemPrompt<'a> {
 
 impl<'a> SystemPrompt<'a> {
     /// Create a new system prompt context from base registries.
-    pub fn new(skills: &'a [Skill], agents: &'a [Agent], plugins: &'a [PluginMetadata]) -> Self {
+    pub fn new(skills: &'a [Skill], agents: &'a [Agent]) -> Self {
         Self {
             skills,
             agents,
-            plugins,
             loaded_skills: Vec::new(),
             agent: None,
             output_mode: None,
@@ -261,7 +247,7 @@ mod test_helpers {
     /// Render the main agent prompt with deterministic values.
     #[allow(clippy::expect_used)]
     pub async fn render_main(skills: &[Skill], output_mode: OutputMode) -> String {
-        SystemPrompt::new(skills, &[], &[])
+        SystemPrompt::new(skills, &[])
             .with_output_mode(output_mode)
             .render()
             .await
@@ -285,7 +271,7 @@ mod test_helpers {
         };
         let agents = vec![agent];
 
-        SystemPrompt::new(&[], &agents, &[])
+        SystemPrompt::new(&[], &agents)
             .with_agent(Some("test-agent"))
             .render()
             .await

@@ -67,51 +67,17 @@ struct StatusOutput<'a> {
     log_level: &'a str,
     output_format: OutputFormat,
     max_steps: u32,
-    plugins: Vec<PluginStatus>,
     skills: Vec<String>,
     agents: Vec<String>,
 }
 
-#[derive(Serialize)]
-struct PluginStatus {
-    name: String,
-    hooks: Vec<HookStatus>,
-}
-
-#[derive(Serialize)]
-struct HookStatus {
-    name: String,
-    event: String,
-    scope: String,
-    strategy: String,
-}
-
 pub fn handle_status(config: &ResolvedConfig, registry: &Arc<Registry>) {
     if config.output_format.is_json() {
-        let plugins = config
-            .plugins
-            .iter()
-            .map(|p| PluginStatus {
-                name: p.name.clone(),
-                hooks: p
-                    .hooks
-                    .iter()
-                    .map(|h| HookStatus {
-                        name: h.name().to_string(),
-                        event: h.event().to_string(),
-                        scope: format!("{:?}", h.scope()),
-                        strategy: format!("{:?}", h.strategy()),
-                    })
-                    .collect(),
-            })
-            .collect();
-
         let status = StatusOutput {
             provider: &config.provider,
             log_level: &config.log_level,
             output_format: config.output_format.clone(),
             max_steps: config.max_steps,
-            plugins,
             skills: registry.skills.iter().map(|s| s.name.clone()).collect(),
             agents: registry.agents.iter().map(|a| a.name.clone()).collect(),
         };
@@ -131,21 +97,6 @@ pub fn handle_status(config: &ResolvedConfig, registry: &Arc<Registry>) {
     println!("Log Level:   {}", config.log_level);
     println!("Output:      {:?}", config.output_format);
     println!("Max Steps:   {}", config.max_steps);
-
-    println!("\n--- Hooks Manager ---");
-    println!("Plugins: {}", config.plugins.len());
-    for plugin in &config.plugins {
-        println!(" - Plugin: {}", plugin.name);
-        for hook in &plugin.hooks {
-            println!(
-                "   - {}: event={}, scope={:?}, strategy={:?}",
-                hook.name(),
-                hook.event(),
-                hook.scope(),
-                hook.strategy()
-            );
-        }
-    }
 
     println!("\n--- Registry ---");
     println!("Skills: {}", registry.skills.len());

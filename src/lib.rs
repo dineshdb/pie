@@ -15,7 +15,6 @@ mod cron;
 mod db;
 pub mod error;
 mod handler;
-mod hook;
 mod instructions;
 mod plugin;
 mod prompt;

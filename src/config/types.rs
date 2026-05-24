@@ -148,8 +148,6 @@ pub struct PieConfig {
     pub sandbox: Option<SandboxConfig>,
     pub output_format: Option<String>,
     pub log_level: Option<String>,
-    #[serde(default)]
-    pub hooks: Vec<crate::hook::HookDef>,
 }
 
 /// A named model tier in `[model.<name>]` sections.

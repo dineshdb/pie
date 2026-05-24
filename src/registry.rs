@@ -2,8 +2,6 @@ use crate::agent::{Agent, get_all_agents};
 use crate::cmd::BuiltinCommand;
 use crate::config::{EMBEDDED_PIE_DIR, pie_home};
 use agentsdk_plugin_skills::parse_skill;
-use figment::providers::Format;
-use serde::Deserialize;
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
@@ -37,30 +35,10 @@ pub struct CompletionItem {
     pub kind: CompletionKind,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct PluginMetadata {
-    pub name: String,
-    #[allow(dead_code)]
-    pub version: Option<String>,
-    pub description: String,
-    #[serde(default)]
-    pub system_prompt: Option<String>,
-}
-
-impl PluginMetadata {
-    pub fn from_toml_str(content: &str) -> anyhow::Result<Self> {
-        let plugin: PluginMetadata = figment::Figment::new()
-            .merge(figment::providers::Toml::string(content))
-            .extract()?;
-        Ok(plugin)
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct Registry {
     pub agents: Vec<Agent>,
     pub skills: Vec<Skill>,
-    pub plugins: Vec<PluginMetadata>,
     pub completions: Vec<CompletionItem>,
 }
 
@@ -70,8 +48,6 @@ impl Registry {
     pub fn load() -> Arc<Self> {
         let agents = get_all_agents();
         let skills = get_all_skills();
-
-        let (_, plugins) = crate::plugin::scan_plugins();
 
         let mut completions = Vec::new();
 
@@ -101,20 +77,11 @@ impl Registry {
             });
         }
 
-        for plugin in &plugins {
-            completions.push(CompletionItem {
-                label: format!("/{}", plugin.name),
-                description: plugin.description.clone(),
-                kind: CompletionKind::Skill,
-            });
-        }
-
         completions.sort_by_key(|c| c.kind);
 
         let registry = Arc::new(Self {
             agents,
             skills,
-            plugins,
             completions,
         });
 

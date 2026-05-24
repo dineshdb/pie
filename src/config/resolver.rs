@@ -2,8 +2,6 @@ use super::loader::get_providers_data;
 use super::types::{PieConfig, ProviderBaseUrl, ProviderConfig, ProviderEndpoint};
 use crate::Cli;
 use crate::error::{AppError, Result};
-use crate::hook::CommandHook;
-use crate::plugin::ExternalPlugin;
 use crate::utils::output::OutputFormat;
 use agentsdk::{ModelConfig, OpenAI};
 use itertools::Itertools;
@@ -61,7 +59,6 @@ pub struct ResolvedConfig {
     pub output_format: OutputFormat,
     pub log_level: String,
     pub debug: bool,
-    pub plugins: Vec<ExternalPlugin>,
 }
 
 impl ResolvedConfig {
@@ -258,17 +255,6 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
 
         let log_level = if cli.debug { "debug" } else { pie.log_level() }.to_string();
 
-        let (mut plugins, _) = crate::plugin::scan_plugins();
-
-        // Wrap pie.toml hooks in an external plugin
-        if !pie.hooks.is_empty() {
-            let hooks: Vec<CommandHook> = pie.hooks.into_iter().map(CommandHook::from).collect();
-            plugins.push(ExternalPlugin {
-                name: "config".to_string(),
-                hooks,
-            });
-        }
-
         let retry = pie
             .agent
             .as_ref()
@@ -282,7 +268,6 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
             output_format,
             log_level,
             debug: cli.debug,
-            plugins,
         })
     }
 }
@@ -346,7 +331,6 @@ mod tests {
             sandbox: None,
             output_format: None,
             log_level: None,
-            hooks: vec![],
         };
 
         pie.provider.insert(

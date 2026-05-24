@@ -298,7 +298,6 @@ mod tests {
         Arc::new(Registry {
             agents: Vec::new(),
             skills: Vec::new(),
-            plugins: Vec::new(),
             completions: items
                 .into_iter()
                 .map(|(label, desc, kind)| CompletionItem {

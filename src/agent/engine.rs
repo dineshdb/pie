@@ -1,4 +1,4 @@
-use crate::agent::{AgentEvent, OutputMode, UserPluginRunner, find_subsume_candidate};
+use crate::agent::{AgentEvent, OutputMode, find_subsume_candidate};
 use crate::config::CONFIG;
 use crate::db::DbPool;
 use crate::error::{AppError, Result};
@@ -131,14 +131,10 @@ impl PieAgent {
     async fn prepare_system_prompt(&self, query: &Instructions) -> Result<String> {
         let query_mentions = self.merged_mentions(query);
 
-        let sp = SystemPrompt::new(
-            &self.registry.skills,
-            &self.registry.agents,
-            &self.registry.plugins,
-        )
-        .with_plan(self.pool.clone(), self.session.id.to_string())
-        .with_agent(self.config.agent_name.as_deref())
-        .resolve(&query_mentions);
+        let sp = SystemPrompt::new(&self.registry.skills, &self.registry.agents)
+            .with_plan(self.pool.clone(), self.session.id.to_string())
+            .with_agent(self.config.agent_name.as_deref())
+            .resolve(&query_mentions);
 
         Ok(sp.render().await?)
     }
@@ -281,6 +277,7 @@ impl PieAgent {
                         .map_err(|e| anyhow::anyhow!("failed to build skills plugin: {e}"))?,
                 )
                 .plugin(FileSystemPlugin::new())
+                .plugin(crate::plugin::PersistencePlugin::new(self.session.clone()))
                 .plugin(crate::plugin::ShellPlugin::new())
                 .plugin(crate::plugin::WebsearchPlugin::new())
                 .plugin(crate::plugin::SubAgentPlugin::new(
@@ -290,8 +287,7 @@ impl PieAgent {
                     self.pool.clone(),
                 ))
                 .plugin(crate::plugin::DeveloperPlugin::new())
-                .plugin(crate::plugin::HelperBinariesPlugin::new())
-                .plugin(UserPluginRunner::new(self.session.clone(), output_mode));
+                .plugin(crate::plugin::HelperBinariesPlugin::new());
 
             if AgentConfig::is_debug() {
                 builder = builder.plugin(crate::plugin::DebugPlugin::new(
