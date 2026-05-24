@@ -212,6 +212,7 @@ mod test_helpers {
     use super::*;
     use crate::agent::Agent;
     use crate::registry::Skill;
+    use agentsdk_plugin_skills::LoadStatus;
 
     pub fn skill(name: &str, desc: &str, content: &str) -> Skill {
         Skill {
@@ -219,6 +220,7 @@ mod test_helpers {
             description: desc.to_string(),
             content: content.to_string(),
             needs: Vec::new(),
+            status: LoadStatus::Unloaded,
             references: Vec::new(),
             extra: HashMap::new(),
             path: std::path::PathBuf::new(),

@@ -248,7 +248,8 @@ impl PieAgent {
                 .plugin(UserCommandPlugin::new(
                     self.registry.clone(),
                     self.config.agent_name.clone(),
-                ));
+                ))
+                .plugin(crate::plugin::DoomLoopPlugin::new());
 
             if AgentConfig::is_debug() {
                 builder = builder.plugin(crate::plugin::DebugPlugin::new(

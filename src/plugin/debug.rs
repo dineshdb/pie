@@ -56,7 +56,6 @@ impl DebugPlugin {
             .open(&self.log_path)
         {
             let _ = file.write_all(section.as_bytes());
-            tracing::debug!(title, content = %content, "Appended to debug log");
         } else {
             tracing::error!(path = ?self.log_path, "Failed to append to debug log");
         }
@@ -136,7 +135,7 @@ impl AgentPlugin for DebugPlugin {
         arguments: &serde_json::Value,
     ) -> PreToolAction {
         let args_pretty = serde_json::to_string_pretty(arguments).unwrap_or_default();
-        tracing::info!(tool = %name, id = %id, "Tool pre-execute");
+        tracing::info!(tool = %name, id = %id, args = %arguments, "Tool pre-execute");
 
         let content = format!(
             "**Action**: Pre-Execute Tool `{name}`\n**ID**: `{id}`\n\n**Arguments**:\n```json\n{args_pretty}\n```"
