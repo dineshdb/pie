@@ -86,7 +86,7 @@ impl AgentPlugin for UserCommandPlugin {
         if parts.is_empty() {
             text
         } else {
-            let prefix = parts.join("\n\n");
+            let prefix = parts.join("---");
             format!("{prefix}\n\n{text}")
         }
     }

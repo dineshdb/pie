@@ -1,16 +1,90 @@
 use crate::config::pie_home;
 use agentsdk::core::history::History;
-use agentsdk::core::messages::Message;
-use agentsdk::openai::api::ChatCompletionRequestUserMessageContent;
 use agentsdk::{
     AgentPlugin, CompletionAction, PluginContext, PostToolAction, PreToolAction, ToolErrorAction,
 };
 use async_trait::async_trait;
+use serde_json::{Map, Value};
 use std::borrow::Cow;
 use std::io::Write;
 use std::path::PathBuf;
 
-use std::fmt::Write as _;
+fn format_fields(obj: &Map<String, Value>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for (k, v) in obj {
+        match v {
+            Value::String(s) if s.contains(char::is_whitespace) => {
+                parts.push(format!("{k}={s:?}"));
+            }
+            Value::String(s) => {
+                parts.push(format!("{k}={s}"));
+            }
+            Value::Number(n) => {
+                parts.push(format!("{k}={n}"));
+            }
+            Value::Bool(b) => {
+                parts.push(format!("{k}={b}"));
+            }
+            Value::Null => {
+                parts.push(format!("{k}=null"));
+            }
+            _ => {
+                parts.push(format!("{k}={v}"));
+            }
+        }
+    }
+    parts.join(" ")
+}
+
+fn render_tool_args(value: &Value) -> String {
+    match value {
+        Value::Object(obj) => format_fields(obj),
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn render_tool_result(value: &Value) -> String {
+    match value {
+        Value::Object(obj) => {
+            let mut fields = obj.clone();
+
+            let content_keys = ["content", "stdout", "stderr", "output"];
+            let mut body = String::new();
+
+            for key in &content_keys {
+                if let Some(Value::String(s)) = fields.remove(*key)
+                    && !s.is_empty()
+                {
+                    body.push_str(&s);
+                    body.push('\n');
+                }
+            }
+
+            let header = if fields.is_empty() {
+                String::new()
+            } else {
+                let h = format_fields(&fields);
+                if body.is_empty() {
+                    h
+                } else {
+                    format!("{h}\n\n")
+                }
+            };
+
+            format!("{header}{body}")
+        }
+        Value::String(s) => {
+            // Try to parse as JSON object first
+            if let Ok(obj) = serde_json::from_str::<Map<String, Value>>(s) {
+                render_tool_result(&Value::Object(obj))
+            } else {
+                s.replace("\\n", "\n")
+            }
+        }
+        other => other.to_string(),
+    }
+}
 
 #[derive(Debug)]
 pub struct DebugPlugin {
@@ -79,51 +153,31 @@ impl AgentPlugin for DebugPlugin {
         ctx: &mut PluginContext,
     ) -> Option<Cow<'static, str>> {
         let history = ctx.get::<History>()?;
-        for msg in history.0.iter().skip(self.last_logged_message_count) {
-            match msg {
-                Message::UserMessage(u) => {
-                    let text = match &u.content {
-                        Some(ChatCompletionRequestUserMessageContent::String(s)) => s.clone(),
-                        _ => String::new(),
-                    };
-                    self.append_debug("User Message", &format!("```markdown\n{text}\n```"));
-                }
-                Message::AssistantMessage(a) => {
-                    let mut content = String::new();
-                    if let Some(text) = &a.content {
-                        content.push_str("```markdown\n");
-                        content.push_str(text);
-                        content.push_str("\n```\n\n");
-                    }
-                    if let Some(tool_calls) = &a.tool_calls {
-                        for tc in tool_calls {
-                            let _ = writeln!(content, "##### Tool Call: {}\n", tc.function.name);
-                            content.push_str("```json\n");
-                            content.push_str(&tc.function.arguments);
-                            content.push_str("\n```\n\n");
-                        }
-                    }
-                    self.append_debug("Assistant Message", &content);
-                }
-                Message::ToolMessage(t) => {
-                    let content = format!(
-                        "**ID**: `{}`\n\n```\n{}\n```",
-                        t.tool_call_id,
-                        t.content.as_deref().unwrap_or_default()
-                    );
-                    self.append_debug("Tool Result", &content);
-                }
-                Message::SystemMessage(s) => {
-                    let content = format!(
-                        "```markdown\n{}\n```",
-                        s.content.as_deref().unwrap_or_default()
-                    );
-                    self.append_debug("System Message", &content);
-                }
-                Message::FunctionMessage(_) => {}
+
+        let new_msgs: Vec<_> = history
+            .0
+            .iter()
+            .skip(self.last_logged_message_count)
+            .collect();
+        self.last_logged_message_count = history.0.len();
+
+        if new_msgs.is_empty() {
+            return None;
+        }
+
+        let mut content = String::new();
+        for msg in &new_msgs {
+            use std::fmt::Write;
+            if let agentsdk::core::messages::Message::AssistantMessage(a) = msg
+                && let Some(text) = &a.content
+            {
+                let _ = writeln!(content, "- {text}");
             }
         }
-        self.last_logged_message_count = history.0.len();
+
+        if !content.is_empty() {
+            self.append_debug("Assistant Messages", &content);
+        }
         None
     }
 
@@ -132,15 +186,12 @@ impl AgentPlugin for DebugPlugin {
         _ctx: &mut PluginContext,
         id: &str,
         name: &str,
-        arguments: &serde_json::Value,
+        arguments: &Value,
     ) -> PreToolAction {
-        let args_pretty = serde_json::to_string_pretty(arguments).unwrap_or_default();
-        tracing::info!(tool = %name, id = %id, args = %arguments, "Tool pre-execute");
+        tracing::debug!(tool = %name, id = %id, args = %arguments, "Tool pre-execute");
 
-        let content = format!(
-            "**Action**: Pre-Execute Tool `{name}`\n**ID**: `{id}`\n\n**Arguments**:\n```json\n{args_pretty}\n```"
-        );
-        self.append_debug(&format!("Tool Pre-Execute: {name}"), &content);
+        let content = format!("`{id}` **{name}**({})", render_tool_args(arguments));
+        self.append_debug("Tool Call", &content);
         PreToolAction::Continue(None)
     }
 
@@ -149,15 +200,10 @@ impl AgentPlugin for DebugPlugin {
         _ctx: &mut PluginContext,
         id: &str,
         name: &str,
-        result: &serde_json::Value,
+        result: &Value,
     ) -> PostToolAction {
-        let result_pretty = serde_json::to_string_pretty(result).unwrap_or_default();
-        tracing::info!(tool = %name, id = %id, "Tool post-execute");
-
-        let content = format!(
-            "**Action**: Post-Execute Tool `{name}`\n**ID**: `{id}`\n\n**Result**:\n```json\n{result_pretty}\n```"
-        );
-        self.append_debug(&format!("Tool Post-Execute: {name}"), &content);
+        let content = format!("`{id}` **{name}** →\n{}", render_tool_result(result));
+        self.append_debug("Tool Result", &content);
         PostToolAction::Continue(None)
     }
 
@@ -170,18 +216,16 @@ impl AgentPlugin for DebugPlugin {
     ) -> ToolErrorAction {
         tracing::error!(tool = %name, id = %id, error = %error, "Tool error");
 
-        let content = format!(
-            "**Action**: Tool Error `{name}`\n**ID**: `{id}`\n\n**Error**:\n```\n{error}\n```"
-        );
-        self.append_debug(&format!("Tool Error: {name}"), &content);
+        let content = format!("`{id}` **{name}** ❌ {error}");
+        self.append_debug("Tool Error", &content);
         ToolErrorAction::Continue(None)
     }
 
     async fn on_completion(&mut self, _ctx: &mut PluginContext, text: String) -> CompletionAction {
         tracing::info!(length = text.len(), "Completion received");
 
-        let content = format!("**Response**:\n\n```markdown\n{text}\n```");
-        self.append_debug("Final Completion", &content);
+        let content = format!("```markdown\n{text}\n```");
+        self.append_debug("Response", &content);
         CompletionAction::Accept(None)
     }
 }
