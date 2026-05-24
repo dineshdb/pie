@@ -186,8 +186,7 @@ impl StatefulWidget for ChatView<'_> {
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         let inner_height = area.height;
-        #[allow(clippy::cast_possible_truncation)]
-        let total_lines = self.total_height as u16;
+        let total_lines = u16::try_from(self.total_height).unwrap_or(u16::MAX);
         let max_scroll = total_lines.saturating_sub(inner_height);
 
         state.scroll_offset = if state.auto_scroll {
@@ -215,18 +214,16 @@ impl StatefulWidget for ChatView<'_> {
             if let ChatRenderKind::Message(msg_idx) = item.kind
                 && let Some(lines) = self.cache.get_lines(msg_idx)
             {
-                for (i, line) in lines.iter().enumerate() {
-                    let abs_line = current_line + i;
-                    if abs_line < visible_start {
-                        continue;
-                    }
-                    if abs_line >= visible_end {
-                        break;
-                    }
+                let msg_start = visible_start.saturating_sub(current_line).min(lines.len());
+                let msg_end = visible_end.saturating_sub(current_line).min(lines.len());
 
-                    #[allow(clippy::cast_possible_truncation)]
-                    let y = (abs_line - visible_start) as u16;
-                    line.render(Rect::new(area.x, area.y + y, area.width, 1), buf);
+                let y = u16::try_from((current_line + msg_start).saturating_sub(visible_start))
+                    .unwrap_or(u16::MAX);
+                let height = u16::try_from(msg_end - msg_start).unwrap_or(u16::MAX);
+
+                if let Some(slice) = lines.get(msg_start..msg_end) {
+                    Lines { lines: slice }
+                        .render(Rect::new(area.x, area.y + y, area.width, height), buf);
                 }
             }
             current_line += item_height;
@@ -267,38 +264,54 @@ impl StatefulWidget for ChatView<'_> {
             if let ChatRenderKind::Message(msg_idx) = item.kind
                 && let Some(lines) = self.cache.get_lines(msg_idx)
             {
-                for (i, line) in lines.iter().enumerate() {
-                    let abs_row = current_line + i;
-                    if abs_row < overlap_start {
-                        continue;
-                    }
-                    if abs_row > overlap_end {
-                        break;
-                    }
+                let msg_start = overlap_start.saturating_sub(current_line).min(lines.len());
+                let msg_end = (overlap_end + 1)
+                    .saturating_sub(current_line)
+                    .min(lines.len());
 
-                    #[allow(clippy::cast_possible_truncation)]
-                    let y = abs_row.saturating_sub(visible_start) as u16;
-                    let mut x = 0;
-                    for span in &line.spans {
-                        let mut span_x = 0;
-                        for ch in span.content.chars() {
-                            let col = x + span_x;
-                            if sel.contains(abs_row, col)
-                                && let Some(cell) = buf.cell_mut((
-                                    area.x + u16::try_from(col).unwrap_or(u16::MAX),
-                                    area.y + y,
-                                ))
-                            {
-                                let style = cell.style().add_modifier(Modifier::REVERSED);
-                                cell.set_style(style);
+                if let Some(slice) = lines.get(msg_start..msg_end) {
+                    for (i, line) in slice.iter().enumerate() {
+                        let abs_row = current_line + msg_start + i;
+                        let y = u16::try_from(abs_row.saturating_sub(visible_start))
+                            .unwrap_or(u16::MAX);
+                        let mut x = 0;
+                        for span in &line.spans {
+                            let mut span_x = 0;
+                            for ch in span.content.chars() {
+                                let col = x + span_x;
+                                if sel.contains(abs_row, col)
+                                    && let Some(cell) = buf.cell_mut((
+                                        area.x + u16::try_from(col).unwrap_or(u16::MAX),
+                                        area.y + y,
+                                    ))
+                                {
+                                    let style = cell.style().add_modifier(Modifier::REVERSED);
+                                    cell.set_style(style);
+                                }
+                                span_x += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
                             }
-                            span_x += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
+                            x += span_x;
                         }
-                        x += span_x;
                     }
                 }
             }
             current_line += item_height;
+        }
+    }
+}
+
+pub struct Lines<'a> {
+    pub lines: &'a [tuirealm::ratatui::text::Line<'static>],
+}
+
+impl Widget for Lines<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        for (i, line) in self.lines.iter().enumerate() {
+            let y = u16::try_from(i).unwrap_or(u16::MAX);
+            if y >= area.height {
+                break;
+            }
+            line.render(Rect::new(area.x, area.y + y, area.width, 1), buf);
         }
     }
 }
