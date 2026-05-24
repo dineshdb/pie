@@ -1,7 +1,6 @@
 use crate::instructions::Instructions;
 use crate::registry::Registry;
 use agentsdk::PluginTools;
-use agentsdk::core::history::History;
 use agentsdk::core::plugin::{AgentPlugin, PluginContext, PluginToolCall};
 use agentsdk::core::tools::ToolDefinition;
 use async_trait::async_trait;
@@ -68,46 +67,27 @@ impl AgentPlugin for UserCommandPlugin {
     }
 
     async fn on_user_message(&mut self, _ctx: &mut PluginContext, text: String) -> String {
-        text
-    }
-
-    async fn prepare_history(&mut self, ctx: &mut PluginContext) {
-        let Some(mut history) = ctx.get_mut::<History>() else {
-            return;
-        };
-        let Some(msg) = history.0.last() else {
-            return;
-        };
-        let Some(text) = agentsdk::core::messages::extract_user_text(msg) else {
-            return;
-        };
-
         let instructions = Instructions::new(&text);
         if instructions.mentions.is_empty() {
-            return;
+            return text;
         }
 
+        let mut parts: Vec<String> = Vec::new();
         for mention in &instructions.mentions {
             if self.current_command.as_ref() == Some(mention) {
                 continue;
             }
             if let Some(agent) = self.registry.agents.iter().find(|a| a.name == *mention) {
-                let call_id = format!("inject_{}", agent.name);
-                let func_name = "cmd__mentioned_command".to_string();
-
-                history
-                    .0
-                    .push(agentsdk::core::messages::assistant_tool_call(
-                        func_name,
-                        call_id.clone(),
-                        &serde_json::json!({"command": agent.name}),
-                    ));
-
-                history.0.push(agentsdk::core::messages::tool(
-                    agent.content.clone(),
-                    call_id,
-                ));
+                tracing::debug!(command = %agent.name, "Injecting command instructions");
+                parts.push(agent.content.clone());
             }
+        }
+
+        if parts.is_empty() {
+            text
+        } else {
+            let prefix = parts.join("\n\n");
+            format!("{prefix}\n\n{text}")
         }
     }
 }

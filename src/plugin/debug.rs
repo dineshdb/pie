@@ -56,7 +56,7 @@ impl DebugPlugin {
             .open(&self.log_path)
         {
             let _ = file.write_all(section.as_bytes());
-            tracing::debug!(title = %title, "Appended to debug log");
+            tracing::debug!(title, content = %content, "Appended to debug log");
         } else {
             tracing::error!(path = ?self.log_path, "Failed to append to debug log");
         }

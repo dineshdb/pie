@@ -99,7 +99,6 @@ impl AgentPlugin for StreamPlugin {
             crate::plugin::JewelsPlugin::redact(&crate::utils::anonymize_path(&output))
         };
 
-        tracing::debug!(tool = name, output = %output, "tool result");
         let _ = self.event_tx.send(AgentEvent::ToolCall {
             name: name.to_string(),
             display: String::new(),
