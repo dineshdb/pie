@@ -21,6 +21,9 @@ clap = { version = "4", features = ["derive"], optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 anyhow = { version = "1", optional = true }
 
+[dev-dependencies]
+criterion = "0.5"
+
 [features]
 default = ["cli"]
 cli = ["dep:clap", "dep:tracing-subscriber", "dep:anyhow"]
@@ -29,3 +32,7 @@ cli = ["dep:clap", "dep:tracing-subscriber", "dep:anyhow"]
 name = "jewels"
 path = "src/bin/main.rs"
 required-features = ["cli"]
+
+[[bench]]
+name = "redact_bench"
+harness = false
