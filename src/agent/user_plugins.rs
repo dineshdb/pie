@@ -5,8 +5,8 @@ use crate::hook::{
     ToolData,
 };
 use crate::plugin::ExternalPlugin;
+use crate::session::{HistoryContent, Session, ToolCall};
 use agentsdk::core::agent::{CompletionAction, PostToolAction, PreToolAction};
-use agentsdk::core::history::History;
 use agentsdk::core::messages::Message;
 use agentsdk::core::plugin::{AgentPlugin, PluginContext};
 use anyhow::Result;
@@ -43,37 +43,63 @@ async fn dispatch(
 ) -> Result<(Vec<HookOutcome>, HookContextData)> {
     let applicable_hooks: Vec<_> = plugins
         .iter()
-        .flat_map(|p| &p.hooks)
-        .filter(|h| h.event() == context.event && h.matches(context))
-        .cloned()
+        .flat_map(|p| p.hooks.iter().map(move |h| (p.name.clone(), h.clone())))
+        .filter(|(_, h)| h.event() == context.event && h.matches(context))
         .collect();
 
     if applicable_hooks.is_empty() {
         return Ok((vec![], context.data.clone()));
     }
 
-    let mut all_outcomes = Vec::new();
     let mut current_data = context.data.clone();
 
     let (validations, transforms): (Vec<_>, Vec<_>) = applicable_hooks
         .into_iter()
-        .partition(|h| h.scope() == HookScope::Validation);
+        .partition(|(_, h)| h.scope() == HookScope::Validation);
 
-    if !validations.is_empty() {
-        let results = join_all(validations.iter().map(|h| h.on(context))).await;
-        for result in results {
-            all_outcomes.push(result?);
-        }
-        if all_outcomes
-            .iter()
-            .any(|o| matches!(o, HookOutcome::Error { .. }))
-        {
-            return Ok((all_outcomes, current_data));
-        }
+    let mut all_outcomes = run_validations(context, &validations).await?;
+
+    if all_outcomes
+        .iter()
+        .any(|o| matches!(o, HookOutcome::Error { .. }))
+    {
+        return Ok((all_outcomes, current_data));
     }
 
-    let mut iter = transforms.iter().peekable();
-    while let Some(hook) = iter.next() {
+    run_transforms(context, transforms, &mut all_outcomes, &mut current_data).await?;
+
+    Ok((all_outcomes, current_data))
+}
+
+async fn run_validations(
+    context: &HookContext,
+    validations: &[(String, crate::hook::CommandHook)],
+) -> Result<Vec<HookOutcome>> {
+    let mut outcomes = Vec::new();
+    for (plugin_name, hook) in validations {
+        let start = std::time::Instant::now();
+        let outcome = hook.on(context).await?;
+        let elapsed = start.elapsed();
+        tracing::info!(
+            plugin = %plugin_name,
+            event = ?context.event,
+            scope = "validation",
+            elapsed_ms = elapsed.as_millis(),
+            "hook execution"
+        );
+        outcomes.push(outcome);
+    }
+    Ok(outcomes)
+}
+
+async fn run_transforms(
+    context: &HookContext,
+    transforms: Vec<(String, crate::hook::CommandHook)>,
+    all_outcomes: &mut Vec<HookOutcome>,
+    current_data: &mut HookContextData,
+) -> Result<()> {
+    let mut iter = transforms.into_iter().peekable();
+    while let Some((plugin_name, hook)) = iter.next() {
         if hook.strategy() == ExecutionStrategy::Sequential {
             let ctx = make_ctx(
                 context.event,
@@ -81,16 +107,25 @@ async fn dispatch(
                 context.output_mode,
                 current_data.clone(),
             );
+            let start = std::time::Instant::now();
             let outcome = hook.on(&ctx).await?;
+            let elapsed = start.elapsed();
+            tracing::info!(
+                plugin = %plugin_name,
+                event = ?context.event,
+                scope = "transform",
+                strategy = "sequential",
+                elapsed_ms = elapsed.as_millis(),
+                "hook execution"
+            );
             if let HookOutcome::Transformed { data, .. } = &outcome {
                 current_data.merge(data.clone());
             }
             all_outcomes.push(outcome);
         } else {
-            let mut batch = vec![hook];
-            while iter
-                .peek()
-                .is_some_and(|h| h.strategy() == ExecutionStrategy::Parallel)
+            let mut batch = vec![(plugin_name, hook)];
+            while let Some((_, next_hook)) = iter.peek()
+                && next_hook.strategy() == ExecutionStrategy::Parallel
             {
                 if let Some(next) = iter.next() {
                     batch.push(next);
@@ -103,9 +138,27 @@ async fn dispatch(
                 context.output_mode,
                 current_data.clone(),
             );
-            let results = join_all(batch.iter().map(|h| h.on(&ctx))).await;
-            for result in results {
+
+            let start = std::time::Instant::now();
+            let mut futures = Vec::new();
+            for (p_name, h) in &batch {
+                let ctx_clone = ctx.clone();
+                futures.push(async move { (p_name, h.on(&ctx_clone).await) });
+            }
+
+            let results = join_all(futures).await;
+            let elapsed = start.elapsed();
+
+            for (p_name, result) in results {
                 let outcome = result?;
+                tracing::info!(
+                    plugin = %p_name,
+                    event = ?context.event,
+                    scope = "transform",
+                    strategy = "parallel",
+                    elapsed_ms = elapsed.as_millis(),
+                    "hook execution"
+                );
                 if let HookOutcome::Transformed { data, .. } = &outcome {
                     current_data.merge(data.clone());
                 }
@@ -120,22 +173,21 @@ async fn dispatch(
             break;
         }
     }
-
-    Ok((all_outcomes, current_data))
+    Ok(())
 }
 
 pub struct UserPluginRunner {
-    session_id: String,
+    session: Session,
     output_mode: OutputMode,
-    tool_params: HashMap<String, Value>,
+    tool_ids: HashMap<String, i64>,
 }
 
 impl UserPluginRunner {
-    pub fn new(session_id: String, output_mode: OutputMode) -> Self {
+    pub fn new(session: Session, output_mode: OutputMode) -> Self {
         Self {
-            session_id,
+            session,
             output_mode,
-            tool_params: HashMap::new(),
+            tool_ids: HashMap::new(),
         }
     }
 
@@ -149,7 +201,7 @@ impl UserPluginRunner {
     where
         F: FnOnce(Vec<HookOutcome>, HookContextData) -> R,
     {
-        let ctx = make_ctx(event, &self.session_id, self.output_mode, data);
+        let ctx = make_ctx(event, &self.session.id.to_string(), self.output_mode, data);
         match dispatch(&ctx, plugins).await {
             Ok((outcomes, data)) => f(outcomes, data),
             Err(e) => {
@@ -265,6 +317,7 @@ impl AgentPlugin for UserPluginRunner {
         ctx.insert(UserPlugins(plugins));
     }
     async fn on_user_message(&mut self, ctx: &mut PluginContext, text: String) -> String {
+        let start = std::time::Instant::now();
         let Some(plugins) = ctx.get::<UserPlugins>() else {
             return text;
         };
@@ -274,31 +327,57 @@ impl AgentPlugin for UserPluginRunner {
         });
         let h_ctx = make_ctx(
             HookEvent::PostUserQuery,
-            &self.session_id,
+            &self.session.id.to_string(),
             self.output_mode,
             data,
         );
-        match dispatch(&h_ctx, &plugins.0).await {
+        let result = match dispatch(&h_ctx, &plugins.0).await {
             Ok((_, HookContextData::Prompt(p))) => p.query.unwrap_or(text),
             _ => text,
-        }
+        };
+        tracing::info!(
+            elapsed_ms = start.elapsed().as_millis(),
+            "on_user_message total"
+        );
+        result
     }
 
-    async fn on_completion(&mut self, ctx: &mut PluginContext, text: String) -> CompletionAction {
-        let Some(plugins) = ctx.get::<UserPlugins>() else {
-            return CompletionAction::Accept(None);
-        };
-        self.run_pre_completion(&plugins.0, text).await
+    async fn on_model_response_completed(&mut self, _ctx: &mut PluginContext, msg: &Message) {
+        let start = std::time::Instant::now();
+        if let Message::AssistantMessage(a) = msg {
+            if let Some(content) = &a.content
+                && !content.is_empty()
+            {
+                let _ = self.session.add_assistant(content).await;
+            }
+            if let Some(calls) = &a.tool_calls {
+                for call in calls {
+                    let tc = ToolCall {
+                        call_id: call.id.clone(),
+                        tool_name: call.function.name.clone(),
+                        params: serde_json::from_str(&call.function.arguments)
+                            .unwrap_or(Value::Null),
+                        output: None,
+                    };
+                    if let Ok(id) = self.session.add_tool_call(&tc).await {
+                        self.tool_ids.insert(call.id.clone(), id);
+                    }
+                }
+            }
+        }
+        tracing::info!(
+            elapsed_ms = start.elapsed().as_millis(),
+            "on_model_response_completed"
+        );
     }
 
     async fn on_tool_pre_execute(
         &mut self,
         ctx: &mut PluginContext,
-        id: &str,
+        _id: &str,
         name: &str,
         args: &Value,
     ) -> PreToolAction {
-        self.tool_params.insert(id.to_string(), args.clone());
         let Some(plugins) = ctx.get::<UserPlugins>() else {
             return PreToolAction::Continue(None);
         };
@@ -312,23 +391,38 @@ impl AgentPlugin for UserPluginRunner {
         name: &str,
         result: &Value,
     ) -> PostToolAction {
-        let params = self.tool_params.remove(id).unwrap_or(Value::Null);
+        // Update database with tool output
+        if let Some(db_id) = self.tool_ids.remove(id) {
+            let _ = self
+                .session
+                .update_tool_output_by_id(db_id, result.to_string())
+                .await;
+        }
+
         let Some(plugins) = ctx.get::<UserPlugins>() else {
             return PostToolAction::Continue(None);
         };
-        self.run_post_tool_use(&plugins.0, name, &params, result)
+        self.run_post_tool_use(&plugins.0, name, &Value::Null, result)
             .await
+    }
+
+    async fn on_completion(&mut self, ctx: &mut PluginContext, text: String) -> CompletionAction {
+        let Some(plugins) = ctx.get::<UserPlugins>() else {
+            return CompletionAction::Accept(None);
+        };
+        self.run_pre_completion(&plugins.0, text).await
     }
 
     async fn shutdown(&mut self, ctx: &mut PluginContext) {
         let Some(plugins) = ctx.get::<UserPlugins>() else {
             return;
         };
-        let final_text = ctx.get::<History>().and_then(|h| {
-            h.0.iter().rev().find_map(|msg| match msg {
-                Message::AssistantMessage(a) => a.content.clone(),
-                _ => None,
-            })
+        let final_text = self.session.history_entries().iter().rev().find_map(|e| {
+            if let Ok(HistoryContent::Assistant(c)) = e.to_history_content() {
+                Some(c)
+            } else {
+                None
+            }
         });
         self.run_post_completion(&plugins.0, final_text).await;
     }

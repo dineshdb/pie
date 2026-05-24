@@ -54,7 +54,6 @@ impl AgentPlugin for StreamPlugin {
     }
 
     async fn on_user_message(&mut self, _ctx: &mut PluginContext, text: String) -> String {
-        let _ = self.event_tx.send(AgentEvent::UserMessage(text.clone()));
         text
     }
 

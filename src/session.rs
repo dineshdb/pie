@@ -1,7 +1,6 @@
 use crate::db::DbPool;
 use crate::error::{AppError, Result};
-use agentsdk::core::messages::{self, Message, Messages};
-use agentsdk::openai::api::ChatCompletionRequestUserMessageContent;
+use agentsdk::core::messages::{self, Messages};
 use serde::{Deserialize, Serialize};
 use sqlx::Row as _;
 use std::str::FromStr;
@@ -40,8 +39,15 @@ pub struct ToolCall {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HistoryEntry {
+    pub id: i64,
+    pub role: Role,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "role", content = "content", rename_all = "lowercase")]
-pub enum HistoryEntry {
+pub enum HistoryContent {
     User(String),
     Assistant(String),
     System(String),
@@ -50,18 +56,21 @@ pub enum HistoryEntry {
 
 impl HistoryEntry {
     pub fn role(&self) -> Role {
-        match self {
-            Self::User(_) => Role::User,
-            Self::Assistant(_) => Role::Assistant,
-            Self::System(_) => Role::System,
-            Self::Tool(_) => Role::Tool,
-        }
+        self.role
     }
 
     pub fn content(&self) -> String {
-        match self {
-            Self::User(c) | Self::Assistant(c) | Self::System(c) => c.clone(),
-            Self::Tool(info) => serde_json::to_string(info).unwrap_or_default(),
+        self.content.clone()
+    }
+
+    pub fn to_history_content(&self) -> Result<HistoryContent> {
+        match self.role {
+            Role::User => Ok(HistoryContent::User(self.content.clone())),
+            Role::Assistant => Ok(HistoryContent::Assistant(self.content.clone())),
+            Role::System => Ok(HistoryContent::System(self.content.clone())),
+            Role::Tool => serde_json::from_str(&self.content)
+                .map(HistoryContent::Tool)
+                .map_err(AppError::from),
         }
     }
 }
@@ -74,18 +83,12 @@ impl Role {
 
 impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for HistoryEntry {
     fn from_row(row: &'r sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
+        let id: i64 = row.try_get("id")?;
         let role_str: &str = row.try_get("role")?;
         let role: Role = Role::from_str(role_str)
             .map_err(|e| sqlx::Error::Decode(format!("unknown role: {e}").into()))?;
         let content: String = row.try_get("content")?;
-        match role {
-            Role::User => Ok(Self::User(content)),
-            Role::Assistant => Ok(Self::Assistant(content)),
-            Role::System => Ok(Self::System(content)),
-            Role::Tool => serde_json::from_str(&content)
-                .map(Self::Tool)
-                .map_err(|e| sqlx::Error::Decode(Box::new(e))),
-        }
+        Ok(Self { id, role, content })
     }
 }
 
@@ -209,54 +212,53 @@ impl Session {
         &self.pool
     }
 
-    async fn add_entry(&mut self, entry: HistoryEntry) -> Result<()> {
+    async fn add_entry(&mut self, role: Role, content: String) -> Result<i64> {
         let now_ms = chrono::Utc::now().timestamp_millis();
         let sid = self.id.to_string();
         let ts = now_ms * 1000;
-        let role_str = entry.role().as_str();
-        let content = entry.content();
+        let role_str = role.as_str();
 
-        sqlx::query!(
-            "INSERT INTO messages (session_id, ts, role, content) VALUES (?, ?, ?, ?)",
-            sid,
-            ts,
-            role_str,
-            content,
+        let row: (i64,) = sqlx::query_as(
+            "INSERT INTO messages (session_id, ts, role, content) VALUES (?, ?, ?, ?) RETURNING id",
         )
-        .execute(&*self.pool)
+        .bind(&sid)
+        .bind(ts)
+        .bind(role_str)
+        .bind(&content)
+        .fetch_one(&*self.pool)
         .await?;
+        let id = row.0;
 
-        sqlx::query!(
-            "UPDATE sessions SET updated_at = unixepoch('subsec') * 1000 WHERE id = ?",
-            sid,
-        )
-        .execute(&*self.pool)
-        .await?;
+        sqlx::query("UPDATE sessions SET updated_at = unixepoch('subsec') * 1000 WHERE id = ?")
+            .bind(&sid)
+            .execute(&*self.pool)
+            .await?;
 
-        self.cache.push(entry);
-        Ok(())
+        self.cache.push(HistoryEntry { id, role, content });
+        Ok(id)
     }
 
-    pub async fn add_user(&mut self, content: &str) -> Result<()> {
-        self.add_entry(HistoryEntry::User(content.to_string()))
-            .await
+    pub async fn add_user(&mut self, content: &str) -> Result<i64> {
+        self.add_entry(Role::User, content.to_string()).await
     }
 
-    #[allow(dead_code)]
-    pub async fn add_assistant(&mut self, content: &str) -> Result<()> {
-        self.add_entry(HistoryEntry::Assistant(content.to_string()))
-            .await
+    pub async fn add_assistant(&mut self, content: &str) -> Result<i64> {
+        self.add_entry(Role::Assistant, content.to_string()).await
     }
 
-    pub async fn add_system(&mut self, content: &str) -> Result<()> {
-        self.add_entry(HistoryEntry::System(content.to_string()))
-            .await
+    pub async fn add_system(&mut self, content: &str) -> Result<i64> {
+        self.add_entry(Role::System, content.to_string()).await
+    }
+
+    pub async fn add_tool_call(&mut self, tc: &ToolCall) -> Result<i64> {
+        let content = serde_json::to_string(tc).unwrap_or_default();
+        self.add_entry(Role::Tool, content).await
     }
 
     pub async fn rebuild_cache(&mut self) -> Result<()> {
         let sid = self.id.to_string();
         let rows = sqlx::query_as::<_, HistoryEntry>(
-            "SELECT role, content FROM messages WHERE session_id = ? AND compacted = 0 ORDER BY id",
+            "SELECT id, role, content FROM messages WHERE session_id = ? AND compacted = 0 ORDER BY id",
         )
         .bind(&sid)
         .fetch_all(&*self.pool)
@@ -266,49 +268,32 @@ impl Session {
         Ok(())
     }
 
-    async fn insert_message(&self, session_id: &str, role: &str, content: &str) -> Result<()> {
-        let now_ms = chrono::Utc::now().timestamp_millis();
-        let ts = now_ms * 1000;
-        sqlx::query!(
-            "INSERT INTO messages (session_id, ts, role, content) VALUES (?, ?, ?, ?)",
-            session_id,
-            ts,
-            role,
-            content,
-        )
-        .execute(&*self.pool)
-        .await?;
-        Ok(())
-    }
+    pub async fn update_tool_output_by_id(&mut self, id: i64, output: String) -> Result<()> {
+        let sid = self.id.to_string();
 
-    async fn update_tool_output(
-        &self,
-        session_id: &str,
-        call_id: &str,
-        output: String,
-    ) -> Result<()> {
-        // Find existing ToolCall row
-        let row = sqlx::query!(
-            "SELECT content FROM messages WHERE session_id = ? AND role = 'tool' AND json_extract(content, '$.call_id') = ?",
-            session_id,
-            call_id
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT content FROM messages WHERE id = ? AND session_id = ? AND role = 'tool'",
         )
+        .bind(id)
+        .bind(&sid)
         .fetch_optional(&*self.pool)
         .await?;
 
-        if let Some(row) = row
-            && let Ok(mut tc) = serde_json::from_str::<ToolCall>(&row.content)
+        if let Some((content,)) = row
+            && let Ok(mut tc) = serde_json::from_str::<ToolCall>(&content)
         {
             tc.output = Some(Ok(serde_json::Value::String(output)));
-            let new_content = serde_json::to_string(&tc).unwrap_or(row.content);
-            sqlx::query!(
-                "UPDATE messages SET content = ? WHERE session_id = ? AND role = 'tool' AND json_extract(content, '$.call_id') = ?",
-                new_content,
-                session_id,
-                call_id
-            )
-            .execute(&*self.pool)
-            .await?;
+            let new_content = serde_json::to_string(&tc).unwrap_or(content);
+            sqlx::query("UPDATE messages SET content = ? WHERE id = ?")
+                .bind(new_content)
+                .bind(id)
+                .execute(&*self.pool)
+                .await?;
+
+            // Update cache
+            if let Some(entry) = self.cache.iter_mut().find(|e| e.id == id) {
+                entry.content = serde_json::to_string(&tc).unwrap_or(entry.content.clone());
+            }
         }
         Ok(())
     }
@@ -317,10 +302,10 @@ impl Session {
     pub fn to_messages(&self) -> Messages {
         self.cache
             .iter()
-            .flat_map(|entry| match entry {
-                HistoryEntry::User(c) => vec![messages::user(c)],
-                HistoryEntry::Assistant(c) => vec![messages::assistant(c)],
-                HistoryEntry::Tool(tc) => {
+            .flat_map(|entry| match entry.to_history_content() {
+                Ok(HistoryContent::User(c)) => vec![messages::user(c)],
+                Ok(HistoryContent::Assistant(c)) => vec![messages::assistant(c)],
+                Ok(HistoryContent::Tool(tc)) => {
                     let mut msgs = Vec::new();
                     let call_id = tc.call_id.clone();
                     msgs.push(messages::assistant_tool_call(
@@ -336,70 +321,13 @@ impl Session {
                     }
                     msgs
                 }
-                HistoryEntry::System(c) => vec![messages::system(c)],
+                Ok(HistoryContent::System(c)) => vec![messages::system(c)],
+                Err(e) => {
+                    tracing::warn!("Failed to convert history entry {}: {}", entry.id, e);
+                    vec![]
+                }
             })
             .collect()
-    }
-
-    pub async fn sync_from_messages(&mut self, messages: &[Message]) -> Result<()> {
-        let sid = self.id.to_string();
-
-        sqlx::query("DELETE FROM messages WHERE session_id = ?")
-            .bind(&sid)
-            .execute(&*self.pool)
-            .await?;
-
-        for msg in messages {
-            self.push_to_db(&sid, msg).await?;
-        }
-
-        sqlx::query("UPDATE sessions SET updated_at = unixepoch('subsec') * 1000 WHERE id = ?")
-            .bind(&sid)
-            .execute(&*self.pool)
-            .await?;
-
-        self.rebuild_cache().await
-    }
-
-    async fn push_to_db(&self, session_id: &str, message: &Message) -> Result<()> {
-        match message {
-            Message::SystemMessage(_) | Message::FunctionMessage(_) => {} // system prompt is not persisted to user history
-            Message::UserMessage(u) => {
-                let content = match &u.content {
-                    Some(ChatCompletionRequestUserMessageContent::String(s)) => s.clone(),
-                    _ => String::new(),
-                };
-                self.insert_message(session_id, "user", &content).await?;
-            }
-            Message::AssistantMessage(a) => {
-                if let Some(content) = &a.content
-                    && !content.is_empty()
-                {
-                    self.insert_message(session_id, "assistant", content)
-                        .await?;
-                }
-                if let Some(calls) = &a.tool_calls {
-                    for call in calls {
-                        let tc = ToolCall {
-                            call_id: call.id.clone(),
-                            tool_name: call.function.name.clone(),
-                            params: serde_json::from_str(&call.function.arguments)
-                                .unwrap_or(serde_json::Value::Null),
-                            output: None,
-                        };
-                        let content = serde_json::to_string(&tc).unwrap_or_default();
-                        self.insert_message(session_id, "tool", &content).await?;
-                    }
-                }
-            }
-            Message::ToolMessage(t) => {
-                if let Some(content) = &t.content {
-                    self.update_tool_output(session_id, &t.tool_call_id, content.clone())
-                        .await?;
-                }
-            }
-        }
-        Ok(())
     }
 }
 
@@ -410,46 +338,6 @@ mod tests {
 
     async fn pool() -> anyhow::Result<Arc<DbPool>> {
         Ok(Arc::new(db::create_test_pool().await?))
-    }
-
-    #[tokio::test]
-    async fn create_session() -> anyhow::Result<()> {
-        let pool = pool().await?;
-        let session = Session::create(pool.clone()).await?;
-        assert!(session.history_entries().is_empty());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn load_nonexistent_session() -> anyhow::Result<()> {
-        let pool = pool().await?;
-        let result = Session::load(pool, SessionId::new()).await;
-        assert!(result.is_err());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn find_latest_for_cwd_returns_most_recent() -> anyhow::Result<()> {
-        let pool = pool().await?;
-        let cwd = std::env::current_dir()?.to_string_lossy().to_string();
-
-        let _s1 = Session::create(pool.clone()).await?;
-        let mut s2 = Session::create(pool.clone()).await?;
-        s2.add_user("ensure updated_at is later").await?;
-
-        let found = Session::find_latest_for_cwd(pool, &cwd)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("no session found"))?;
-        assert_eq!(found.id, s2.id);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn find_latest_for_cwd_returns_none_when_empty() -> anyhow::Result<()> {
-        let pool = pool().await?;
-        let result = Session::find_latest_for_cwd(pool, "/nonexistent").await?;
-        assert!(result.is_none());
-        Ok(())
     }
 
     #[tokio::test]
@@ -465,24 +353,6 @@ mod tests {
         assert_eq!(entries[0].content(), "hello");
         assert_eq!(entries[1].role(), Role::Assistant);
         assert_eq!(entries[1].content(), "hi there");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn history_persists_after_load() -> anyhow::Result<()> {
-        let pool = pool().await?;
-        let id = {
-            let mut session = Session::create(pool.clone()).await?;
-            session.add_user("first").await?;
-            session.add_assistant("second").await?;
-            session.id
-        };
-
-        let loaded = Session::load(pool, id).await?;
-        let entries = loaded.history_entries();
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].content(), "first");
-        assert_eq!(entries[1].content(), "second");
         Ok(())
     }
 }

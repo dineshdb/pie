@@ -6,7 +6,7 @@ use crate::instructions::Instructions;
 use crate::plugin::PermissionRequest;
 use crate::prompt::SystemPrompt;
 use crate::registry::Registry;
-use crate::session::{HistoryEntry, Session};
+use crate::session::{HistoryContent, Session};
 use crate::tools::plan::plan_tools;
 use agentsdk::core::Sandbox;
 use agentsdk::core::tools::Tool;
@@ -119,11 +119,11 @@ impl PieAgent {
                 .iter()
                 .rev()
                 .take(self.config.history_limit as usize)
-                .filter_map(|e| match e {
-                    HistoryEntry::User(c) => Some(c),
+                .filter_map(|e| match e.to_history_content() {
+                    Ok(HistoryContent::User(c)) => Some(c),
                     _ => None,
                 })
-                .for_each(|c| merged.merge_mentions(c));
+                .for_each(|c| merged.merge_mentions(&c));
         }
         merged
     }
@@ -248,22 +248,6 @@ impl PieAgent {
         event_tx: UnboundedSender<AgentEvent>,
     ) -> BoxFuture<'a, Result<String>> {
         Box::pin(async move {
-            let query_instructions = Instructions::new(query_str);
-
-            if self.config.depth < 2
-                && let Some(agent_name) =
-                    find_subsume_candidate(&query_instructions, &self.registry.agents)
-                && self.config.agent_name.as_ref() != Some(&agent_name)
-            {
-                let mut subagent = self.spawn_subagent(Some(agent_name)).await?;
-                return subagent.stream(query_str, output_mode, event_tx).await;
-            }
-
-            // Deriving system prompt from the query string
-            let system = self
-                .prepare_system_prompt(&Instructions::new(query_str))
-                .await?;
-
             let mut builder = self.build_sdk_agent(output_mode)?;
 
             let history_plugin = MemoryHistoryPlugin::new();
@@ -307,15 +291,12 @@ impl PieAgent {
                 ))
                 .plugin(crate::plugin::DeveloperPlugin::new())
                 .plugin(crate::plugin::HelperBinariesPlugin::new())
-                .plugin(UserPluginRunner::new(
-                    self.session.id.to_string(),
-                    output_mode,
-                ));
+                .plugin(UserPluginRunner::new(self.session.clone(), output_mode));
 
             if AgentConfig::is_debug() {
                 builder = builder.plugin(crate::plugin::DebugPlugin::new(
                     &self.session.id.to_string(),
-                    &system,
+                    "",
                 ));
             }
 
@@ -327,14 +308,27 @@ impl PieAgent {
                 .build()
                 .map_err(|e| AppError::Config(e.to_string()))?;
 
-            // Dispatch user message to plugins for transformation/redaction
+            // Dispatch user message to plugins for transformation/redaction (Fast)
             let query = agent.dispatch_user_message(query_str).await;
 
-            // Add the current query to history and session
-            history_plugin
-                .push(agentsdk::core::messages::user(&query))
-                .await;
-            self.session.add_user(&query).await?;
+            // Notify UI immediately after redaction (only for top-level agent)
+            if self.config.depth == 0 {
+                let _ = event_tx.send(AgentEvent::UserMessage(query.clone()));
+            }
+
+            let query_instructions = Instructions::new(&query);
+
+            if self.config.depth < 2
+                && let Some(agent_name) =
+                    find_subsume_candidate(&query_instructions, &self.registry.agents)
+                && self.config.agent_name.as_ref() != Some(&agent_name)
+            {
+                let mut subagent = self.spawn_subagent(Some(agent_name)).await?;
+                return subagent.stream(&query, output_mode, event_tx).await;
+            }
+
+            // Deriving system prompt from the query string (slow)
+            let system = self.prepare_system_prompt(&query_instructions).await?;
 
             // Inject the system prompt into the agent's context
             if let Some(entity) = agent.entity
@@ -345,10 +339,15 @@ impl PieAgent {
                 agent.world = Some(world);
             }
 
+            // Persistence
+            history_plugin
+                .push(agentsdk::core::messages::user(&query))
+                .await;
+            self.session.add_user(&query).await?;
+
             let _output = agent.run().await?;
 
             let final_messages = history_plugin.messages().await;
-            self.session.sync_from_messages(&final_messages).await?;
 
             let final_text = final_messages
                 .iter()

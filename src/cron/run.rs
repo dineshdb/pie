@@ -3,7 +3,7 @@ use crate::cron::models::CronRun;
 use crate::cron::schedule::load_all_schedules;
 use crate::db::DbPool;
 use crate::registry::Registry;
-use crate::session::{HistoryEntry, Session};
+use crate::session::{HistoryContent, HistoryEntry, Session};
 use chrono::Utc;
 use croner::Cron;
 use std::collections::HashSet;
@@ -21,14 +21,15 @@ fn format_history(schedule_id: &str, run_id: &str, entries: &[HistoryEntry]) -> 
     let mut buf = String::new();
     writeln!(buf, "=== {schedule_id} ({run_id}) ===").ok();
     for entry in entries {
-        match entry {
-            HistoryEntry::User(c) => writeln!(buf, "\n[USER] {c}"),
-            HistoryEntry::Assistant(c) => writeln!(buf, "\n[ASSISTANT] {c}"),
-            HistoryEntry::System(c) => writeln!(buf, "\n[SYSTEM] {c}"),
-            HistoryEntry::Tool(tc) => {
-                let s = serde_json::to_string(tc).unwrap_or_default();
+        match entry.to_history_content() {
+            Ok(HistoryContent::User(c)) => writeln!(buf, "\n[USER] {c}"),
+            Ok(HistoryContent::Assistant(c)) => writeln!(buf, "\n[ASSISTANT] {c}"),
+            Ok(HistoryContent::System(c)) => writeln!(buf, "\n[SYSTEM] {c}"),
+            Ok(HistoryContent::Tool(tc)) => {
+                let s = serde_json::to_string(&tc).unwrap_or_default();
                 writeln!(buf, "\n[TOOL] {s}")
             }
+            Err(_) => Ok(()),
         }
         .ok();
     }
@@ -131,8 +132,8 @@ pub async fn run_due_jobs(pool: Arc<DbPool>, registry: Arc<Registry>) -> anyhow:
             .history_entries()
             .iter()
             .rev()
-            .find_map(|e| match e {
-                HistoryEntry::Assistant(c) => Some(c.clone()),
+            .find_map(|e| match e.to_history_content() {
+                Ok(HistoryContent::Assistant(c)) => Some(c),
                 _ => None,
             })
             .unwrap_or_default();
