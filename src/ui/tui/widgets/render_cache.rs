@@ -27,6 +27,14 @@ impl MessageRenderCache {
         self.entries.push(None);
     }
 
+    pub fn insert(&mut self, index: usize) {
+        if index < self.entries.len() {
+            self.entries.insert(index, None);
+        } else {
+            self.entries.push(None);
+        }
+    }
+
     pub fn clear(&mut self) {
         self.entries.clear();
     }

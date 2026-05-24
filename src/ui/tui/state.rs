@@ -66,6 +66,7 @@ impl ChatMessage {
         self.kind = MessageKind::Normal;
     }
 
+    #[cfg(test)]
     pub fn is_response(&self) -> bool {
         self.kind == MessageKind::Response
     }

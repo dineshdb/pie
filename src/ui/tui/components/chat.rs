@@ -97,8 +97,16 @@ impl ChatComponent {
             self.render_cache.trim_front(1);
             self.response_idx = self.response_idx.and_then(|i| i.checked_sub(1));
         }
-        self.messages.push(msg);
-        self.render_cache.push();
+
+        if let Some(idx) = self.response_idx {
+            self.messages.insert(idx, msg);
+            self.render_cache.insert(idx);
+            self.response_idx = Some(idx + 1);
+        } else {
+            self.messages.push(msg);
+            self.render_cache.push();
+        }
+
         self.chat_state.auto_scroll = true;
         self.render_plan.clear();
     }
@@ -725,5 +733,24 @@ mod tests {
         assert_eq!(chat.response_idx, None);
         assert!(!chat.messages[0].is_response());
         assert_eq!(chat.messages[0].content, "Hello world");
+    }
+
+    #[tokio::test]
+    async fn tool_calls_appear_before_active_response() {
+        let mut chat = ChatComponent::new(
+            vec![ChatMessage::user("run tool")],
+            "test-model".to_string(),
+            test_registry(),
+            test_pending(),
+        );
+        chat.start_response(); // idx 1
+        chat.update_response("I will run a tool");
+        chat.add_message(ChatMessage::tool("tool result"));
+
+        assert_eq!(chat.messages.len(), 3);
+        assert_eq!(chat.messages[1].role, Role::Tool);
+        assert_eq!(chat.messages[2].role, Role::Assistant);
+        assert!(chat.messages[2].is_response());
+        assert_eq!(chat.response_idx, Some(2));
     }
 }

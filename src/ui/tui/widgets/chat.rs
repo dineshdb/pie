@@ -324,31 +324,12 @@ pub fn build_render_plan(
 ) -> (Vec<ChatRenderItem>, usize) {
     let width = area_width.saturating_sub(PREFIX_WIDTH + RIGHT_PAD);
 
-    // Build render order: regular messages in order, then response message last
-    let mut order: Vec<usize> = Vec::with_capacity(messages.len());
-    let mut response_idx: Option<usize> = None;
-
-    for (i, msg) in messages.iter().enumerate() {
-        if msg.is_response() {
-            response_idx = Some(i);
-        } else {
-            order.push(i);
-        }
-    }
-    if let Some(ri) = response_idx {
-        order.push(ri);
-    }
-
-    let last_rendered = order.len().saturating_sub(1);
+    let last_rendered = messages.len().saturating_sub(1);
     let mut items = Vec::new();
     let mut total_height = 0;
 
-    for (render_pos, &msg_idx) in order.iter().enumerate() {
-        let Some(msg) = messages.get(msg_idx) else {
-            continue;
-        };
-
-        // Add a gap before the assistant response
+    for (render_pos, msg) in messages.iter().enumerate() {
+        // Add a gap before the assistant response (but not if it's the first message)
         if msg.role == Role::Assistant && !items.is_empty() {
             items.push(ChatRenderItem {
                 kind: ChatRenderKind::EmptyLine,
@@ -358,17 +339,16 @@ pub fn build_render_plan(
         }
 
         let is_latest = render_pos == last_rendered;
-        let rendered = cache.get_or_render(msg.role, &msg.content, is_latest, msg_idx, width);
+        let rendered = cache.get_or_render(msg.role, &msg.content, is_latest, render_pos, width);
         let height = rendered.len();
         items.push(ChatRenderItem {
-            kind: ChatRenderKind::Message(msg_idx),
+            kind: ChatRenderKind::Message(render_pos),
             height,
         });
         total_height += height;
 
         // Blank separator: only before user messages
-        if let Some(&next_idx) = order.get(render_pos + 1)
-            && let Some(next) = messages.get(next_idx)
+        if let Some(next) = messages.get(render_pos + 1)
             && next.role == Role::User
         {
             items.push(ChatRenderItem {

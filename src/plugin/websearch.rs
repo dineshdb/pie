@@ -43,14 +43,14 @@ impl AgentPlugin for WebsearchPlugin {
         call: &PluginToolCall,
     ) -> Result<Value, String> {
         match call.name.as_str() {
-            "query" => {
+            "search" => {
                 let input: WebsearchInput =
                     serde_json::from_value(call.arguments.clone()).map_err(|e| e.to_string())?;
 
                 let limit = input.limit.unwrap_or(5);
                 let limit = if limit == 0 { 5 } else { limit };
                 let quoted_query = shell_words::quote(&input.query);
-                let cmd = format!("ddgr --markdown -n {limit} {quoted_query}");
+                let cmd = format!("ddgr --json -n {limit} {quoted_query}");
 
                 let sandbox = ctx.get::<Sandbox>().ok_or("No sandbox registered")?;
                 let out = sandbox.0.exec(&cmd).await.map_err(|e| e.to_string())?;
