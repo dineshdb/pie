@@ -1,9 +1,10 @@
+use agentsdk::PluginTools;
 use agentsdk::core::plugin::{AgentPlugin, PluginContext, PluginToolCall};
 use agentsdk::core::sandbox::Sandbox;
 use agentsdk::core::tools::ToolDefinition;
 use anyhow::Result;
 use async_trait::async_trait;
-use schemars::{JsonSchema, schema_for};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -16,6 +17,12 @@ impl ShellPlugin {
     }
 }
 
+#[derive(PluginTools, Serialize, Deserialize)]
+enum ShellTools {
+    /// Execute a system command, bash tools, clis, etc
+    Execute(ShellInput),
+}
+
 #[async_trait]
 impl AgentPlugin for ShellPlugin {
     fn name(&self) -> &'static str {
@@ -23,11 +30,7 @@ impl AgentPlugin for ShellPlugin {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition {
-            name: "execute".into(),
-            description: "Execute a system command, bash tools, clis, etc".into(),
-            input_schema: schema_for!(ShellInput),
-        }]
+        ShellTools::definitions()
     }
 
     async fn run_tool(
@@ -35,11 +38,8 @@ impl AgentPlugin for ShellPlugin {
         ctx: &mut PluginContext,
         call: &PluginToolCall,
     ) -> Result<Value, String> {
-        match call.name.as_str() {
-            "execute" => {
-                let input: ShellInput =
-                    serde_json::from_value(call.arguments.clone()).map_err(|e| e.to_string())?;
-
+        match ShellTools::from_call(call)? {
+            ShellTools::Execute(input) => {
                 let sandbox = ctx.get::<Sandbox>().ok_or("No sandbox registered")?;
 
                 let out = sandbox
@@ -55,7 +55,6 @@ impl AgentPlugin for ShellPlugin {
                     "stderr": out.stderr,
                 }))
             }
-            _ => Err(format!("Unknown tool: {}", call.name)),
         }
     }
 }

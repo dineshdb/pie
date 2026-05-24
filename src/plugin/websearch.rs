@@ -1,8 +1,9 @@
+use agentsdk::PluginTools;
 use agentsdk::core::plugin::{AgentPlugin, PluginContext, PluginToolCall};
 use agentsdk::core::sandbox::Sandbox;
 use agentsdk::core::tools::ToolDefinition;
 use async_trait::async_trait;
-use schemars::{JsonSchema, schema_for};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::fmt::Write;
@@ -17,11 +18,13 @@ impl WebsearchPlugin {
     }
 }
 
-const SEARCH_DESCRIPTION: &str = r"
-Gather more info from  the web for more context.
-Use for finding information not in the locally.
-Try to use specific variation of the query first but if you don't find answers you're looking for, go for more generic and broader variation.
-";
+#[derive(PluginTools, Serialize, Deserialize)]
+enum WebsearchTools {
+    /// Gather more info from  the web for more context.
+    /// Use for finding information not in the locally.
+    /// Try to use specific variation of the query first but if you don't find answers you're looking for, go for more generic and broader variation.
+    Search(WebsearchInput),
+}
 
 #[async_trait]
 impl AgentPlugin for WebsearchPlugin {
@@ -30,11 +33,7 @@ impl AgentPlugin for WebsearchPlugin {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition {
-            name: "search".into(),
-            description: SEARCH_DESCRIPTION.into(),
-            input_schema: schema_for!(WebsearchInput),
-        }]
+        WebsearchTools::definitions()
     }
 
     async fn run_tool(
@@ -42,11 +41,8 @@ impl AgentPlugin for WebsearchPlugin {
         ctx: &mut PluginContext,
         call: &PluginToolCall,
     ) -> Result<Value, String> {
-        match call.name.as_str() {
-            "search" => {
-                let input: WebsearchInput =
-                    serde_json::from_value(call.arguments.clone()).map_err(|e| e.to_string())?;
-
+        match WebsearchTools::from_call(call)? {
+            WebsearchTools::Search(input) => {
                 let limit = input.limit.unwrap_or(5);
                 let limit = if limit == 0 { 5 } else { limit };
                 let quoted_query = shell_words::quote(&input.query);
@@ -78,7 +74,6 @@ impl AgentPlugin for WebsearchPlugin {
 
                 Ok(json!(md))
             }
-            _ => Err(format!("Unknown tool: {}", call.name)),
         }
     }
 }

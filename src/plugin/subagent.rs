@@ -3,6 +3,7 @@ use crate::config::CONFIG;
 use crate::db::DbPool;
 use crate::registry::{CompletionKind, Registry};
 use crate::session::Session;
+use agentsdk::PluginTools;
 use agentsdk::core::plugin::PluginToolCall;
 use agentsdk::core::tools::ToolDefinition;
 use agentsdk::{AgentPlugin, Messages, PluginContext};
@@ -38,6 +39,12 @@ impl SubAgentPlugin {
     }
 }
 
+#[derive(PluginTools, Serialize, Deserialize)]
+enum SubagentTools {
+    /// Delegate a goal to a subagent with detailed instructions
+    Subagent(SubagentInput),
+}
+
 #[async_trait]
 impl AgentPlugin for SubAgentPlugin {
     fn name(&self) -> &'static str {
@@ -45,11 +52,7 @@ impl AgentPlugin for SubAgentPlugin {
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
-        vec![ToolDefinition {
-            name: "subagent".into(),
-            description: "Delegate a goal to a subagent with detailed instructions".into(),
-            input_schema: schemars::schema_for!(SubagentInput),
-        }]
+        SubagentTools::definitions()
     }
 
     async fn run_tool(
@@ -57,13 +60,8 @@ impl AgentPlugin for SubAgentPlugin {
         _ctx: &mut PluginContext,
         call: &PluginToolCall,
     ) -> Result<Value, String> {
-        match call.name.as_str() {
-            "subagent" => {
-                let input: SubagentInput =
-                    serde_json::from_value(call.arguments.clone()).map_err(|e| e.to_string())?;
-                self.do_subagent(input).await
-            }
-            _ => Err(format!("Unknown subagent tool: {}", call.name)),
+        match SubagentTools::from_call(call)? {
+            SubagentTools::Subagent(input) => self.do_subagent(input).await,
         }
     }
 
