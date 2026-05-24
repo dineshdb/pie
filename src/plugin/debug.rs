@@ -15,6 +15,7 @@ use std::fmt::Write as _;
 #[derive(Debug)]
 pub struct DebugPlugin {
     log_path: PathBuf,
+    last_logged_message_count: usize,
 }
 
 impl DebugPlugin {
@@ -23,7 +24,10 @@ impl DebugPlugin {
         let _ = std::fs::create_dir_all(&debug_dir);
         let log_path = debug_dir.join("debug.md");
 
-        let this = Self { log_path };
+        let this = Self {
+            log_path,
+            last_logged_message_count: 0,
+        };
 
         tracing::info!(session_id = %session_id, log_path = ?this.log_path, "Debug plugin initialized");
 
@@ -76,21 +80,17 @@ impl AgentPlugin for DebugPlugin {
         _ctx: &mut PluginContext,
         history: &Messages,
     ) -> Option<Cow<'static, str>> {
-        let mut content = String::from("### Full Conversation History\n\n");
-        for msg in history {
+        for msg in history.iter().skip(self.last_logged_message_count) {
             match msg {
                 Message::UserMessage(u) => {
-                    content.push_str("#### User\n");
                     let text = match &u.content {
                         Some(ChatCompletionRequestUserMessageContent::String(s)) => s.clone(),
                         _ => String::new(),
                     };
-                    content.push_str("```markdown\n");
-                    content.push_str(&text);
-                    content.push_str("\n```\n\n");
+                    self.append_debug("User Message", &format!("```markdown\n{text}\n```"));
                 }
                 Message::AssistantMessage(a) => {
-                    content.push_str("#### Assistant\n");
+                    let mut content = String::new();
                     if let Some(text) = &a.content {
                         content.push_str("```markdown\n");
                         content.push_str(text);
@@ -104,27 +104,27 @@ impl AgentPlugin for DebugPlugin {
                             content.push_str("\n```\n\n");
                         }
                     }
+                    self.append_debug("Assistant Message", &content);
                 }
                 Message::ToolMessage(t) => {
-                    let _ = writeln!(content, "#### Tool (ID: {})\n", t.tool_call_id);
-                    if let Some(text) = &t.content {
-                        content.push_str("```\n");
-                        content.push_str(text);
-                        content.push_str("\n```\n\n");
-                    }
+                    let content = format!(
+                        "**ID**: `{}`\n\n```\n{}\n```",
+                        t.tool_call_id,
+                        t.content.as_deref().unwrap_or_default()
+                    );
+                    self.append_debug("Tool Result", &content);
                 }
                 Message::SystemMessage(s) => {
-                    content.push_str("#### System\n");
-                    if let Some(text) = &s.content {
-                        content.push_str("```markdown\n");
-                        content.push_str(text);
-                        content.push_str("\n```\n\n");
-                    }
+                    let content = format!(
+                        "```markdown\n{}\n```",
+                        s.content.as_deref().unwrap_or_default()
+                    );
+                    self.append_debug("System Message", &content);
                 }
                 Message::FunctionMessage(_) => {}
             }
         }
-        self.append_debug("Conversation History", &content);
+        self.last_logged_message_count = history.len();
         None
     }
 

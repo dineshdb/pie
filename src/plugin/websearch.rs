@@ -17,16 +17,22 @@ impl WebsearchPlugin {
     }
 }
 
+const SEARCH_DESCRIPTION: &str = r"
+Search the web using DuckDuckGo (ddgr) and return results in Markdown format.
+Use for finding information not in the locally.
+Try to use specific variation of the query first but if you don't find answers you're looking for, go for more generic and broader variation.
+";
+
 #[async_trait]
 impl AgentPlugin for WebsearchPlugin {
     fn name(&self) -> &'static str {
-        "websearch"
+        "web"
     }
 
     fn tools(&self) -> Vec<ToolDefinition> {
         vec![ToolDefinition {
-            name: "query".into(),
-            description: "Search the web using DuckDuckGo (ddgr) and return results in Markdown format. Use for finding information not in the local context".into(),
+            name: "search".into(),
+            description: SEARCH_DESCRIPTION.into(),
             input_schema: schema_for!(WebsearchInput),
         }]
     }
@@ -44,7 +50,7 @@ impl AgentPlugin for WebsearchPlugin {
                 let limit = input.limit.unwrap_or(5);
                 let limit = if limit == 0 { 5 } else { limit };
                 let quoted_query = shell_words::quote(&input.query);
-                let cmd = format!("ddgr --json -n {limit} {quoted_query}");
+                let cmd = format!("ddgr --markdown -n {limit} {quoted_query}");
 
                 let sandbox = ctx.get::<Sandbox>().ok_or("No sandbox registered")?;
                 let out = sandbox.0.exec(&cmd).await.map_err(|e| e.to_string())?;

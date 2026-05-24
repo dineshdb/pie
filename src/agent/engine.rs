@@ -49,7 +49,7 @@ impl Default for AgentConfig {
         Self {
             agent_name: None,
             history_limit: 10,
-            max_steps: 20,
+            max_steps: 200,
             depth: 0,
             max_retries: 3,
             retry: crate::config::RetryConfig::default(),
@@ -67,7 +67,7 @@ impl AgentConfig {
         Self {
             agent_name,
             history_limit: 10,
-            max_steps: 10,
+            max_steps: 50,
             depth,
             ..Self::default()
         }
