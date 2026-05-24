@@ -65,6 +65,14 @@ impl AgentPlugin for StreamPlugin {
         name: &str,
         arguments: &serde_json::Value,
     ) -> PreToolAction {
+        let args_str = arguments.to_string();
+        let args_redacted = if name == "websearch" {
+            args_str
+        } else {
+            crate::plugin::JewelsPlugin::redact(&crate::utils::anonymize_path(&args_str))
+        };
+
+        tracing::debug!(tool = name, args = %args_redacted, "tool call");
         let _ = self.event_tx.send(AgentEvent::ToolCall {
             name: name.to_string(),
             display: format!("{name}({arguments})"),
@@ -93,6 +101,7 @@ impl AgentPlugin for StreamPlugin {
             crate::plugin::JewelsPlugin::redact(&crate::utils::anonymize_path(&output))
         };
 
+        tracing::debug!(tool = name, output = %output, "tool result");
         let _ = self.event_tx.send(AgentEvent::ToolCall {
             name: name.to_string(),
             display: String::new(),
@@ -112,6 +121,7 @@ impl AgentPlugin for StreamPlugin {
         name: &str,
         error: &str,
     ) -> ToolErrorAction {
+        tracing::debug!(tool = name, error = %error, "tool error");
         let _ = self.event_tx.send(AgentEvent::ToolCall {
             name: name.to_string(),
             display: String::new(),

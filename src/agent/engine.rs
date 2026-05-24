@@ -8,6 +8,7 @@ use crate::prompt::SystemPrompt;
 use crate::registry::Registry;
 use crate::session::{HistoryEntry, Session};
 use crate::tools::plan::plan_tools;
+use agentsdk::core::Sandbox;
 use agentsdk::core::tools::Tool;
 use agentsdk::{Agent as SdkAgent, MemoryHistoryPlugin, Message};
 use agentsdk_plugin_fs::FileSystemPlugin;
@@ -173,7 +174,7 @@ impl PieAgent {
 
         Ok(SdkAgent::builder()
             .client(self.model.clone())
-            .component(agentsdk::core::sandbox::Sandbox(sandbox))
+            .component(Sandbox(sandbox))
             .options(
                 agentsdk::AgentOptions::builder()
                     .max_iterations(self.config.max_steps as usize)
@@ -330,14 +331,17 @@ impl PieAgent {
             let query = agent.dispatch_user_message(query_str).await;
 
             // Add the current query to history and session
-            history_plugin.push(agentsdk::core::messages::user(&query)).await;
+            history_plugin
+                .push(agentsdk::core::messages::user(&query))
+                .await;
             self.session.add_user(&query).await?;
 
             // Inject the system prompt into the agent's context
             if let Some(entity) = agent.entity
                 && let Some(mut world) = agent.world.take()
             {
-                let _ = world.insert_one(entity, crate::plugin::SystemPromptComponent(system.clone()));
+                let _ =
+                    world.insert_one(entity, crate::plugin::SystemPromptComponent(system.clone()));
                 agent.world = Some(world);
             }
 

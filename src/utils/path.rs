@@ -58,13 +58,13 @@ mod tests {
             let home_str = home.display().to_string();
             let p = format!("{home_str}/src");
             let anonymized = AnonymizedPath::from(p);
-            assert_eq!(anonymized.as_str(), "~/src");
+            assert_eq!(anonymized.0.as_str(), "~/src");
 
             // Test normalization with lexiclean
             if let Some(file_name) = home.file_name().and_then(|n| n.to_str()) {
                 let p_complex = format!("{home_str}/../{file_name}/src/./tools");
                 let anonymized_complex = AnonymizedPath::from(p_complex);
-                assert_eq!(anonymized_complex.as_str(), "~/src/tools");
+                assert_eq!(anonymized_complex.0.as_str(), "~/src/tools");
             }
         }
     }

@@ -1,13 +1,5 @@
 pub mod plan;
 
-/// Emit a `TOOL:` line with tool name and input parameters for test observability.
-pub(crate) fn emit_tool_input(name: &str, params: &serde_json::Value) {
-    let params_str = params.to_string();
-    let anonymized = crate::utils::anonymize_path(&params_str);
-    let redacted = crate::plugin::JewelsPlugin::redact(&anonymized);
-    tracing::debug!("TOOL: {name} {redacted}");
-}
-
 // ── Sandbox execution helpers ──────────────────────────────────────────
 
 fn default_bin_dirs() -> Vec<std::path::PathBuf> {

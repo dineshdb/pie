@@ -183,11 +183,34 @@ impl ResolvedProvider {
 impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
     type Error = AppError;
 
-    fn try_from((cli, pie): (Cli, PieConfig)) -> Result<Self, Self::Error> {
+    fn try_from((mut cli, pie): (Cli, PieConfig)) -> Result<Self, Self::Error> {
         let providers_data = get_providers_data()?;
-        let provider_name = cli.provider.as_deref().or(pie.default_provider.as_deref());
 
-        let provider_cfg = if let Some(name) = provider_name {
+        let mut smart_provider_name = None;
+        let mut tier_model_override = None;
+
+        // Smart selection: if --provider is not explicitly set,
+        // check if -m matches a provider or tier name.
+        if cli.provider.is_none()
+            && let Some(model_name) = cli.provider_config.model.as_deref()
+        {
+            if let Some(tier) = pie.model.get(model_name) {
+                smart_provider_name = Some(tier.provider.clone());
+                tier_model_override.clone_from(&tier.model);
+                cli.provider_config.model = None;
+            } else if pie.provider.contains_key(model_name) {
+                smart_provider_name = Some(model_name.to_string());
+                cli.provider_config.model = None;
+            }
+        }
+
+        let provider_name = cli
+            .provider
+            .clone()
+            .or(smart_provider_name)
+            .or(pie.default_provider.clone());
+
+        let mut provider_cfg = if let Some(ref name) = provider_name {
             pie.provider
                 .get(name)
                 .cloned()
@@ -216,6 +239,10 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
             }
         };
 
+        if let Some(m) = tier_model_override {
+            provider_cfg.model = Some(m);
+        }
+
         let output_format = match cli.output_format() {
             OutputFormat::Default => pie.output_format(),
             format => format,
@@ -224,7 +251,7 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
         let provider = provider_cfg.merge(cli.provider_config);
         let mut resolved_provider = ResolvedProvider::resolve(provider, providers_data)?;
         if let Some(name) = provider_name {
-            resolved_provider.name = name.to_string();
+            resolved_provider.name.clone_from(&name);
         }
 
         let model_tiers = resolve_model_tiers(&pie, providers_data);
@@ -300,4 +327,94 @@ pub fn build_sandbox(pie_config: &PieConfig) -> Arc<SandboxConfig> {
         }
     }
     Arc::new(sandbox)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::types::{ModelTier, ProviderEndpoint};
+    use clap::Parser;
+
+    #[test]
+    fn test_resolve_config_smart_model_selection() {
+        let mut pie = PieConfig {
+            default_provider: Some("openai".to_string()),
+            provider: HashMap::new(),
+            secrets: HashMap::new(),
+            model: HashMap::new(),
+            agent: None,
+            sandbox: None,
+            output_format: None,
+            log_level: None,
+            hooks: vec![],
+        };
+
+        pie.provider.insert(
+            "openai".to_string(),
+            ProviderConfig {
+                model: Some("gpt-4o".to_string()),
+                endpoint: ProviderEndpoint {
+                    name: Some("openai".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        pie.provider.insert(
+            "codestral".to_string(),
+            ProviderConfig {
+                model: Some("codestral-latest".to_string()),
+                endpoint: ProviderEndpoint {
+                    openai: Some("https://api.mistral.ai/v1".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        // Case 1: No -p, no -m -> should use default_provider (openai)
+        let cli = Cli::parse_from(["pie"]);
+        let config = ResolvedConfig::try_from((cli, pie.clone())).unwrap();
+        assert_eq!(config.provider.name, "openai");
+        assert_eq!(config.provider.model, "gpt-4o");
+
+        // Case 2: No -p, -m matches a provider name
+        let cli = Cli::parse_from(["pie", "-m", "codestral"]);
+        let config = ResolvedConfig::try_from((cli, pie.clone())).unwrap();
+        assert_eq!(config.provider.name, "codestral");
+        assert_eq!(config.provider.model, "codestral-latest");
+
+        // Case 3: No -p, -m matches a tier name
+        pie.model.insert(
+            "fast".to_string(),
+            ModelTier {
+                provider: "openai".to_string(),
+                model: Some("gpt-4o-mini".to_string()),
+            },
+        );
+        let cli = Cli::parse_from(["pie", "-m", "fast"]);
+        let config = ResolvedConfig::try_from((cli, pie.clone())).unwrap();
+        assert_eq!(config.provider.name, "openai");
+        assert_eq!(config.provider.model, "gpt-4o-mini");
+
+        // Case 4: No -p, -m matches a tier name with no model override
+        pie.model.insert(
+            "slow".to_string(),
+            ModelTier {
+                provider: "openai".to_string(),
+                model: None,
+            },
+        );
+        let cli = Cli::parse_from(["pie", "-m", "slow"]);
+        let config = ResolvedConfig::try_from((cli, pie.clone())).unwrap();
+        assert_eq!(config.provider.name, "openai");
+        assert_eq!(config.provider.model, "gpt-4o"); // Uses provider's default
+
+        // Case 5: -p explicitly set, -m matches another provider name -> should NOT switch provider
+        let cli = Cli::parse_from(["pie", "-p", "openai", "-m", "codestral"]);
+        let config = ResolvedConfig::try_from((cli, pie.clone())).unwrap();
+        assert_eq!(config.provider.name, "openai");
+        assert_eq!(config.provider.model, "codestral");
+    }
 }

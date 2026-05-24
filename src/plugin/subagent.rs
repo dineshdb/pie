@@ -61,7 +61,6 @@ impl AgentPlugin for SubAgentPlugin {
             "subagent" => {
                 let input: SubagentInput =
                     serde_json::from_value(call.arguments.clone()).map_err(|e| e.to_string())?;
-                crate::tools::emit_tool_input("subagent", &json!(input));
                 self.do_subagent(input).await
             }
             _ => Err(format!("Unknown subagent tool: {}", call.name)),
