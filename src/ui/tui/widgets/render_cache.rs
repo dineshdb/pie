@@ -7,16 +7,19 @@ struct RenderedCache {
     content: String,
     is_latest: bool,
     lines: Vec<Line<'static>>,
+    last_render: std::time::Instant,
 }
 
 pub struct MessageRenderCache {
     entries: Vec<Option<RenderedCache>>,
+    throttle_ms: u64,
 }
 
 impl MessageRenderCache {
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
+            throttle_ms: 50, // Throttle re-renders to 20fps during streaming
         }
     }
 
@@ -36,11 +39,27 @@ impl MessageRenderCache {
         index: usize,
         width: usize,
     ) -> &[Line<'static>] {
-        let needs_rerender = self
-            .entries
-            .get(index)
-            .and_then(|e| e.as_ref())
-            .is_none_or(|c| c.width != width || c.content != content || c.is_latest != is_latest);
+        let now = std::time::Instant::now();
+
+        let existing = self.entries.get(index).and_then(|e| e.as_ref());
+
+        let needs_rerender = match existing {
+            None => true,
+            Some(c) => {
+                if c.width != width || c.is_latest != is_latest {
+                    true
+                } else if c.content != content {
+                    // If content changed, throttle if it's the latest message
+                    if is_latest {
+                        c.last_render.elapsed().as_millis() >= u128::from(self.throttle_ms)
+                    } else {
+                        true
+                    }
+                } else {
+                    false
+                }
+            }
+        };
 
         if needs_rerender {
             let color = role_color(role);
@@ -72,15 +91,14 @@ impl MessageRenderCache {
             let lines = raw_lines
                 .into_iter()
                 .enumerate()
-                .map(|(i, line)| {
+                .map(|(i, mut line)| {
                     let pfx = if i == 0 {
                         prefix.clone()
                     } else {
                         cont_prefix.clone()
                     };
-                    let mut spans = vec![pfx];
-                    spans.extend(line.spans);
-                    Line::from(spans)
+                    line.spans.insert(0, pfx);
+                    line
                 })
                 .collect();
 
@@ -94,6 +112,7 @@ impl MessageRenderCache {
                     content: content.to_string(),
                     is_latest,
                     lines,
+                    last_render: now,
                 });
             }
         }
