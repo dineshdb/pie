@@ -78,7 +78,6 @@ pub async fn handle_query(params: HandleParams) -> Result<()> {
         params.model.clone(),
         params.registry,
         params.sandbox_settings,
-        params.session.pool.clone(),
         params.session,
         config,
     );

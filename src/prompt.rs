@@ -166,6 +166,7 @@ impl<'a> SystemPrompt<'a> {
 
         let resolved = crate::registry::resolve_skills(self.skills, &mentions);
         self.loaded_skills = resolved.iter().map(|&s| s.clone()).collect();
+
         self
     }
 

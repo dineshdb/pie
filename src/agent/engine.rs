@@ -1,9 +1,11 @@
-use crate::agent::{AgentEvent, find_subsume_candidate};
+use crate::agent::AgentEvent;
 use crate::config::CONFIG;
-use crate::db::DbPool;
 use crate::error::{AppError, Result};
 use crate::instructions::Instructions;
-use crate::plugin::PermissionRequest;
+use crate::plugin::{
+    DeveloperPlugin, HelperBinariesPlugin, PermissionRequest, PersistencePlugin, ShellPlugin,
+    UserCommandPlugin, WebsearchPlugin,
+};
 use crate::prompt::SystemPrompt;
 use crate::registry::Registry;
 use crate::session::{HistoryContent, Session};
@@ -23,7 +25,6 @@ pub struct PieAgent {
     pub model: agentsdk::OpenAI,
     pub registry: Arc<Registry>,
     pub sandbox: Arc<SandboxConfig>,
-    pub pool: Arc<DbPool>,
     pub session: Session,
     pub config: AgentConfig,
     permission_tx: Option<UnboundedSender<PermissionRequest>>,
@@ -60,16 +61,6 @@ impl AgentConfig {
     pub fn is_debug() -> bool {
         CONFIG.get().is_some_and(|c| c.debug)
     }
-
-    pub fn subagent(depth: u32, agent_name: Option<String>) -> Self {
-        Self {
-            agent_name,
-            history_limit: 10,
-            max_steps: 50,
-            depth,
-            ..Self::default()
-        }
-    }
 }
 
 impl PieAgent {
@@ -77,7 +68,6 @@ impl PieAgent {
         model: agentsdk::OpenAI,
         registry: Arc<Registry>,
         sandbox: Arc<SandboxConfig>,
-        pool: Arc<DbPool>,
         session: Session,
         config: AgentConfig,
     ) -> Self {
@@ -85,7 +75,6 @@ impl PieAgent {
             model,
             registry,
             sandbox,
-            pool,
             session,
             config,
             permission_tx: None,
@@ -251,17 +240,15 @@ impl PieAgent {
                         .map_err(|e| anyhow::anyhow!("failed to build skills plugin: {e}"))?,
                 )
                 .plugin(FileSystemPlugin::new())
-                .plugin(crate::plugin::PersistencePlugin::new(self.session.clone()))
-                .plugin(crate::plugin::ShellPlugin::new())
-                .plugin(crate::plugin::WebsearchPlugin::new())
-                .plugin(crate::plugin::SubAgentPlugin::new(
-                    self.model.clone(),
+                .plugin(PersistencePlugin::new(self.session.clone()))
+                .plugin(ShellPlugin::new())
+                .plugin(WebsearchPlugin::new())
+                .plugin(DeveloperPlugin::new())
+                .plugin(HelperBinariesPlugin::new())
+                .plugin(UserCommandPlugin::new(
                     self.registry.clone(),
-                    self.sandbox.clone(),
-                    self.pool.clone(),
-                ))
-                .plugin(crate::plugin::DeveloperPlugin::new())
-                .plugin(crate::plugin::HelperBinariesPlugin::new());
+                    self.config.agent_name.clone(),
+                ));
 
             if AgentConfig::is_debug() {
                 builder = builder.plugin(crate::plugin::DebugPlugin::new(
@@ -288,14 +275,16 @@ impl PieAgent {
 
             let query_instructions = Instructions::new(&query);
 
-            if self.config.depth < 2
-                && let Some(agent_name) =
-                    find_subsume_candidate(&query_instructions, &self.registry.agents)
-                && self.config.agent_name.as_ref() != Some(&agent_name)
-            {
-                let mut subagent = self.spawn_subagent(Some(agent_name)).await?;
-                return subagent.stream(&query, event_tx).await;
-            }
+            // Subagent execution has been disabled for now.
+            // We just let the mentioned agents be appended to the current context.
+            // if self.config.depth < 2
+            //     && let Some(agent_name) =
+            //         find_subsume_candidate(&query_instructions, &self.registry.agents)
+            //     && self.config.agent_name.as_ref() != Some(&agent_name)
+            // {
+            //     let mut subagent = self.spawn_subagent(Some(agent_name)).await?;
+            //     return subagent.stream(&query, event_tx).await;
+            // }
 
             // Deriving system prompt from the query string (slow)
             let system = self.prepare_system_prompt(&query_instructions)?;
@@ -332,54 +321,5 @@ impl PieAgent {
 
             Ok(final_text)
         })
-    }
-
-    pub async fn spawn_subagent(&self, agent_name: Option<String>) -> Result<Self> {
-        let tier = agent_name.as_ref().and_then(|name| {
-            self.registry
-                .agents
-                .iter()
-                .find(|a| &a.name == name)
-                .and_then(|a| a.model.as_deref())
-        });
-        let model = CONFIG
-            .get()
-            .map_or(self.model.clone(), |c| c.resolve_model(tier, &self.model));
-
-        let sub_id = if let Some(ref name) = agent_name {
-            crate::session::SessionId::subagent(&self.session.id, name)
-        } else {
-            crate::session::SessionId::new()
-        };
-
-        let sub_session = Session::create_with_id(self.pool.clone(), sub_id).await?;
-
-        let mut grants = self.config.grants.clone();
-        if let Some(name) = &agent_name
-            && let Some(agent) = self.registry.agents.iter().find(|a| &a.name == name)
-        {
-            for g in &agent.grants {
-                grants.insert(g.clone());
-            }
-        }
-
-        let config = AgentConfig {
-            agent_name: agent_name.clone(),
-            history_limit: 10,
-            max_steps: 10,
-            depth: self.config.depth + 1,
-            max_retries: 3,
-            retry: crate::config::RetryConfig::default(),
-            grants,
-        };
-
-        Ok(PieAgent::new(
-            model,
-            self.registry.clone(),
-            self.sandbox.clone(),
-            self.pool.clone(),
-            sub_session,
-            config,
-        ))
     }
 }

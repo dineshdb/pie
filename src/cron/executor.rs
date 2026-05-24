@@ -1,6 +1,5 @@
 use crate::agent::{AgentConfig, PieAgent};
 use crate::config::CONFIG;
-use crate::db::DbPool;
 use crate::instructions::Instructions;
 use crate::registry::Registry;
 use crate::session::Session;
@@ -33,7 +32,6 @@ pub async fn prompt_exec(
     prompt: &str,
     cwd: &str,
     registry: Arc<Registry>,
-    pool: Arc<DbPool>,
     sandbox: Arc<SandboxConfig>,
     grants: HashSet<Permission>,
 ) -> i64 {
@@ -76,7 +74,6 @@ pub async fn prompt_exec(
         model,
         registry,
         sandbox,
-        pool,
         session.clone(),
         AgentConfig {
             max_steps: config.max_steps,

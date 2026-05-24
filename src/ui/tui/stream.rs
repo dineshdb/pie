@@ -75,15 +75,8 @@ pub async fn spawn_stream(
         }
     });
 
-    let mut agent = PieAgent::new(
-        ctx.model,
-        ctx.registry,
-        ctx.sandbox,
-        ctx.pool,
-        session,
-        config,
-    )
-    .with_permission_channel(perm_tx);
+    let mut agent = PieAgent::new(ctx.model, ctx.registry, ctx.sandbox, session, config)
+        .with_permission_channel(perm_tx);
 
     let (agent_tx, mut agent_rx) = mpsc::unbounded_channel::<AgentEvent>();
     let event_tx_clone = event_tx.clone();

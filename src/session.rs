@@ -106,15 +106,6 @@ impl SessionId {
         };
         Self(short.to_string())
     }
-
-    pub fn subagent(&self, agent_name: &str) -> Self {
-        let suffix = format!("-{agent_name}");
-        if self.0.ends_with(&suffix) {
-            self.clone()
-        } else {
-            Self(format!("{}{}", self.0, suffix))
-        }
-    }
 }
 
 impl std::fmt::Display for SessionId {
@@ -155,19 +146,6 @@ impl Session {
             .bind(parent_id)
             .execute(&*pool)
             .await?;
-        Self::load(pool, id).await
-    }
-
-    pub async fn create_with_id(pool: Arc<DbPool>, id: SessionId) -> Result<Self> {
-        let cwd = std::env::current_dir()?.to_string_lossy().to_string();
-        let id_str = id.to_string();
-        sqlx::query!(
-            "INSERT OR IGNORE INTO sessions (id, cwd) VALUES (?, ?)",
-            id_str,
-            cwd
-        )
-        .execute(&*pool)
-        .await?;
         Self::load(pool, id).await
     }
 

@@ -119,7 +119,6 @@ pub async fn run_due_jobs(pool: Arc<DbPool>, registry: Arc<Registry>) -> anyhow:
             &sched.prompt,
             cwd,
             registry.clone(),
-            pool.clone(),
             sandbox,
             grants,
         )

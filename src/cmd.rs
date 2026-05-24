@@ -44,7 +44,7 @@ define_builtin_commands! {
 const HELP_DESC: &str = "Show help and available commands";
 const QUIT_DESC: &str = "Exit the application";
 const MODEL_DESC: &str = "Switch or view the current model";
-const SKILLS_DESC: &str = "List available agents and skills";
+const SKILLS_DESC: &str = "List available commands and skills";
 const CLEAR_DESC: &str = "Start a new session";
 const NEW_DESC: &str = "Start a new session";
 
@@ -103,7 +103,7 @@ pub fn handle_status(config: &ResolvedConfig, registry: &Arc<Registry>) {
     for skill in &registry.skills {
         println!(" - {}", skill.name);
     }
-    println!("Agents: {}", registry.agents.len());
+    println!("Commands: {}", registry.agents.len());
     for agent in &registry.agents {
         println!(" - {}", agent.name);
     }
@@ -161,12 +161,12 @@ pub fn handle_skills(config: &ResolvedConfig, registry: &Arc<Registry>) {
     if !skills.is_empty() && !agents.is_empty() {
         println!();
     }
-    print_named_section("Available agents", agents.iter(), |a| {
+    print_named_section("Available commands", agents.iter(), |a| {
         (&a.name, &a.description, &[])
     });
 
     if skills.is_empty() && agents.is_empty() {
-        warn!("No skills or agents found.");
+        warn!("No skills or commands found.");
     }
 }
 
@@ -337,13 +337,13 @@ fn resolve_skill_script_path(entity: &str, script: &str) -> Option<std::path::Pa
     if let Some(root) = crate::utils::git_repo_root() {
         let base = std::path::PathBuf::from(root)
             .join(".pie")
-            .join("agents")
+            .join("commands")
             .join(entity);
         if let Some(p) = find(base) {
             return Some(p);
         }
     }
-    find(crate::config::pie_home().join("agents").join(entity))
+    find(crate::config::pie_home().join("commands").join(entity))
 }
 
 fn shell_quote(s: &str) -> String {

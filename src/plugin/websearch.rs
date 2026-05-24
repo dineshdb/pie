@@ -23,6 +23,7 @@ enum WebsearchTools {
     /// Gather more info from  the web for more context.
     /// Use for finding information not in the locally.
     /// Try to use specific variation of the query first but if you don't find answers you're looking for, go for more generic and broader variation.
+    /// User doesn't just want to searh, hence it's your job to click few relevant links, read relevant pages, synthesize the results and fulfill user's request.
     Search(WebsearchInput),
 }
 

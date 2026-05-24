@@ -1,5 +1,4 @@
 use crate::config::EMBEDDED_PIE_DIR;
-use crate::instructions::Instructions;
 use agentsdk_plugin_skills::split_frontmatter;
 use include_dir::Dir;
 use p1e_sandbox::{Permission, SandboxConfig};
@@ -9,7 +8,7 @@ use strum::{AsRefStr, Display, EnumString};
 
 /// Embedded agents directory (from .pie/agents/ in the crate root).
 pub fn embedded_agents_dir() -> Option<&'static Dir<'static>> {
-    EMBEDDED_PIE_DIR.get_dir("agents")
+    EMBEDDED_PIE_DIR.get_dir("commands")
 }
 
 /// Controls the format and level of interactivity for the agent's output.
@@ -68,12 +67,12 @@ struct AgentFrontmatter {
 }
 
 fn agents_root_global() -> PathBuf {
-    crate::config::pie_home().join("agents")
+    crate::config::pie_home().join("commands")
 }
 
 fn agents_root_local() -> Option<PathBuf> {
     crate::utils::git_repo_root()
-        .map(|root| PathBuf::from(root).join(".pie").join("agents"))
+        .map(|root| PathBuf::from(root).join(".pie").join("commands"))
         .filter(|p| p.is_dir())
 }
 
@@ -169,43 +168,6 @@ pub fn get_all_agents() -> Vec<Agent> {
     )
 }
 
-/// Resolve agents whose names appear in the given instructions.
-pub fn resolve_mentioned_agents<'a>(
-    instructions: &Instructions,
-    agents: &'a [Agent],
-) -> Vec<&'a Agent> {
-    agents
-        .iter()
-        .filter(|a| instructions.mentions_name(&a.name))
-        .collect()
-}
-
-/// Check if we should subsume the role of a single mentioned agent.
-/// Returns the name of the agent if exactly one is mentioned.
-/// Also handles direct invocation where the first word is the agent name (with or without /).
-pub fn find_subsume_candidate(instructions: &Instructions, agents: &[Agent]) -> Option<String> {
-    // 1. Check for direct invocation as the first word
-    let first_word = instructions
-        .raw
-        .split_whitespace()
-        .next()
-        .map(|w| w.trim_start_matches('/'));
-
-    if let Some(first) = first_word
-        && let Some(agent) = agents.iter().find(|a| a.name == first)
-    {
-        return Some(agent.name.clone());
-    }
-
-    // 2. Fallback to existing mention logic
-    let mentioned = resolve_mentioned_agents(instructions, agents);
-    if mentioned.len() == 1 {
-        mentioned.first().map(|a| a.name.clone())
-    } else {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,99 +218,5 @@ mod tests {
             "You are a codebase analyst.\nReport findings concisely."
         );
         Ok(())
-    }
-
-    #[test]
-    fn resolve_mentioned_agents_from_query() -> Result<()> {
-        let agents = vec![
-            Agent {
-                name: "reviewer".into(),
-                description: "reviews code".into(),
-                output_mode: OutputMode::Interactive,
-                model: None,
-                temperature: None,
-                content: "Be thorough.".into(),
-                needs: vec![],
-                tools: vec![],
-                sandbox: None,
-                grants: vec![],
-            },
-            Agent {
-                name: "planner".into(),
-                description: "manages plans".into(),
-                output_mode: OutputMode::Interactive,
-                model: None,
-                temperature: None,
-                content: "Think step by step.".into(),
-                needs: vec![],
-                tools: vec![],
-                sandbox: None,
-                grants: vec![],
-            },
-        ];
-        let instr = Instructions::new("/reviewer check this");
-        let mentioned = resolve_mentioned_agents(&instr, &agents);
-        assert_eq!(mentioned.len(), 1);
-        assert_eq!(
-            mentioned
-                .first()
-                .ok_or_else(|| anyhow::anyhow!("expected match"))?
-                .name,
-            "reviewer"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn resolve_mentioned_agents_no_match() {
-        let agents = vec![Agent {
-            name: "reviewer".into(),
-            description: "reviews".into(),
-            output_mode: OutputMode::Md,
-            model: None,
-            temperature: None,
-            content: String::new(),
-            needs: vec![],
-            tools: vec![],
-            sandbox: None,
-            grants: vec![],
-        }];
-        let instr = Instructions::new("nothing relevant");
-        let mentioned = resolve_mentioned_agents(&instr, &agents);
-        assert!(mentioned.is_empty());
-    }
-
-    #[test]
-    fn find_subsume_candidate_direct_invocation() {
-        let agents = vec![Agent {
-            name: "howto".into(),
-            description: "howto guide".into(),
-            output_mode: OutputMode::Md,
-            model: None,
-            temperature: None,
-            content: String::new(),
-            needs: vec![],
-            tools: vec![],
-            sandbox: None,
-            grants: vec![],
-        }];
-
-        // Test with name
-        let instr = Instructions::new("howto implement x");
-        assert_eq!(
-            find_subsume_candidate(&instr, &agents),
-            Some("howto".into())
-        );
-
-        // Test with /name
-        let instr = Instructions::new("/howto implement x");
-        assert_eq!(
-            find_subsume_candidate(&instr, &agents),
-            Some("howto".into())
-        );
-
-        // Test with name but not first word
-        let instr = Instructions::new("tell me howto implement x");
-        assert_eq!(find_subsume_candidate(&instr, &agents), None);
     }
 }

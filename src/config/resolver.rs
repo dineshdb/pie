@@ -61,21 +61,6 @@ pub struct ResolvedConfig {
     pub debug: bool,
 }
 
-impl ResolvedConfig {
-    /// Resolve a model tier name (from agent frontmatter) to a concrete `OpenAI` client.
-    /// Falls back to the provided `fallback` if the tier is unset or unresolvable.
-    pub fn resolve_model(&self, tier: Option<&str>, fallback: &OpenAI) -> OpenAI {
-        let Some(tier_name) = tier else {
-            return fallback.clone();
-        };
-        let Some(provider) = self.model_tiers.get(tier_name) else {
-            tracing::warn!("model tier '{tier_name}' not found in config, using default");
-            return fallback.clone();
-        };
-        provider.build_client()
-    }
-}
-
 impl ResolvedProvider {
     pub fn env_vars(&self) -> HashMap<&'static str, String> {
         let mut env = HashMap::new();

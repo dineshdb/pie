@@ -78,11 +78,6 @@ impl Instructions {
         mentions
     }
 
-    /// Check whether a specific name is mentioned.
-    pub fn mentions_name(&self, name: &str) -> bool {
-        self.mentions.contains(name)
-    }
-
     /// Merge mentions from additional text into this instance.
     /// Does not change `raw` — only augments the mention set.
     pub fn merge_mentions(&mut self, extra: &str) {
@@ -169,15 +164,6 @@ mod tests {
     }
 
     #[test]
-    fn unix_path_start_of_string_extracts() {
-        let instr = Instructions::from("/usr/bin/bash");
-        assert!(
-            instr.mentions_name("usr"),
-            "start-of-string / should extract"
-        );
-    }
-
-    #[test]
     fn embedded_in_word_ignored() {
         let m = mentions("a/review/b");
         assert!(
@@ -246,20 +232,6 @@ mod tests {
     }
 
     #[test]
-    fn from_str_ref() {
-        let instr = Instructions::from("/review this");
-        assert_eq!(instr.raw, "/review this");
-        assert!(instr.mentions_name("review"));
-    }
-
-    #[test]
-    fn from_string() {
-        let instr = Instructions::from(String::from("/explore that"));
-        assert_eq!(instr.raw, "/explore that");
-        assert!(instr.mentions_name("explore"));
-    }
-
-    #[test]
     fn empty_input() {
         let m = mentions("");
         assert!(m.is_empty());
@@ -285,20 +257,6 @@ mod tests {
     fn many_mentions_all_captured() {
         let m = mentions("/a /b /c /d /e /f /g /h /i /j");
         assert_eq!(m.len(), 10);
-    }
-
-    #[test]
-    fn new_empty_input() {
-        let instr = Instructions::new("");
-        assert!(!instr.mentions_name("anything"));
-    }
-
-    #[test]
-    fn mentions_name_helper() {
-        let instr = Instructions::new("/review and /explore");
-        assert!(instr.mentions_name("review"));
-        assert!(instr.mentions_name("explore"));
-        assert!(!instr.mentions_name("bash"));
     }
 
     #[test]

@@ -6,6 +6,10 @@
 - Use available tools, always.
 - Prefer using local tools before resorting to remote tools.
 - Don't expect every tool call to result in success. If the tool call is not critical, find alternatives and proceed.
+- When a error occurs while tool call
+  - Identify if the error is due to tool call format, input parameters or something beyond our controls
+  - Try to fix the error if it can be fixed from your end
+  - Try other tools and approaches
 
 ## Global Rules
 - Fix the root cause, not the symptoms. Think before reaching a conclusion: are you solving the root cause or the symptoms?
