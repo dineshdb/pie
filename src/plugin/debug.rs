@@ -1,9 +1,9 @@
 use crate::config::pie_home;
+use agentsdk::core::history::History;
 use agentsdk::core::messages::Message;
 use agentsdk::openai::api::ChatCompletionRequestUserMessageContent;
 use agentsdk::{
-    AgentPlugin, CompletionAction, Messages, PluginContext, PostToolAction, PreToolAction,
-    ToolErrorAction,
+    AgentPlugin, CompletionAction, PluginContext, PostToolAction, PreToolAction, ToolErrorAction,
 };
 use async_trait::async_trait;
 use std::borrow::Cow;
@@ -77,10 +77,10 @@ impl AgentPlugin for DebugPlugin {
 
     async fn prepare_system_prompt(
         &mut self,
-        _ctx: &mut PluginContext,
-        history: &Messages,
+        ctx: &mut PluginContext,
     ) -> Option<Cow<'static, str>> {
-        for msg in history.iter().skip(self.last_logged_message_count) {
+        let history = ctx.get::<History>()?;
+        for msg in history.0.iter().skip(self.last_logged_message_count) {
             match msg {
                 Message::UserMessage(u) => {
                     let text = match &u.content {
@@ -124,7 +124,7 @@ impl AgentPlugin for DebugPlugin {
                 Message::FunctionMessage(_) => {}
             }
         }
-        self.last_logged_message_count = history.len();
+        self.last_logged_message_count = history.0.len();
         None
     }
 

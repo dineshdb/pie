@@ -1,4 +1,4 @@
-use agentsdk::{AgentPlugin, Messages, PluginContext};
+use agentsdk::{AgentPlugin, PluginContext};
 use async_trait::async_trait;
 use std::borrow::Cow;
 
@@ -41,7 +41,6 @@ impl AgentPlugin for EmbeddedSystemPromptPlugin {
     async fn prepare_system_prompt(
         &mut self,
         ctx: &mut PluginContext,
-        _history: &Messages,
     ) -> Option<Cow<'static, str>> {
         if let Some(comp) = ctx.get::<SystemPromptComponent>() {
             return Some(Cow::Owned(comp.0.clone()));

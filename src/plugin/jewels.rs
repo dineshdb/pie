@@ -1,7 +1,7 @@
 use agentsdk::core::history::History;
-use agentsdk::core::messages::Message;
+use agentsdk::core::messages::{Message, Messages};
 use agentsdk::openai::api::ChatCompletionRequestUserMessageContent;
-use agentsdk::{AgentPlugin, Messages, PluginContext, PostToolAction, PreToolAction};
+use agentsdk::{AgentPlugin, PluginContext, PostToolAction, PreToolAction};
 use async_trait::async_trait;
 use std::borrow::Cow;
 
@@ -65,7 +65,6 @@ impl AgentPlugin for JewelsPlugin {
     async fn prepare_system_prompt(
         &mut self,
         ctx: &mut PluginContext,
-        _history: &Messages,
     ) -> Option<Cow<'static, str>> {
         // Redact history before every iteration in case new messages were added
         // (e.g. tool results or user rejections)

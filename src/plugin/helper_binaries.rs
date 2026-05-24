@@ -1,4 +1,4 @@
-use agentsdk::{AgentPlugin, Messages, PluginContext};
+use agentsdk::{AgentPlugin, PluginContext};
 use async_trait::async_trait;
 use std::borrow::Cow;
 use std::process::Command;
@@ -60,7 +60,6 @@ impl AgentPlugin for HelperBinariesPlugin {
     async fn prepare_system_prompt(
         &mut self,
         _ctx: &mut PluginContext,
-        _history: &Messages,
     ) -> Option<Cow<'static, str>> {
         if self.scan_cache.is_empty() {
             None

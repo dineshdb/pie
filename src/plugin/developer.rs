@@ -1,4 +1,4 @@
-use agentsdk::{AgentPlugin, Messages, PluginContext, PreToolAction};
+use agentsdk::{AgentPlugin, PluginContext, PreToolAction};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::borrow::Cow;
@@ -51,7 +51,6 @@ impl AgentPlugin for DeveloperPlugin {
     async fn prepare_system_prompt(
         &mut self,
         _ctx: &mut PluginContext,
-        _history: &Messages,
     ) -> Option<Cow<'static, str>> {
         let mut combined = String::new();
 

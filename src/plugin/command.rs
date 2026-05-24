@@ -1,6 +1,7 @@
 use crate::instructions::Instructions;
 use crate::registry::Registry;
 use agentsdk::PluginTools;
+use agentsdk::core::history::History;
 use agentsdk::core::plugin::{AgentPlugin, PluginContext, PluginToolCall};
 use agentsdk::core::tools::ToolDefinition;
 use async_trait::async_trait;
@@ -70,12 +71,11 @@ impl AgentPlugin for UserCommandPlugin {
         text
     }
 
-    async fn prepare_history(
-        &mut self,
-        _ctx: &mut PluginContext,
-        history: &mut agentsdk::core::messages::Messages,
-    ) {
-        let Some(msg) = history.last() else {
+    async fn prepare_history(&mut self, ctx: &mut PluginContext) {
+        let Some(mut history) = ctx.get_mut::<History>() else {
+            return;
+        };
+        let Some(msg) = history.0.last() else {
             return;
         };
         let Some(text) = agentsdk::core::messages::extract_user_text(msg) else {
@@ -95,13 +95,15 @@ impl AgentPlugin for UserCommandPlugin {
                 let call_id = format!("inject_{}", agent.name);
                 let func_name = "cmd__mentioned_command".to_string();
 
-                history.push(agentsdk::core::messages::assistant_tool_call(
-                    func_name,
-                    call_id.clone(),
-                    &serde_json::json!({"command": agent.name}),
-                ));
+                history
+                    .0
+                    .push(agentsdk::core::messages::assistant_tool_call(
+                        func_name,
+                        call_id.clone(),
+                        &serde_json::json!({"command": agent.name}),
+                    ));
 
-                history.push(agentsdk::core::messages::tool(
+                history.0.push(agentsdk::core::messages::tool(
                     agent.content.clone(),
                     call_id,
                 ));
