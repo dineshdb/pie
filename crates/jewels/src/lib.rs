@@ -8,10 +8,19 @@ macro_rules! define_secrets {
                 )*
             ]
         });
+
+        pub static SECRET_REGEX_SET: std::sync::LazyLock<regex::RegexSet> = std::sync::LazyLock::new(|| {
+            regex::RegexSet::new(&[
+                $(
+                    $regex,
+                )*
+            ]).expect("Invalid regex set")
+        });
     };
 }
 
 use serde_json::Value;
+use std::borrow::Cow;
 
 define_secrets! {
     // --- Infrastructure & Cloud ---
@@ -73,7 +82,9 @@ pub fn scan(text: &str) -> Vec<SecretMatch> {
     let mut matches = Vec::new();
     let mut found_ranges = Vec::new();
 
-    for (kind, re) in SECRET_REGEXES.iter() {
+    let set_matches = SECRET_REGEX_SET.matches(text);
+    for idx in set_matches.into_iter() {
+        let (kind, re) = &SECRET_REGEXES[idx];
         for m in re.find_iter(text) {
             let range = m.range();
             if found_ranges
@@ -92,21 +103,28 @@ pub fn scan(text: &str) -> Vec<SecretMatch> {
     matches
 }
 
-pub fn redact(text: &str) -> String {
-    let mut redacted = text.to_string();
-    for (_kind, re) in SECRET_REGEXES.iter() {
-        redacted = re
-            .replace_all(&redacted, |caps: &regex::Captures| {
-                let full_match = caps.get(0).map_or("", |m| m.as_str());
-                if let Some(prefix) = caps.get(1) {
-                    let prefix_str = prefix.as_str();
-                    let mask_len = full_match.len().saturating_sub(prefix_str.len());
-                    format!("{}{}", prefix_str, "x".repeat(mask_len))
-                } else {
-                    "x".repeat(full_match.len())
-                }
-            })
-            .to_string();
+pub fn redact<'a>(text: &'a str) -> Cow<'a, str> {
+    let set_matches = SECRET_REGEX_SET.matches(text);
+    if !set_matches.matched_any() {
+        return Cow::Borrowed(text);
+    }
+
+    let mut redacted: Cow<'a, str> = Cow::Borrowed(text);
+    for idx in set_matches.into_iter() {
+        let (_kind, re) = &SECRET_REGEXES[idx];
+        let result = re.replace_all(&redacted, |caps: &regex::Captures| {
+            let full_match = caps.get(0).map_or("", |m| m.as_str());
+            if let Some(prefix) = caps.get(1) {
+                let prefix_str = prefix.as_str();
+                let mask_len = full_match.len().saturating_sub(prefix_str.len());
+                format!("{}{}", prefix_str, "x".repeat(mask_len))
+            } else {
+                "x".repeat(full_match.len())
+            }
+        });
+        if let Cow::Owned(s) = result {
+            redacted = Cow::Owned(s);
+        }
     }
     redacted
 }
@@ -115,10 +133,9 @@ pub fn redact_json(value: &Value) -> Value {
     match value {
         Value::String(s) => {
             let redacted = redact(s);
-            if redacted != *s {
-                Value::String(redacted)
-            } else {
-                value.clone()
+            match redacted {
+                Cow::Owned(r) => Value::String(r),
+                Cow::Borrowed(_) => value.clone(),
             }
         }
         Value::Array(arr) => Value::Array(arr.iter().map(redact_json).collect()),

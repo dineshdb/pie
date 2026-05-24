@@ -6,35 +6,43 @@ use async_trait::async_trait;
 use std::borrow::Cow;
 
 #[derive(Debug, Default)]
-pub struct JewelsPlugin;
+pub struct JewelsPlugin {
+    last_redacted_idx: usize,
+}
 
 impl JewelsPlugin {
     pub fn new() -> Self {
-        Self
+        Self {
+            last_redacted_idx: 0,
+        }
     }
 
     pub fn redact(text: &str) -> String {
-        jewels::redact(text)
+        jewels::redact(text).into_owned()
     }
 
-    fn redact_history(history: &mut Messages) {
-        for msg in history.iter_mut() {
+    fn redact_history(&mut self, history: &mut Messages) {
+        for msg in history.iter_mut().skip(self.last_redacted_idx) {
             match msg {
                 Message::UserMessage(u) => {
                     if let Some(ChatCompletionRequestUserMessageContent::String(s)) = &mut u.content
+                        && let Cow::Owned(redacted) = jewels::redact(s)
                     {
-                        *s = jewels::redact(s);
+                        *s = redacted;
                     }
                 }
                 Message::ToolMessage(t) => {
-                    if let Some(content) = &mut t.content {
-                        *content = jewels::redact(content);
+                    if let Some(content) = &mut t.content
+                        && let Cow::Owned(redacted) = jewels::redact(content)
+                    {
+                        *content = redacted;
                     }
                 }
                 // we don't redact assistant messages or system messages per instruction
                 _ => {}
             }
         }
+        self.last_redacted_idx = history.len();
     }
 }
 
@@ -46,12 +54,12 @@ impl AgentPlugin for JewelsPlugin {
 
     async fn init(&mut self, ctx: &mut PluginContext) {
         if let Some(mut history) = ctx.get_mut::<History>() {
-            Self::redact_history(&mut history.0);
+            self.redact_history(&mut history.0);
         }
     }
 
     async fn on_user_message(&mut self, _ctx: &mut PluginContext, text: String) -> String {
-        jewels::redact(&text)
+        jewels::redact(&text).into_owned()
     }
 
     async fn prepare_system_prompt(
@@ -62,7 +70,7 @@ impl AgentPlugin for JewelsPlugin {
         // Redact history before every iteration in case new messages were added
         // (e.g. tool results or user rejections)
         if let Some(mut history) = ctx.get_mut::<History>() {
-            Self::redact_history(&mut history.0);
+            self.redact_history(&mut history.0);
         }
         None
     }
