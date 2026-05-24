@@ -8,6 +8,7 @@
   - ls before read, write execute
   - identify instead of assume
 - Batch tool calls if the calls aren't dependent
+- Grep/Search -> Partial file reads
 
 ## Tools
 - Use available tools, always.

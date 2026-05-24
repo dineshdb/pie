@@ -1,6 +1,11 @@
 use crate::instructions::Instructions;
 use crate::registry::Registry;
 use agentsdk::PluginTools;
+use agentsdk::core::history::History;
+use agentsdk::core::messages::{
+    self, ChatCompletionRequestAssistantMessage, ChatCompletionRequestAssistantMessageRole,
+    Message, ToolCall, ToolCallType, ToolFunction,
+};
 use agentsdk::core::plugin::{AgentPlugin, PluginContext, PluginToolCall};
 use agentsdk::core::tools::ToolDefinition;
 use async_trait::async_trait;
@@ -66,7 +71,7 @@ impl AgentPlugin for UserCommandPlugin {
         }
     }
 
-    async fn on_user_message(&mut self, _ctx: &mut PluginContext, text: String) -> String {
+    async fn on_user_message(&mut self, ctx: &mut PluginContext, text: String) -> String {
         let instructions = Instructions::new(&text);
         if instructions.mentions.is_empty() {
             return text;
@@ -83,11 +88,33 @@ impl AgentPlugin for UserCommandPlugin {
             }
         }
 
-        if parts.is_empty() {
-            text
-        } else {
-            let prefix = parts.join("---");
-            format!("{prefix}\n\n{text}")
+        if !parts.is_empty() {
+            let instructions_text = parts.join("---");
+            if let Some(mut history) = ctx.get_mut::<History>() {
+                let call_id = chrono::Utc::now()
+                    .timestamp_nanos_opt()
+                    .unwrap_or(0)
+                    .to_string();
+                history.0.push(Message::AssistantMessage(
+                    ChatCompletionRequestAssistantMessage {
+                        content: None,
+                        name: None,
+                        tool_calls: Some(vec![ToolCall {
+                            id: call_id.clone(),
+                            r#type: ToolCallType::Function,
+                            function: ToolFunction {
+                                name: "command__load".into(),
+                                arguments: String::new(),
+                            },
+                        }]),
+                        role: ChatCompletionRequestAssistantMessageRole::Assistant,
+                        function_call: None,
+                    },
+                ));
+                history.0.push(messages::tool(instructions_text, call_id));
+            }
         }
+
+        text
     }
 }
