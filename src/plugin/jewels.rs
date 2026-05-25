@@ -84,9 +84,9 @@ impl AgentPlugin for JewelsPlugin {
     ) -> PreToolAction {
         let redacted = jewels::redact_json(args);
         if redacted == *args {
-            PreToolAction::Continue(None)
+            PreToolAction::Proceed(None)
         } else {
-            PreToolAction::Continue(Some(redacted))
+            PreToolAction::Proceed(Some(redacted))
         }
     }
 
@@ -99,9 +99,9 @@ impl AgentPlugin for JewelsPlugin {
     ) -> PostToolAction {
         let redacted = jewels::redact_json(result);
         if redacted == *result {
-            PostToolAction::Continue(None)
+            PostToolAction::Proceed(None)
         } else {
-            PostToolAction::Continue(Some(redacted))
+            PostToolAction::Proceed(Some(redacted))
         }
     }
 }

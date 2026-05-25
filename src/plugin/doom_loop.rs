@@ -64,6 +64,6 @@ impl AgentPlugin for DoomLoopPlugin {
             args: arguments.clone(),
             at: now,
         });
-        PreToolAction::Continue(None)
+        PreToolAction::Proceed(None)
     }
 }

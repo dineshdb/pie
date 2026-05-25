@@ -102,6 +102,6 @@ impl AgentPlugin for DeveloperPlugin {
             }
         }
 
-        PreToolAction::Continue(None)
+        PreToolAction::Proceed(None)
     }
 }

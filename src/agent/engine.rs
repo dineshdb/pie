@@ -31,12 +31,12 @@ pub struct PieAgent {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct AgentConfig {
     pub agent_name: Option<String>,
     pub history_limit: u32,
     pub max_steps: u32,
     pub depth: u32,
+    #[allow(dead_code)]
     pub max_retries: u32,
     pub retry: crate::config::RetryConfig,
     #[serde(default)]
@@ -275,19 +275,6 @@ impl PieAgent {
             }
 
             let query_instructions = Instructions::new(&query);
-
-            // Subagent execution has been disabled for now.
-            // We just let the mentioned agents be appended to the current context.
-            // if self.config.depth < 2
-            //     && let Some(agent_name) =
-            //         find_subsume_candidate(&query_instructions, &self.registry.agents)
-            //     && self.config.agent_name.as_ref() != Some(&agent_name)
-            // {
-            //     let mut subagent = self.spawn_subagent(Some(agent_name)).await?;
-            //     return subagent.stream(&query, event_tx).await;
-            // }
-
-            // Deriving system prompt from the query string (slow)
             let system = self.prepare_system_prompt(&query_instructions)?;
 
             // Inject the system prompt into the agent's context

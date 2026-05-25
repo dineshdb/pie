@@ -66,6 +66,6 @@ impl AgentPlugin for PersistencePlugin {
                 .update_tool_output_by_id(db_id, result.to_string())
                 .await;
         }
-        agentsdk::core::agent::PostToolAction::Continue(None)
+        agentsdk::core::agent::PostToolAction::Proceed(None)
     }
 }

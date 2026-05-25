@@ -94,16 +94,16 @@ impl AgentPlugin for PermissionsPlugin {
         args: &Value,
     ) -> PreToolAction {
         if tool_name != "skills__execute" {
-            return PreToolAction::Continue(None);
+            return PreToolAction::Proceed(None);
         }
 
         let Ok(parsed) = serde_json::from_value::<SkillExecuteArgs>(args.clone()) else {
-            return PreToolAction::Continue(None);
+            return PreToolAction::Proceed(None);
         };
 
         let skill_name = parsed.skill.trim_start_matches('/');
         let Some(ungranted) = self.check_skill_permissions(skill_name) else {
-            return PreToolAction::Continue(None);
+            return PreToolAction::Proceed(None);
         };
 
         let perm_display: Vec<String> = ungranted.iter().map(ToString::to_string).collect();
@@ -112,7 +112,7 @@ impl AgentPlugin for PermissionsPlugin {
         tracing::info!(skill = %skill_name, granted, "permission response");
 
         if granted {
-            PreToolAction::Continue(None)
+            PreToolAction::Proceed(None)
         } else {
             PreToolAction::Abort(format!(
                 "Permission denied: skill '{}' requires: {}",

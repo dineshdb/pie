@@ -69,7 +69,7 @@ impl AgentPlugin for StreamPlugin {
             output: String::new(),
         });
 
-        PreToolAction::Continue(None)
+        PreToolAction::Proceed(None)
     }
 
     async fn on_tool_post_execute(
@@ -97,7 +97,7 @@ impl AgentPlugin for StreamPlugin {
             output,
         });
 
-        PostToolAction::Continue(None)
+        PostToolAction::Proceed(None)
     }
 
     async fn on_tool_error(
@@ -116,7 +116,7 @@ impl AgentPlugin for StreamPlugin {
         let _ = self
             .event_tx
             .send(AgentEvent::Error(format!("Tool {name} failed: {error}")));
-        ToolErrorAction::Continue(None)
+        ToolErrorAction::Proceed(None)
     }
 
     async fn on_api_error(
@@ -127,7 +127,7 @@ impl AgentPlugin for StreamPlugin {
         self.api_error_count += 1;
 
         let Some(status) = error.status_code() else {
-            return RetryAction::DoNotRetry;
+            return RetryAction::GiveUp;
         };
 
         if status == 429 {
@@ -136,10 +136,10 @@ impl AgentPlugin for StreamPlugin {
                 let _ = self.event_tx.send(AgentEvent::Error(
                     "Too many rate limit errors, aborting".to_string(),
                 ));
-                return RetryAction::DoNotRetry;
+                return RetryAction::GiveUp;
             }
             tracing::warn!(status = %status, "rate limited, retrying");
-            return RetryAction::Retry(std::time::Duration::from_secs(
+            return RetryAction::RetryAfter(std::time::Duration::from_secs(
                 self.retry.rate_limit.retry_delay_secs,
             ));
         }
@@ -149,14 +149,14 @@ impl AgentPlugin for StreamPlugin {
                 let _ = self.event_tx.send(AgentEvent::Error(
                     "Too many API errors, aborting".to_string(),
                 ));
-                return RetryAction::DoNotRetry;
+                return RetryAction::GiveUp;
             }
             tracing::warn!(status = %status, count = self.api_error_count, "server error, retrying");
-            return RetryAction::Retry(std::time::Duration::from_secs(
+            return RetryAction::RetryAfter(std::time::Duration::from_secs(
                 self.retry.api_error.retry_delay_secs,
             ));
         }
 
-        RetryAction::DoNotRetry
+        RetryAction::GiveUp
     }
 }

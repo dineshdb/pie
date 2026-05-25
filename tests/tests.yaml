@@ -36,13 +36,6 @@ tests:
       - "```"
     timeout: 30
 
-  # ── Agent delegation via subsume ─────────────────────────────
-  - name: explore agent delegates via subsume
-    input: "/explore this project"
-    contains:
-      - "TOOL: subsume"
-    timeout: 120
-
   - name: List files
     input: "List files"
     contains:

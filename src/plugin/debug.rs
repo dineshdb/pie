@@ -194,7 +194,7 @@ impl AgentPlugin for DebugPlugin {
 
         let content = format!("`{id}` **{name}**({})", render_tool_args(arguments));
         self.append_debug("Tool Call", &content);
-        PreToolAction::Continue(None)
+        PreToolAction::Proceed(None)
     }
 
     async fn on_tool_post_execute(
@@ -206,7 +206,7 @@ impl AgentPlugin for DebugPlugin {
     ) -> PostToolAction {
         let content = format!("`{id}` **{name}** →\n{}", render_tool_result(result));
         self.append_debug("Tool Result", &content);
-        PostToolAction::Continue(None)
+        PostToolAction::Proceed(None)
     }
 
     async fn on_tool_error(
@@ -220,14 +220,14 @@ impl AgentPlugin for DebugPlugin {
 
         let content = format!("`{id}` **{name}** ❌ {error}");
         self.append_debug("Tool Error", &content);
-        ToolErrorAction::Continue(None)
+        ToolErrorAction::Proceed(None)
     }
 
-    async fn on_completion(&mut self, _ctx: &mut PluginContext, text: String) -> CompletionAction {
+    async fn on_completion(&mut self, _ctx: &mut PluginContext, text: &str) -> CompletionAction {
         tracing::info!(length = text.len(), "Completion received");
 
         let content = format!("```markdown\n{text}\n```");
         self.append_debug("Response", &content);
-        CompletionAction::Accept(None)
+        CompletionAction::Accept
     }
 }

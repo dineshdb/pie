@@ -45,7 +45,6 @@ pub struct Agent {
     pub needs: Vec<String>,
     pub tools: Vec<String>,
     pub sandbox: Option<SandboxConfig>,
-    #[allow(dead_code)]
     pub grants: Vec<Permission>,
 }
 
