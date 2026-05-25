@@ -49,7 +49,7 @@ impl AgentPlugin for WebsearchPlugin {
                 let cmd = format!("ddgr --json -n {limit} {quoted_query}");
 
                 let sandbox = ctx.get::<Sandbox>().ok_or("No sandbox registered")?;
-                let out = sandbox.0.exec(&cmd).await.map_err(|e| e.to_string())?;
+                let out = sandbox.exec(&cmd).await.map_err(|e| e.to_string())?;
 
                 if out.exit_code != 0 {
                     return Err(format!(

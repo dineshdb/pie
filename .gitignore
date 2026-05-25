@@ -4,3 +4,4 @@ target/
 .claude/
 .fastembed_cache
 .antigravitycli
+.DS_Store

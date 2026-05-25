@@ -22,6 +22,7 @@ agentsdk = { path = "../agentsdk" }
 agentsdk-plugin-skills = { path = "../agentsdk/crates/agentsdk-plugin-skills" }
 agentsdk-plugin-fs = { path = "../agentsdk/crates/agentsdk-plugin-fs" }
 agentsdk-plugin-agentsmd = { path = "../agentsdk/crates/agentsdk-plugin-agentsmd" }
+agentsdk-plugin-shell = { path = "../agentsdk/crates/agentsdk-plugin-shell" }
 anyhow = "1"
 arboard = "3"
 async-trait = "0.1"

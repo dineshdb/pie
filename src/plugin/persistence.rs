@@ -25,7 +25,7 @@ impl AgentPlugin for PersistencePlugin {
         "persistence"
     }
 
-    fn on_model_response_completed(&mut self, _ctx: &mut PluginContext, msg: &Message) {
+    fn on_assistant_message(&mut self, _ctx: &mut PluginContext, msg: &Message) {
         let Message::AssistantMessage(a) = msg else {
             return;
         };
