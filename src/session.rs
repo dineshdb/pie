@@ -246,36 +246,6 @@ impl Session {
         Ok(())
     }
 
-    pub async fn update_tool_output_by_id(&mut self, id: i64, output: String) -> Result<()> {
-        let sid = self.id.to_string();
-
-        let row: Option<(String,)> = sqlx::query_as(
-            "SELECT content FROM messages WHERE id = ? AND session_id = ? AND role = 'tool'",
-        )
-        .bind(id)
-        .bind(&sid)
-        .fetch_optional(&*self.pool)
-        .await?;
-
-        if let Some((content,)) = row
-            && let Ok(mut tc) = serde_json::from_str::<ToolCall>(&content)
-        {
-            tc.output = Some(Ok(serde_json::Value::String(output)));
-            let new_content = serde_json::to_string(&tc).unwrap_or(content);
-            sqlx::query("UPDATE messages SET content = ? WHERE id = ?")
-                .bind(new_content)
-                .bind(id)
-                .execute(&*self.pool)
-                .await?;
-
-            // Update cache
-            if let Some(entry) = self.cache.iter_mut().find(|e| e.id == id) {
-                entry.content = serde_json::to_string(&tc).unwrap_or(entry.content.clone());
-            }
-        }
-        Ok(())
-    }
-
     /// Convert this session's history entries into agentsdk `Message`s.
     pub fn to_messages(&self) -> Messages {
         self.cache
