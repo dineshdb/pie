@@ -1,8 +1,9 @@
-use crate::config::ResolvedConfig;
+use crate::config::{LaunchConfig, ResolvedConfig};
 use crate::registry::Registry;
 use crate::utils::output::OutputFormat;
 use p1e_sandbox::Permission;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::Arc;
 use strum::{AsRefStr, EnumIter, EnumString};
 use tracing::warn;
@@ -364,11 +365,10 @@ pub fn handle_launch(
     all_args: &[String],
     no_sandbox: bool,
 ) -> anyhow::Result<()> {
-    let (command, args) = if let Some((cmd, rest)) = all_args.split_first() {
-        (cmd.clone(), rest.to_vec())
-    } else {
-        anyhow::bail!("no command provided to launch");
-    };
+    let (command, args) = all_args
+        .split_first()
+        .map(|(cmd, rest)| (cmd.clone(), rest.to_vec()))
+        .ok_or_else(|| anyhow::anyhow!("no command provided to launch"))?;
 
     if command == "claude" && config.provider.anthropic_url.is_none() {
         anyhow::bail!(
@@ -379,77 +379,25 @@ pub fn handle_launch(
     let env = config.provider.env_vars();
     let launch_configs = crate::config::load_launch_config()?;
 
-    // Resolve alias
-    let (actual_command, launch_cfg) = if let Some(cfg) = launch_configs.get(&command) {
-        (command.clone(), Some(cfg))
-    } else if let Some((name, cfg)) = launch_configs
-        .iter()
-        .find(|(_, cfg)| cfg.aliases.contains(&command))
-    {
-        (name.clone(), Some(cfg))
-    } else {
-        (command.clone(), None)
-    };
+    let (launch_cfg, resolved_command) = resolve_launch_command(&command, &launch_configs);
+    let final_args = resolve_launch_args(&resolved_command, &args, launch_cfg);
 
-    let mut final_args = args;
-    if let Some(cfg) = launch_cfg
-        && final_args.is_empty()
-    {
-        final_args.clone_from(&cfg.args);
-    }
+    let mut cmd = build_launch_process(&resolved_command, &final_args, launch_cfg, no_sandbox);
 
-    // If the command itself contains spaces and no args were provided, split it.
-    // This handles cases like `pie launch "claude --version"`.
-    let (actual_command, extra_args) = if actual_command.contains(' ') && final_args.is_empty() {
-        let parts: Vec<String> = actual_command
-            .split_whitespace()
-            .map(String::from)
-            .collect();
-        if let (Some(cmd), Some(args)) = (parts.first(), parts.get(1..)) {
-            (cmd.clone(), args.to_vec())
-        } else {
-            (actual_command, Vec::new())
-        }
-    } else {
-        (actual_command, Vec::new())
-    };
-    if !extra_args.is_empty() {
-        final_args = extra_args;
-    }
-
-    let mut cmd = if no_sandbox {
-        let mut c = std::process::Command::new(&actual_command);
-        c.args(&final_args);
-        c
-    } else if let Some(cfg) = launch_cfg
-        && let Some(sandbox) = &cfg.sandbox
-    {
-        p1e_sandbox::build_command(&actual_command, &final_args, sandbox)
-    } else {
-        let mut c = std::process::Command::new(&actual_command);
-        c.args(&final_args);
-        c
-    };
-
-    // Explicitly inherit stdio for interaction
     cmd.stdin(std::process::Stdio::inherit());
     cmd.stdout(std::process::Stdio::inherit());
     cmd.stderr(std::process::Stdio::inherit());
 
-    // 1. Provider env vars
     for (k, v) in env {
         cmd.env(k, v);
     }
 
-    // 2. Extra env vars from launch.toml
     if let Some(cfg) = launch_cfg {
         for (k, v) in &cfg.env {
             cmd.env(k, v);
         }
     }
 
-    // Process Handoff (Unix):
-    // On Unix-like systems, we use `execvp` to replace the current `pie` process with the target command.
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -457,12 +405,162 @@ pub fn handle_launch(
         anyhow::bail!("failed to launch command: {err}");
     }
 
-    // Fallback (Non-Unix):
-    // Spawning is used where process replacement is not supported (e.g., Windows).
     #[cfg(not(unix))]
     {
         let mut child = cmd.spawn().context("failed to launch command")?;
         let status = child.wait().context("failed to wait for child")?;
         std::process::exit(status.code().unwrap_or(0));
+    }
+}
+
+fn resolve_launch_command<'a>(
+    command: &str,
+    configs: &'a HashMap<String, LaunchConfig>,
+) -> (Option<&'a LaunchConfig>, String) {
+    if let Some(cfg) = configs.get(command) {
+        return (Some(cfg), command.to_string());
+    }
+    if let Some((name, cfg)) = configs
+        .iter()
+        .find(|(_, cfg)| cfg.aliases.iter().any(|a| a == command))
+    {
+        return (Some(cfg), name.clone());
+    }
+    (None, command.to_string())
+}
+
+fn resolve_launch_args(
+    command: &str,
+    user_args: &[String],
+    launch_cfg: Option<&LaunchConfig>,
+) -> Vec<String> {
+    if !user_args.is_empty() {
+        return user_args.to_vec();
+    }
+
+    if command.contains(' ') {
+        let parts: Vec<&str> = command.split_whitespace().collect();
+        if let Some((_, rest)) = parts.split_first() {
+            return rest.iter().map(ToString::to_string).collect();
+        }
+    }
+
+    launch_cfg.map_or(vec![], |cfg| cfg.args.clone())
+}
+
+fn build_launch_process(
+    command: &str,
+    args: &[String],
+    launch_cfg: Option<&LaunchConfig>,
+    no_sandbox: bool,
+) -> std::process::Command {
+    if no_sandbox {
+        let mut c = std::process::Command::new(command);
+        c.args(args);
+        return c;
+    }
+    if let Some(cfg) = launch_cfg
+        && let Some(sandbox) = &cfg.sandbox
+    {
+        return p1e_sandbox::build_command(command, args, sandbox);
+    }
+    let mut c = std::process::Command::new(command);
+    c.args(args);
+    c
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn make_config(name: &str, aliases: &[&str]) -> (String, LaunchConfig) {
+        let cfg = LaunchConfig {
+            args: vec!["--default".to_string()],
+            aliases: aliases.iter().map(ToString::to_string).collect(),
+            ..Default::default()
+        };
+        (name.to_string(), cfg)
+    }
+
+    #[test]
+    fn resolve_command_direct_match() {
+        let mut configs = HashMap::new();
+        configs.insert("claude".to_string(), LaunchConfig::default());
+
+        let (cfg, cmd) = resolve_launch_command("claude", &configs);
+        assert!(cfg.is_some());
+        assert_eq!(cmd, "claude");
+    }
+
+    #[test]
+    fn resolve_command_alias_match() {
+        let mut configs = HashMap::new();
+        configs.insert(
+            "claude".to_string(),
+            LaunchConfig {
+                aliases: vec!["c".to_string(), "cl".to_string()],
+                ..Default::default()
+            },
+        );
+
+        let (cfg, cmd) = resolve_launch_command("c", &configs);
+        assert!(cfg.is_some());
+        assert_eq!(cmd, "claude");
+    }
+
+    #[test]
+    fn resolve_command_unknown() {
+        let configs = HashMap::new();
+        let (cfg, cmd) = resolve_launch_command("unknown", &configs);
+        assert!(cfg.is_none());
+        assert_eq!(cmd, "unknown");
+    }
+
+    #[test]
+    fn resolve_args_user_args_take_priority() {
+        let configs = HashMap::new();
+        let (cfg, _) = resolve_launch_command("anything", &configs);
+
+        let args = resolve_launch_args("anything", &["--user".to_string()], cfg);
+        assert_eq!(args, vec!["--user"]);
+    }
+
+    #[test]
+    fn resolve_args_space_split_command() {
+        let configs = HashMap::new();
+        let (cfg, _) = resolve_launch_command("anything", &configs);
+
+        let args = resolve_launch_args("claude --version", &[], cfg);
+        assert_eq!(args, vec!["--version"]);
+    }
+
+    #[test]
+    fn resolve_args_space_split_multiple() {
+        let configs = HashMap::new();
+        let (cfg, _) = resolve_launch_command("anything", &configs);
+
+        let args = resolve_launch_args("claude --do --stuff", &[], cfg);
+        assert_eq!(args, vec!["--do", "--stuff"]);
+    }
+
+    #[test]
+    fn resolve_args_default_from_config() {
+        let mut configs = HashMap::new();
+        let (k, v) = make_config("claude", &[]);
+        configs.insert(k, v);
+        let (cfg, _) = resolve_launch_command("claude", &configs);
+
+        let args = resolve_launch_args("claude", &[], cfg);
+        assert_eq!(args, vec!["--default"]);
+    }
+
+    #[test]
+    fn resolve_args_no_inputs() {
+        let configs = HashMap::new();
+        let (cfg, _) = resolve_launch_command("anything", &configs);
+
+        let args = resolve_launch_args("anything", &[], cfg);
+        assert!(args.is_empty());
     }
 }

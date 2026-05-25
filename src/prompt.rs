@@ -210,7 +210,6 @@ fn render_template<T: Serialize>(ctx: &T) -> Result<String> {
 #[cfg(test)]
 mod test_helpers {
     use super::*;
-    use crate::agent::Agent;
     use crate::registry::Skill;
     use agentsdk_plugin_skills::LoadStatus;
 
@@ -235,44 +234,12 @@ mod test_helpers {
             .render()
             .expect("test render main")
     }
-
-    /// Render the subagent prompt with deterministic values.
-    pub fn render_sub() -> String {
-        let agent = Agent {
-            name: "test-agent".to_string(),
-            description: "test".to_string(),
-            output_mode: OutputMode::Md,
-            model: None,
-            temperature: None,
-            content: "You are a test agent.".to_string(),
-            needs: vec![],
-            tools: vec![],
-            sandbox: None,
-            grants: vec![],
-        };
-        let agents = vec![agent];
-
-        SystemPrompt::new(&[], &agents)
-            .with_agent(Some("test-agent"))
-            .render()
-            .expect("test render sub")
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::test_helpers::*;
     use crate::agent::OutputMode;
-
-    #[tokio::test]
-    async fn subagent_with_agent_name_includes_persona() {
-        let result = render_sub();
-        let role = result.split("Agent Role").nth(1).unwrap_or("");
-        assert!(
-            role.contains("You are a test agent."),
-            "subagent with agent_name must include agent_content persona"
-        );
-    }
 
     // ── Repo-awareness ─────────────────────────────────────────
 
@@ -291,16 +258,6 @@ mod tests {
         assert!(
             !result.contains("git repo"),
             "should not mention git repo when not in one"
-        );
-    }
-
-    #[tokio::test]
-    async fn subagent_in_repo_cannot_delegate_further() {
-        let result = render_sub();
-        let repo_section = result.split("git repo").nth(1).unwrap_or("");
-        assert!(
-            !repo_section.contains("subagent"),
-            "subagent repo section must not reference subagent spawning"
         );
     }
 

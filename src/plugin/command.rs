@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::borrow::Cow;
 use std::sync::Arc;
 
 #[derive(PluginTools, Serialize, Deserialize)]
@@ -48,6 +49,21 @@ impl AgentPlugin for UserCommandPlugin {
 
     fn tools(&self) -> Vec<ToolDefinition> {
         CommandTools::definitions()
+    }
+
+    async fn prepare_system_prompt(
+        &mut self,
+        _ctx: &mut PluginContext,
+    ) -> Option<Cow<'static, str>> {
+        let agent = self.current_command.as_ref()?;
+        let content = self
+            .registry
+            .agents
+            .iter()
+            .find(|a| a.name == *agent)?
+            .content
+            .clone();
+        Some(Cow::Owned(format!("## Agent Role\n\n{content}")))
     }
 
     async fn run_tool(
