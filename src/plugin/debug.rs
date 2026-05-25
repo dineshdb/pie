@@ -2,7 +2,6 @@ use crate::config::pie_home;
 use agentsdk::core::history::History;
 use agentsdk::{
     AgentPlugin, AgentSdkError, CompletionAction, PluginContext, PostToolAction, PreToolAction,
-    ToolErrorAction,
 };
 use async_trait::async_trait;
 use serde_json::{Map, Value};
@@ -202,25 +201,20 @@ impl AgentPlugin for DebugPlugin {
         _ctx: &mut PluginContext,
         id: &str,
         name: &str,
-        result: &Value,
+        result: &Result<Value, String>,
     ) -> PostToolAction {
-        let content = format!("`{id}` **{name}** →\n{}", render_tool_result(result));
-        self.append_debug("Tool Result", &content);
-        PostToolAction::Proceed(None)
-    }
-
-    async fn on_tool_error(
-        &mut self,
-        _ctx: &mut PluginContext,
-        id: &str,
-        name: &str,
-        error: &str,
-    ) -> ToolErrorAction {
-        tracing::error!(tool = %name, id = %id, error = %error, "Tool error");
-
-        let content = format!("`{id}` **{name}** ❌ {error}");
-        self.append_debug("Tool Error", &content);
-        ToolErrorAction::Proceed(None)
+        match result {
+            Ok(value) => {
+                let content = format!("`{id}` **{name}** →\n{}", render_tool_result(value));
+                self.append_debug("Tool Result", &content);
+                PostToolAction::Proceed(None)
+            }
+            Err(error) => {
+                tracing::error!(tool = %name, id = %id, error = %error, "Tool error");
+                self.append_debug("Tool Error", &format!("`{id}` **{name}** ❌ {error}"));
+                PostToolAction::Proceed(None)
+            }
+        }
     }
 
     async fn on_completion(&mut self, _ctx: &mut PluginContext, text: &str) -> CompletionAction {

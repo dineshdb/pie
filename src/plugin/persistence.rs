@@ -60,10 +60,13 @@ impl AgentPlugin for PersistencePlugin {
         _ctx: &mut PluginContext,
         id: &str,
         _name: &str,
-        result: &Value,
+        result: &Result<Value, String>,
     ) -> agentsdk::core::agent::PostToolAction {
         if let Some(mut tc) = self.pending_tool_calls.remove(id) {
-            tc.output = Some(Ok(result.clone()));
+            tc.output = Some(match result {
+                Ok(v) => Ok(v.clone()),
+                Err(e) => Err(Value::String(e.clone())),
+            });
             let _ = self.session.add_tool_call(&tc).await;
         }
         agentsdk::core::agent::PostToolAction::Proceed(None)

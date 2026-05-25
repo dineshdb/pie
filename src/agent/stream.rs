@@ -1,10 +1,11 @@
 use crate::config::RetryConfig;
 use crate::plugin::PermissionRequest;
-use agentsdk::core::agent::{PostToolAction, PreToolAction, ToolErrorAction};
+use agentsdk::core::agent::{PostToolAction, PreToolAction};
 use agentsdk::core::retry::RetryAction;
 use agentsdk::error::AgentSdkError;
 use agentsdk::{AgentPlugin, PluginContext};
 use async_trait::async_trait;
+use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug)]
@@ -61,7 +62,7 @@ impl AgentPlugin for StreamPlugin {
         _ctx: &mut PluginContext,
         _id: &str,
         name: &str,
-        arguments: &serde_json::Value,
+        arguments: &Value,
     ) -> PreToolAction {
         let _ = self.event_tx.send(AgentEvent::ToolCall {
             name: name.to_string(),
@@ -77,18 +78,28 @@ impl AgentPlugin for StreamPlugin {
         _ctx: &mut PluginContext,
         _id: &str,
         name: &str,
-        result: &serde_json::Value,
+        result: &Result<Value, String>,
     ) -> PostToolAction {
-        let output = if let serde_json::Value::String(s) = result {
-            s.clone()
-        } else {
-            result.to_string()
-        };
-
-        let output = if name == "websearch" {
-            output
-        } else {
-            jewels::redact(&crate::utils::anonymize_path(&output)).into_owned()
+        let output = match result {
+            Ok(value) => {
+                let text = if let Value::String(s) = value {
+                    s.clone()
+                } else {
+                    value.to_string()
+                };
+                if name == "websearch" {
+                    text
+                } else {
+                    jewels::redact(&crate::utils::anonymize_path(&text)).into_owned()
+                }
+            }
+            Err(error) => {
+                tracing::debug!(tool = name, error = %error, "tool error");
+                let _ = self
+                    .event_tx
+                    .send(AgentEvent::Error(format!("Tool {name} failed: {error}")));
+                format!("Error: {error}")
+            }
         };
 
         let _ = self.event_tx.send(AgentEvent::ToolCall {
@@ -98,25 +109,6 @@ impl AgentPlugin for StreamPlugin {
         });
 
         PostToolAction::Proceed(None)
-    }
-
-    async fn on_tool_error(
-        &mut self,
-        _ctx: &mut PluginContext,
-        _id: &str,
-        name: &str,
-        error: &str,
-    ) -> ToolErrorAction {
-        tracing::debug!(tool = name, error = %error, "tool error");
-        let _ = self.event_tx.send(AgentEvent::ToolCall {
-            name: name.to_string(),
-            display: String::new(),
-            output: format!("Error: {error}"),
-        });
-        let _ = self
-            .event_tx
-            .send(AgentEvent::Error(format!("Tool {name} failed: {error}")));
-        ToolErrorAction::Proceed(None)
     }
 
     async fn on_api_error(
