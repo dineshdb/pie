@@ -104,7 +104,7 @@ impl AgentPlugin for UserCommandPlugin {
                             r#type: ToolCallType::Function,
                             function: ToolFunction {
                                 name: "command__load".into(),
-                                arguments: String::new(),
+                                arguments: "{}".into(),
                             },
                         }]),
                         role: ChatCompletionRequestAssistantMessageRole::Assistant,
