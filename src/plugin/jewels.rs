@@ -1,7 +1,7 @@
 use agentsdk::core::history::History;
 use agentsdk::core::messages::{Message, Messages};
 use agentsdk::openai::api::ChatCompletionRequestUserMessageContent;
-use agentsdk::{AgentPlugin, PluginContext, PostToolAction, PreToolAction};
+use agentsdk::{AgentPlugin, AgentSdkError, PluginContext, PostToolAction, PreToolAction};
 use async_trait::async_trait;
 use std::borrow::Cow;
 
@@ -52,10 +52,11 @@ impl AgentPlugin for JewelsPlugin {
         "jewels"
     }
 
-    async fn init(&mut self, ctx: &mut PluginContext) {
+    async fn init(&mut self, ctx: &mut PluginContext) -> Result<(), AgentSdkError> {
         if let Some(mut history) = ctx.get_mut::<History>() {
             self.redact_history(&mut history.0);
         }
+        Ok(())
     }
 
     async fn on_user_message(&mut self, _ctx: &mut PluginContext, text: String) -> String {

@@ -1,7 +1,8 @@
 use crate::config::pie_home;
 use agentsdk::core::history::History;
 use agentsdk::{
-    AgentPlugin, CompletionAction, PluginContext, PostToolAction, PreToolAction, ToolErrorAction,
+    AgentPlugin, AgentSdkError, CompletionAction, PluginContext, PostToolAction, PreToolAction,
+    ToolErrorAction,
 };
 use async_trait::async_trait;
 use serde_json::{Map, Value};
@@ -142,10 +143,11 @@ impl AgentPlugin for DebugPlugin {
         "debug"
     }
 
-    async fn init(&mut self, ctx: &mut PluginContext) {
+    async fn init(&mut self, ctx: &mut PluginContext) -> Result<(), AgentSdkError> {
         if let Some(comp) = ctx.get::<crate::plugin::SystemPromptComponent>() {
             self.append_debug("System Prompt", &comp.0);
         }
+        Ok(())
     }
 
     async fn prepare_system_prompt(
