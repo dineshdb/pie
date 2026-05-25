@@ -126,33 +126,35 @@ impl AgentPlugin for StreamPlugin {
     ) -> RetryAction {
         self.api_error_count += 1;
 
-        if let Some(status) = error.status_code() {
-            if status == 429 {
-                self.rate_limit_count += 1;
-                if self.rate_limit_count > self.retry.rate_limit.max_errors {
-                    let _ = self.event_tx.send(AgentEvent::Error(
-                        "Too many rate limit errors, aborting".to_string(),
-                    ));
-                    return RetryAction::DoNotRetry;
-                }
-                tracing::warn!(status = %status, "rate limited, retrying");
-                return RetryAction::Retry(std::time::Duration::from_secs(
-                    self.retry.rate_limit.retry_delay_secs,
-                ));
-            }
+        let Some(status) = error.status_code() else {
+            return RetryAction::DoNotRetry;
+        };
 
-            if status.is_server_error() {
-                if self.api_error_count > self.retry.api_error.max_errors {
-                    let _ = self.event_tx.send(AgentEvent::Error(
-                        "Too many API errors, aborting".to_string(),
-                    ));
-                    return RetryAction::DoNotRetry;
-                }
-                tracing::warn!(status = %status, count = self.api_error_count, "server error, retrying");
-                return RetryAction::Retry(std::time::Duration::from_secs(
-                    self.retry.api_error.retry_delay_secs,
+        if status == 429 {
+            self.rate_limit_count += 1;
+            if self.rate_limit_count > self.retry.rate_limit.max_errors {
+                let _ = self.event_tx.send(AgentEvent::Error(
+                    "Too many rate limit errors, aborting".to_string(),
                 ));
+                return RetryAction::DoNotRetry;
             }
+            tracing::warn!(status = %status, "rate limited, retrying");
+            return RetryAction::Retry(std::time::Duration::from_secs(
+                self.retry.rate_limit.retry_delay_secs,
+            ));
+        }
+
+        if status.is_server_error() {
+            if self.api_error_count > self.retry.api_error.max_errors {
+                let _ = self.event_tx.send(AgentEvent::Error(
+                    "Too many API errors, aborting".to_string(),
+                ));
+                return RetryAction::DoNotRetry;
+            }
+            tracing::warn!(status = %status, count = self.api_error_count, "server error, retrying");
+            return RetryAction::Retry(std::time::Duration::from_secs(
+                self.retry.api_error.retry_delay_secs,
+            ));
         }
 
         RetryAction::DoNotRetry

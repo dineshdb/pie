@@ -26,25 +26,29 @@ impl AgentPlugin for PersistencePlugin {
     }
 
     async fn on_model_response_completed(&mut self, _ctx: &mut PluginContext, msg: &Message) {
-        if let Message::AssistantMessage(a) = msg {
-            if let Some(content) = &a.content
-                && !content.is_empty()
-            {
-                let _ = self.session.add_assistant(content).await;
-            }
-            if let Some(calls) = &a.tool_calls {
-                for call in calls {
-                    let tc = ToolCall {
-                        call_id: call.id.clone(),
-                        tool_name: call.function.name.clone(),
-                        params: serde_json::from_str(&call.function.arguments)
-                            .unwrap_or(Value::Null),
-                        output: None,
-                    };
-                    if let Ok(id) = self.session.add_tool_call(&tc).await {
-                        self.tool_ids.insert(call.id.clone(), id);
-                    }
-                }
+        let Message::AssistantMessage(a) = msg else {
+            return;
+        };
+
+        if let Some(content) = &a.content
+            && !content.is_empty()
+        {
+            let _ = self.session.add_assistant(content).await;
+        }
+
+        let Some(calls) = &a.tool_calls else {
+            return;
+        };
+
+        for call in calls {
+            let tc = ToolCall {
+                call_id: call.id.clone(),
+                tool_name: call.function.name.clone(),
+                params: serde_json::from_str(&call.function.arguments).unwrap_or(Value::Null),
+                output: None,
+            };
+            if let Ok(id) = self.session.add_tool_call(&tc).await {
+                self.tool_ids.insert(call.id.clone(), id);
             }
         }
     }
