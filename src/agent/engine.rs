@@ -3,8 +3,8 @@ use crate::config::CONFIG;
 use crate::error::{AppError, Result};
 use crate::instructions::Instructions;
 use crate::plugin::{
-    DeveloperPlugin, HelperBinariesPlugin, PermissionRequest, PersistencePlugin, ShellPlugin,
-    UserCommandPlugin, WebsearchPlugin,
+    DeveloperPlugin, HelperBinariesPlugin, PermissionRequest, PersistencePlugin, UserCommandPlugin,
+    WebsearchPlugin,
 };
 use crate::prompt::SystemPrompt;
 use crate::registry::Registry;
@@ -12,6 +12,7 @@ use crate::session::{HistoryContent, Session};
 use agentsdk::core::Sandbox;
 use agentsdk::{Agent as SdkAgent, MemoryHistoryPlugin, Message};
 use agentsdk_plugin_fs::FileSystemPlugin;
+use agentsdk_plugin_shell::ShellPlugin;
 use agentsdk_plugin_skills::SkillsPlugin;
 use futures::future::BoxFuture;
 use p1e_sandbox::{Permission, SandboxConfig};
@@ -131,13 +132,12 @@ impl PieAgent {
             bin_dirs.push(std::path::PathBuf::from(git_root).join(".pie").join("bin"));
         }
 
-        let sandbox: Box<dyn agentsdk::core::sandbox::SandboxProvider> = Box::new(
-            p1e_sandbox::PlatformSandbox::new((*self.sandbox).clone()).with_bin_dirs(bin_dirs),
-        );
+        let sandbox =
+            p1e_sandbox::PlatformSandbox::new((*self.sandbox).clone()).with_bin_dirs(bin_dirs);
 
         Ok(SdkAgent::builder()
             .client(self.model.clone())
-            .component(Sandbox(sandbox))
+            .component(Sandbox::new(sandbox))
             .options(
                 agentsdk::AgentOptions::builder()
                     .max_iterations(self.config.max_steps as usize)
