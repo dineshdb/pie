@@ -25,7 +25,8 @@ impl AgentPlugin for PersistencePlugin {
         "persistence"
     }
 
-    async fn on_model_response_completed(&mut self, _ctx: &mut PluginContext, msg: &Message) {
+    fn on_model_response_completed(&mut self, _ctx: &mut PluginContext, msg: &Message) {
+        let rt = tokio::runtime::Handle::current();
         let Message::AssistantMessage(a) = msg else {
             return;
         };
@@ -33,7 +34,8 @@ impl AgentPlugin for PersistencePlugin {
         if let Some(content) = &a.content
             && !content.is_empty()
         {
-            let _ = self.session.add_assistant(content).await;
+            let mut session = self.session.clone();
+            let _ = rt.block_on(session.add_assistant(content));
         }
 
         let Some(calls) = &a.tool_calls else {
@@ -47,7 +49,8 @@ impl AgentPlugin for PersistencePlugin {
                 params: serde_json::from_str(&call.function.arguments).unwrap_or(Value::Null),
                 output: None,
             };
-            if let Ok(id) = self.session.add_tool_call(&tc).await {
+            let mut session = self.session.clone();
+            if let Ok(id) = rt.block_on(session.add_tool_call(&tc)) {
                 self.tool_ids.insert(call.id.clone(), id);
             }
         }

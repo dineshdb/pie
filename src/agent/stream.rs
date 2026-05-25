@@ -46,7 +46,7 @@ impl AgentPlugin for StreamPlugin {
         "stream"
     }
 
-    async fn on_text_delta(&mut self, _ctx: &mut PluginContext, text: &str) {
+    fn on_text_delta(&mut self, _ctx: &mut PluginContext, text: &str) {
         if !text.is_empty() {
             let _ = self.event_tx.send(AgentEvent::Delta(text.to_string()));
         }
