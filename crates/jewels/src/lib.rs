@@ -25,7 +25,7 @@ use std::borrow::Cow;
 define_secrets! {
     // --- Infrastructure & Cloud ---
     "AWS Access Key ID" => r"\b(AKIA)[0-9A-Z]{16}\b",
-    "AWS Secret Access Key" => r"\b([0-9a-zA-Z+/]{4})[0-9a-zA-Z+/]{36}\b",
+    "AWS Secret Access Key" => r"\b[0-9a-zA-Z+]{40}\b",
     "Google API Key" => r"\b(AIza)[0-9A-Za-z\-_]{35}\b",
     "Azure Storage Account Key" => r"\b([a-zA-Z0-9+/]{86}==)\b",
     "Azure DevOps Token" => r"\b([a-z0-9]{52})\b",

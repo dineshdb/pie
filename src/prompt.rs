@@ -58,7 +58,6 @@ impl<'a> SystemPromptCtx<'a> {
 
         let (date, pwd, os, arch, hostname) = SystemPrompt::env_vars();
         let pwd = AnonymizedPath::from(pwd);
-
         let repo_root_real = git_repo_root();
         let project_files = if let Some(ref root) = repo_root_real {
             discover_project_files(root)
