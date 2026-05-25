@@ -25,7 +25,6 @@ use std::borrow::Cow;
 define_secrets! {
     // --- Infrastructure & Cloud ---
     "AWS Access Key ID" => r"\b(AKIA)[0-9A-Z]{16}\b",
-    "AWS Secret Access Key" => r"\b[0-9a-zA-Z+]{40}\b",
     "Google API Key" => r"\b(AIza)[0-9A-Za-z\-_]{35}\b",
     "Azure Storage Account Key" => r"\b([a-zA-Z0-9+/]{86}==)\b",
     "Azure DevOps Token" => r"\b([a-z0-9]{52})\b",
@@ -72,6 +71,53 @@ define_secrets! {
     "Generic API Key" => r"(?i)\b((?:api[_-]?key|token|secret|password|credential)[\s:=]+)[a-zA-Z0-9\-_]{8,}\b",
 }
 
+/// A secret defined purely by word length — no fixed prefix, so `\b` isn't reliable
+/// (the character class may include non-`\w` chars like `+`).
+/// Instead we tokenize into words (maximal sequences of allowed chars), then
+/// check length. This prevents matching across `/`-delimited path components.
+struct LengthSecret {
+    name: &'static str,
+    length: usize,
+}
+
+const LENGTH_SECRETS: &[LengthSecret] = &[LengthSecret {
+    name: "AWS Secret Access Key",
+    length: 40,
+}];
+
+/// Regex matching maximal sequences of allowed base64 characters.
+static LENGTH_WORD_REGEX: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"[0-9a-zA-Z+]+").expect("Invalid word regex"));
+
+/// Find length-based matches and redact them.
+fn redact_lengths<'a>(text: &'a str) -> Cow<'a, str> {
+    let re = &LENGTH_WORD_REGEX;
+    let mut result = String::new();
+    let mut last_end = 0;
+
+    for m in re.find_iter(text) {
+        let word = m.as_str();
+        let word_len = word.len();
+
+        let matched = LENGTH_SECRETS.iter().find(|s| s.length == word_len);
+
+        result.push_str(&text[last_end..m.start()]);
+        if matched.is_some() {
+            result.push_str(&"x".repeat(word_len));
+        } else {
+            result.push_str(word);
+        }
+        last_end = m.end();
+    }
+
+    if last_end == 0 {
+        Cow::Borrowed(text)
+    } else {
+        result.push_str(&text[last_end..]);
+        Cow::Owned(result)
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SecretMatch {
     pub kind: &'static str,
@@ -100,16 +146,41 @@ pub fn scan(text: &str) -> Vec<SecretMatch> {
             found_ranges.push(range);
         }
     }
+
+    // Also scan for length-based secrets
+    for m in LENGTH_WORD_REGEX.find_iter(text) {
+        let word = m.as_str();
+        for secret in LENGTH_SECRETS {
+            if word.len() == secret.length {
+                let range = m.range();
+                if !found_ranges
+                    .iter()
+                    .any(|r: &std::ops::Range<usize>| r.start <= range.start && r.end >= range.end)
+                {
+                    matches.push(SecretMatch {
+                        kind: secret.name,
+                        value: word.to_string(),
+                    });
+                    found_ranges.push(range);
+                }
+            }
+        }
+    }
+
     matches
 }
 
 pub fn redact<'a>(text: &'a str) -> Cow<'a, str> {
-    let set_matches = SECRET_REGEX_SET.matches(text);
+    // Step 1: length-based — tokenize into words, match by length
+    let after_lengths = redact_lengths(text);
+
+    // Step 2: regex-based — for prefix-based patterns (sk-, AKIA, etc.)
+    let set_matches = SECRET_REGEX_SET.matches(&after_lengths);
     if !set_matches.matched_any() {
-        return Cow::Borrowed(text);
+        return after_lengths;
     }
 
-    let mut redacted: Cow<'a, str> = Cow::Borrowed(text);
+    let mut redacted: Cow<'_, str> = after_lengths;
     for idx in set_matches.into_iter() {
         let (_kind, re) = &SECRET_REGEXES[idx];
         let result = re.replace_all(&redacted, |caps: &regex::Captures| {
@@ -213,5 +284,42 @@ mod tests {
             redacted,
             "sk-or-v1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
         );
+    }
+
+    #[test]
+    fn test_aws_secret_length_based() {
+        // 40-char alphanumeric word → should be redacted
+        let text = "my key is abcdefghijklmnopqrstuvwxyz0123456789abcd";
+        let redacted = redact(text);
+        assert_eq!(
+            redacted,
+            "my key is xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        );
+    }
+
+    #[test]
+    fn test_path_not_redacted_by_aws_secret() {
+        // Path with username and slashes — no single word is 40 chars
+        let text = "/Users/dineshbhattarai/src/dineshdb/pie/src/handler.rs";
+        let redacted = redact(text);
+        assert_eq!(redacted, text);
+    }
+
+    #[test]
+    fn test_short_word_not_redacted() {
+        // 15-char word (dineshbhattarai) — not 40, should stay
+        let text = "user dineshbhattarai logged in";
+        let redacted = redact(text);
+        assert_eq!(redacted, text);
+    }
+
+    #[test]
+    fn test_40_char_word_in_path_segment_redacted() {
+        // A single 40-char path segment — extremely unlikely but if it happens,
+        // it's probably a secret
+        let text = "/home/abcdefghijklmnopqrstuvwxyz0123456789abcd/file";
+        let expected = "/home/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/file";
+        let redacted = redact(text);
+        assert_eq!(redacted, expected);
     }
 }
