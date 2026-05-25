@@ -3,8 +3,7 @@ use crate::config::CONFIG;
 use crate::error::{AppError, Result};
 use crate::instructions::Instructions;
 use crate::plugin::{
-    DeveloperPlugin, HelperBinariesPlugin, PermissionRequest, PersistencePlugin, UserCommandPlugin,
-    WebsearchPlugin,
+    HelperBinariesPlugin, PermissionRequest, PersistencePlugin, UserCommandPlugin, WebsearchPlugin,
 };
 use crate::prompt::SystemPrompt;
 use crate::registry::Registry;
@@ -12,6 +11,7 @@ use crate::session::{HistoryContent, Session};
 use agentsdk::core::Sandbox;
 use agentsdk::{Agent as SdkAgent, MemoryHistoryPlugin, Message};
 use agentsdk_plugin_fs::FileSystemPlugin;
+use agentsdk_plugin_jewels::JewelsPlugin;
 use agentsdk_plugin_shell::ShellPlugin;
 use agentsdk_plugin_skills::SkillsPlugin;
 use futures::future::BoxFuture;
@@ -223,7 +223,7 @@ impl PieAgent {
             let grants = self.resolve_grants();
             builder = builder
                 .plugin(history_plugin.clone())
-                .plugin(crate::plugin::JewelsPlugin::new())
+                .plugin(JewelsPlugin::new())
                 .plugin(crate::plugin::EmbeddedSystemPromptPlugin::new(
                     include_str!("../../.pie/SYSTEM.md"),
                 ))
@@ -245,7 +245,6 @@ impl PieAgent {
                 .plugin(PersistencePlugin::new(self.session.clone()))
                 .plugin(ShellPlugin::new())
                 .plugin(WebsearchPlugin::new())
-                .plugin(DeveloperPlugin::new())
                 .plugin(HelperBinariesPlugin::new())
                 .plugin(UserCommandPlugin::new(
                     self.registry.clone(),

@@ -307,7 +307,7 @@ fn execute_shell_direct(
                 } else {
                     format!("{stdout}\n\nError:\n{stderr}")
                 };
-                crate::plugin::JewelsPlugin::redact(&crate::utils::anonymize_path(&combined))
+                jewels::redact(&crate::utils::anonymize_path(&combined)).into_owned()
             }
             Err(e) => format!("Failed to execute command: {e}"),
         };

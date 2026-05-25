@@ -88,7 +88,7 @@ impl AgentPlugin for StreamPlugin {
         let output = if name == "websearch" {
             output
         } else {
-            crate::plugin::JewelsPlugin::redact(&crate::utils::anonymize_path(&output))
+            jewels::redact(&crate::utils::anonymize_path(&output)).into_owned()
         };
 
         let _ = self.event_tx.send(AgentEvent::ToolCall {

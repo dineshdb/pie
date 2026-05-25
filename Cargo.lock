@@ -65,6 +65,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentsdk-plugin-jewels"
+version = "0.1.0"
+dependencies = [
+ "agentsdk",
+ "async-trait",
+ "jewels",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "agentsdk-plugin-shell"
 version = "0.1.0"
 dependencies = [
@@ -2433,6 +2444,7 @@ dependencies = [
  "agentsdk",
  "agentsdk-plugin-agentsmd",
  "agentsdk-plugin-fs",
+ "agentsdk-plugin-jewels",
  "agentsdk-plugin-shell",
  "agentsdk-plugin-skills",
  "anyhow",

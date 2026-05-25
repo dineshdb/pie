@@ -1,5 +1,3 @@
-// ── Sandbox execution helpers ──────────────────────────────────────────
-
 fn default_bin_dirs() -> Vec<std::path::PathBuf> {
     let mut dirs = vec![crate::config::pie_home().join("bin")];
     if let Some(git_root) = crate::utils::git_repo_root() {
