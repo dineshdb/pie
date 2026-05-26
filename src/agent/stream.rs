@@ -87,7 +87,7 @@ impl AgentPlugin for StreamPlugin {
                 } else {
                     value.to_string()
                 };
-                if name == "websearch" {
+                if name == "web_search" {
                     text
                 } else {
                     jewels::redact(&crate::utils::anonymize_path(&text)).into_owned()

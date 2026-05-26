@@ -3,14 +3,20 @@ use async_trait::async_trait;
 use std::borrow::Cow;
 
 pub fn build_agentsmd_plugin() -> anyhow::Result<agentsdk_plugin_agentsmd::AgentsMdPlugin> {
-    let mut search_paths = vec![format!(
-        "{}/AGENTS.md",
-        crate::config::pie_home().to_string_lossy()
-    )];
+    let pie_home = crate::config::pie_home().to_string_lossy().to_string();
+    let mut search_paths = vec![
+        format!("{pie_home}/AGENTS.md"),
+        format!("{pie_home}/GEMINI.md"),
+        format!("{pie_home}/CLAUDE.md"),
+    ];
     if let Some(root) = crate::utils::git_repo_root() {
         search_paths.push(format!("{root}/AGENTS.md"));
+        search_paths.push(format!("{root}/GEMINI.md"));
+        search_paths.push(format!("{root}/CLAUDE.md"));
     }
     search_paths.push("AGENTS.md".into());
+    search_paths.push("AGENTS.md".into());
+    search_paths.push("CLAUDE.md".into());
     agentsdk_plugin_agentsmd::AgentsMdPlugin::builder()
         .search_paths(search_paths)
         .build()
