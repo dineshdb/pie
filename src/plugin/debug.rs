@@ -166,18 +166,30 @@ impl AgentPlugin for DebugPlugin {
             return None;
         }
 
-        let mut content = String::new();
+        let mut assistant_msgs = String::new();
+        let mut user_msgs = String::new();
         for msg in &new_msgs {
             use std::fmt::Write;
-            if let agentsdk::core::messages::Message::AssistantMessage(a) = msg
-                && let Some(text) = &a.content
-            {
-                let _ = writeln!(content, "- {text}");
+            match msg {
+                agentsdk::core::messages::Message::AssistantMessage(a) => {
+                    if let Some(text) = &a.content {
+                        let _ = writeln!(assistant_msgs, "- {text}");
+                    }
+                }
+                agentsdk::core::messages::Message::UserMessage(_) => {
+                    if let Some(text) = agentsdk::core::messages::extract_user_text(msg) {
+                        let _ = writeln!(user_msgs, "- {text}");
+                    }
+                }
+                _ => {}
             }
         }
 
-        if !content.is_empty() {
-            self.append_debug("Assistant Messages", &content);
+        if !user_msgs.is_empty() {
+            self.append_debug("User Messages", &user_msgs);
+        }
+        if !assistant_msgs.is_empty() {
+            self.append_debug("Assistant Messages", &assistant_msgs);
         }
         None
     }

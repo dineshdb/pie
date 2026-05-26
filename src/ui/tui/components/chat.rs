@@ -2,6 +2,7 @@
 //!
 //! Owns the message list, render cache, scroll state, and streaming response tracking.
 
+use crate::plugin::AgentMode;
 use crate::registry::Registry;
 use crate::ui::tui::realm::{Msg, StreamEvent};
 use crate::ui::tui::state::ChatMessage;
@@ -415,6 +416,16 @@ impl ChatComponent {
                     format!("{display} → {result_line}")
                 };
                 self.add_message(ChatMessage::tool(&content));
+
+                if name == "switch_mode"
+                    && !output.is_empty()
+                    && let Ok(val) = serde_json::from_str::<serde_json::Value>(output)
+                    && let Some(mode_str) = val.get("mode").and_then(serde_json::Value::as_str)
+                    && let Ok(mode) = mode_str.parse::<AgentMode>()
+                {
+                    return Msg::ModeChanged(mode);
+                }
+
                 Msg::Redraw
             }
             StreamEvent::ModelList(models) => {

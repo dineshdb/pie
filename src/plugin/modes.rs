@@ -1,10 +1,11 @@
 use agentsdk::core::agent::PreToolAction;
-use agentsdk::core::messages::{self, Message};
+use agentsdk::core::messages::Message;
 use agentsdk::core::plugin::{AgentPlugin, PluginContext};
 use agentsdk::openai::api::types::ChatCompletionRequestUserMessageContent;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
+use std::borrow::Cow;
 use std::path::PathBuf;
 use std::str::FromStr;
 use strum::{Display, EnumString};
@@ -139,14 +140,12 @@ fn split_frontmatter(raw: &str) -> (String, String) {
 
 pub struct ModePlugin {
     pub mode: AgentMode,
-    pending_switch: Option<AgentMode>,
 }
 
 impl Default for ModePlugin {
     fn default() -> Self {
         Self {
             mode: AgentMode::Build,
-            pending_switch: None,
         }
     }
 }
@@ -154,29 +153,12 @@ impl Default for ModePlugin {
 impl ModePlugin {
     #[allow(dead_code)]
     pub fn new(mode: AgentMode) -> Self {
-        Self {
-            mode,
-            pending_switch: None,
-        }
+        Self { mode }
     }
 
     #[allow(dead_code)]
     pub fn current_mode(&self) -> AgentMode {
         self.mode
-    }
-
-    fn inject_instructions(&self, ctx: &mut PluginContext) {
-        let Some(mode_file) = load_mode_file(self.mode) else {
-            return;
-        };
-        if let Some(mut history) = ctx.get_mut::<agentsdk::core::history::History>() {
-            history.0.push(messages::system(format!(
-                "# Mode: {}\n\n{}\n\n## Tool Restrictions\n{}",
-                self.mode.short_name(),
-                mode_file.body,
-                mode_file.tool_restrictions,
-            )));
-        }
     }
 }
 
@@ -209,14 +191,25 @@ impl AgentPlugin for ModePlugin {
     }
 
     async fn on_iteration_start(&mut self, ctx: &mut PluginContext, iteration: usize) {
-        if iteration == 0 {
-            if let Some(history) = ctx.get::<agentsdk::core::history::History>()
-                && let Some(mode) = detect_mode_from_history(&history.0)
-            {
-                self.mode = mode;
-            }
-            self.inject_instructions(ctx);
+        if iteration == 0
+            && let Some(history) = ctx.get::<agentsdk::core::history::History>()
+            && let Some(mode) = detect_mode_from_history(&history.0)
+        {
+            self.mode = mode;
         }
+    }
+
+    async fn prepare_system_prompt(
+        &mut self,
+        _ctx: &mut PluginContext,
+    ) -> Option<Cow<'static, str>> {
+        let mode_file = load_mode_file(self.mode)?;
+        Some(Cow::Owned(format!(
+            "# Mode: {}\n\n{}\n\n## Tool Restrictions\n{}",
+            self.mode.short_name(),
+            mode_file.body,
+            mode_file.tool_restrictions,
+        )))
     }
 
     async fn on_tool_pre_execute(
@@ -263,17 +256,13 @@ impl AgentPlugin for ModePlugin {
             .parse()
             .map_err(|e: strum::ParseError| e.to_string())?;
         if new_mode == self.mode {
-            return Ok(serde_json::json!({
-                "status": "already_active",
-                "mode": self.mode.short_name(),
-                "message": format!("Already in {} mode", self.mode),
-            }));
+            return Ok(Value::Null);
         }
-        self.pending_switch = Some(new_mode);
+        self.mode = new_mode;
         Ok(serde_json::json!({
-            "status": "switching",
-            "mode": new_mode.short_name(),
-            "message": format!("Switching to {} mode on next iteration", new_mode),
+            "status": "switched",
+            "mode": self.mode.short_name(),
+            "message": format!("Switched to {} mode", self.mode),
         }))
     }
 }
@@ -305,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_mode_marker() {
-        let sys = messages::system(AgentMode::Plan.system_marker());
+        let sys = agentsdk::core::messages::system(AgentMode::Plan.system_marker());
         let detected = detect_mode_from_history(&[sys]);
         assert_eq!(detected, Some(AgentMode::Plan));
     }

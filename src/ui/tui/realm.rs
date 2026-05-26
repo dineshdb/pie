@@ -1,3 +1,4 @@
+use crate::plugin::AgentMode;
 use std::future::Future;
 use tuirealm::application::Application;
 use tuirealm::event::{Event, KeyEvent};
@@ -50,6 +51,8 @@ pub enum Msg {
     Redraw,
     /// Cycle to the next mode (Ctrl+K).
     ToggleMode,
+    /// Agent called `switch_mode` tool — update the UI mode bar.
+    ModeChanged(AgentMode),
 }
 
 /// Bridges tokio mpsc events into tuirealm's `SyncPort` system.

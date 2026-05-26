@@ -191,6 +191,10 @@ fn process_msg(
             }
         }
 
+        Msg::ModeChanged(mode) => {
+            input.mode = mode;
+        }
+
         _ => {}
     }
     None
@@ -295,6 +299,8 @@ fn handle_mode_command(args: Option<&str>, app: &mut App, input: &mut InputCompo
             let _ = session.add_system(&mode.system_marker()).await;
         }
     });
+
+    input.mode = mode;
 
     if let Some(chat) = chat_mut!(app) {
         chat.add_message(ChatMessage::system(&format!(
