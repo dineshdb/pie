@@ -49,6 +49,7 @@ impl HelpOverlay<'_> {
             ("Up/Down", "           Navigate history"),
             ("Page Up/Down", "     Scroll messages"),
             ("Ctrl-T", "             Toggle plan list (Full / Compact)"),
+            ("Ctrl-K", "             Cycle mode (plan/build/debug/...)"),
             ("Esc", "               Close dialog / Cancel"),
         ];
         for (key, desc) in keys {

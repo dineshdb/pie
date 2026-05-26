@@ -3,15 +3,19 @@ use agentsdk::core::messages::{self, Message};
 use agentsdk::core::plugin::{AgentPlugin, PluginContext};
 use agentsdk::openai::api::types::ChatCompletionRequestUserMessageContent;
 use async_trait::async_trait;
+use serde::Deserialize;
 use serde_json::Value;
+use std::path::PathBuf;
 use std::str::FromStr;
+use strum::{Display, EnumString};
 
 const MODE_MARKER_PREFIX: &str = "[mode:";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Display, EnumString)]
+#[strum(serialize_all = "snake_case", ascii_case_insensitive)]
 pub enum AgentMode {
-    #[default]
     Plan,
+    #[default]
     Build,
     Debug,
     Test,
@@ -31,7 +35,7 @@ impl AgentMode {
         ]
     }
 
-    pub fn short_name(&self) -> &'static str {
+    pub fn short_name(self) -> &'static str {
         match self {
             Self::Plan => "plan",
             Self::Build => "build",
@@ -42,81 +46,99 @@ impl AgentMode {
         }
     }
 
-    pub fn description(&self) -> &'static str {
+    pub fn next(self) -> Self {
         match self {
-            Self::Plan => "Analysis mode — read files only, no modifications",
-            Self::Build => "Full access — all tools available",
-            Self::Debug => "Debug mode — read and execute commands, no file writes",
-            Self::Test => "Test mode — focus on writing and running tests",
-            Self::Review => "Review mode — read-only code review",
-            Self::Architect => "Architect mode — high-level design, no implementation",
+            Self::Plan => Self::Build,
+            Self::Build => Self::Debug,
+            Self::Debug => Self::Test,
+            Self::Test => Self::Review,
+            Self::Review => Self::Architect,
+            Self::Architect => Self::Plan,
         }
-    }
-
-    pub fn tool_restrictions(&self) -> &'static str {
-        match self {
-            Self::Plan => "Blocked: Write, Edit, Bash",
-            Self::Build => "No restrictions",
-            Self::Debug => "Blocked: Write, Edit",
-            Self::Test => "No restrictions",
-            Self::Review => "Blocked: Write, Edit, Bash",
-            Self::Architect => "Blocked: Write, Edit, Bash",
-        }
-    }
-
-    pub fn marker(&self) -> String {
-        format!("{}{}]", MODE_MARKER_PREFIX, self.short_name())
     }
 
     /// Persistent marker stored in session history.
-    /// Compact on purpose — the system prompt defines what each marker means.
-    pub fn system_marker(&self) -> String {
-        format!("[mode:{}] {}", self.short_name(), self.description())
+    pub fn system_marker(self) -> String {
+        format!("[mode:{}]", self.short_name())
     }
 
-    fn is_tool_blocked(&self, name: &str) -> bool {
+    fn file_name(self) -> String {
+        format!("{}.md", self.short_name())
+    }
+
+    fn is_tool_blocked(self, name: &str) -> bool {
         match self {
-            Self::Plan | Self::Review | Self::Architect => {
-                matches!(name, "Write" | "Edit" | "Bash")
-            }
-            Self::Debug => matches!(name, "Write" | "Edit"),
+            Self::Plan | Self::Debug => matches!(name, "Write" | "Edit"),
+            Self::Review | Self::Architect => matches!(name, "Write" | "Edit" | "Bash"),
             Self::Build | Self::Test => false,
         }
     }
 }
 
-impl FromStr for AgentMode {
-    type Err = String;
+#[derive(Debug, Deserialize)]
+struct ModeFrontmatter {
+    description: String,
+    #[serde(default = "default_tool_restrictions")]
+    tool_restrictions: String,
+}
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.trim().to_lowercase().as_str() {
-            "plan" => Ok(Self::Plan),
-            "build" => Ok(Self::Build),
-            "debug" => Ok(Self::Debug),
-            "test" => Ok(Self::Test),
-            "review" => Ok(Self::Review),
-            "architect" => Ok(Self::Architect),
-            _ => Err(format!(
-                "Unknown mode '{}'. Available: {}",
-                s,
-                Self::all()
-                    .iter()
-                    .map(|m| m.short_name())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )),
+fn default_tool_restrictions() -> String {
+    "None".to_string()
+}
+
+#[derive(Debug)]
+pub struct ModeFile {
+    pub description: String,
+    pub tool_restrictions: String,
+    pub body: String,
+}
+
+/// Resolve a mode file path: local `.pie/modes/` first, fall back to global.
+fn resolve_mode_path(name: &str) -> Option<PathBuf> {
+    // local repo
+    if let Some(root) = crate::utils::git_repo_root() {
+        let local = PathBuf::from(root).join(".pie").join("modes").join(name);
+        if local.is_file() {
+            return Some(local);
         }
     }
+    // global
+    let global = crate::config::pie_home().join("modes").join(name);
+    if global.is_file() {
+        return Some(global);
+    }
+    None
 }
 
-impl std::fmt::Display for AgentMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.short_name())
-    }
+pub fn load_mode_file(mode: AgentMode) -> Option<ModeFile> {
+    let path = resolve_mode_path(&mode.file_name())?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    let (yaml, body) = split_frontmatter(&raw);
+    let fm: ModeFrontmatter = serde_yaml::from_str(&yaml).ok()?;
+    let body = body.trim().to_string();
+    Some(ModeFile {
+        description: fm.description,
+        tool_restrictions: fm.tool_restrictions,
+        body,
+    })
 }
+
+fn split_frontmatter(raw: &str) -> (String, String) {
+    let raw = raw.trim();
+    if let Some(rest) = raw.strip_prefix("---")
+        && let Some(end) = rest.find("\n---")
+    {
+        let yaml = rest[..end].trim().to_string();
+        let body = rest[end + 4..].trim().to_string();
+        return (yaml, body);
+    }
+    (String::new(), raw.to_string())
+}
+
+// ── ModePlugin ───────────────────────────────────────────────────
 
 pub struct ModePlugin {
-    mode: AgentMode,
+    pub mode: AgentMode,
     pending_switch: Option<AgentMode>,
 }
 
@@ -130,6 +152,7 @@ impl Default for ModePlugin {
 }
 
 impl ModePlugin {
+    #[allow(dead_code)]
     pub fn new(mode: AgentMode) -> Self {
         Self {
             mode,
@@ -137,17 +160,26 @@ impl ModePlugin {
         }
     }
 
-    /// Request a mode switch. Takes effect at the start of the next iteration.
-    pub fn request_switch(&mut self, mode: AgentMode) {
-        self.pending_switch = Some(mode);
-    }
-
+    #[allow(dead_code)]
     pub fn current_mode(&self) -> AgentMode {
         self.mode
     }
+
+    fn inject_instructions(&self, ctx: &mut PluginContext) {
+        let Some(mode_file) = load_mode_file(self.mode) else {
+            return;
+        };
+        if let Some(mut history) = ctx.get_mut::<agentsdk::core::history::History>() {
+            history.0.push(messages::system(format!(
+                "# Mode: {}\n\n{}\n\n## Tool Restrictions\n{}",
+                self.mode.short_name(),
+                mode_file.body,
+                mode_file.tool_restrictions,
+            )));
+        }
+    }
 }
 
-/// Extract the last mode marker from conversation history.
 fn detect_mode_from_history(history: &[Message]) -> Option<AgentMode> {
     for msg in history.iter().rev() {
         let content: Option<&str> = match msg {
@@ -177,26 +209,13 @@ impl AgentPlugin for ModePlugin {
     }
 
     async fn on_iteration_start(&mut self, ctx: &mut PluginContext, iteration: usize) {
-        // Handle pending switch from a tool call
-        if let Some(new_mode) = self.pending_switch.take() {
-            self.mode = new_mode;
-            if let Some(mut history) = ctx.get_mut::<agentsdk::core::history::History>() {
-                history.0.push(messages::user(format!(
-                    "[Mode: {}]\n\n{}",
-                    new_mode,
-                    new_mode.description()
-                )));
-            }
-            return;
-        }
-
-        // On first iteration, detect mode from session history markers
         if iteration == 0 {
-            if let Some(history) = ctx.get::<agentsdk::core::history::History>() {
-                if let Some(mode) = detect_mode_from_history(&history.0) {
-                    self.mode = mode;
-                }
+            if let Some(history) = ctx.get::<agentsdk::core::history::History>()
+                && let Some(mode) = detect_mode_from_history(&history.0)
+            {
+                self.mode = mode;
             }
+            self.inject_instructions(ctx);
         }
     }
 
@@ -208,17 +227,17 @@ impl AgentPlugin for ModePlugin {
         _args: &Value,
     ) -> PreToolAction {
         if self.mode.is_tool_blocked(name) {
+            let restrictions = load_mode_file(self.mode)
+                .map(|f| f.tool_restrictions)
+                .unwrap_or_default();
             return PreToolAction::Abort(format!(
                 "{} is not allowed in {} mode. Tool restrictions: {}",
-                name,
-                self.mode,
-                self.mode.tool_restrictions()
+                name, self.mode, restrictions
             ));
         }
         PreToolAction::Proceed(None)
     }
 
-    /// Provide tool which LLM can call to switch modes.
     fn tools(&self) -> Vec<agentsdk::core::tools::ToolDefinition> {
         use agentsdk::core::tools::ToolDefinition;
         vec![ToolDefinition {
@@ -239,7 +258,10 @@ impl AgentPlugin for ModePlugin {
     ) -> Result<Value, String> {
         let input: SwitchModeInput = serde_json::from_value(call.arguments.clone())
             .map_err(|e| format!("Invalid input: {e}"))?;
-        let new_mode: AgentMode = input.mode.parse().map_err(|e: String| e)?;
+        let new_mode: AgentMode = input
+            .mode
+            .parse()
+            .map_err(|e: strum::ParseError| e.to_string())?;
         if new_mode == self.mode {
             return Ok(serde_json::json!({
                 "status": "already_active",
@@ -256,9 +278,8 @@ impl AgentPlugin for ModePlugin {
     }
 }
 
-#[derive(serde::Deserialize, agentsdk::__private::schemars::JsonSchema)]
+#[derive(Deserialize, agentsdk::__private::schemars::JsonSchema)]
 struct SwitchModeInput {
-    /// Mode to switch to: plan, build, debug, test, review, architect
     mode: String,
 }
 
@@ -278,11 +299,13 @@ mod tests {
             AgentMode::Architect
         );
         assert!("unknown".parse::<AgentMode>().is_err());
+        assert_eq!("PLAN".parse::<AgentMode>().unwrap(), AgentMode::Plan);
+        assert_eq!("Build".parse::<AgentMode>().unwrap(), AgentMode::Build);
     }
 
     #[test]
     fn test_mode_marker() {
-        let sys = messages::system(&AgentMode::Plan.system_marker());
+        let sys = messages::system(AgentMode::Plan.system_marker());
         let detected = detect_mode_from_history(&[sys]);
         assert_eq!(detected, Some(AgentMode::Plan));
     }
@@ -300,5 +323,26 @@ mod tests {
 
         assert!(AgentMode::Debug.is_tool_blocked("Write"));
         assert!(!AgentMode::Debug.is_tool_blocked("Bash"));
+    }
+
+    #[test]
+    fn test_mode_next_cycle() {
+        assert_eq!(AgentMode::Plan.next(), AgentMode::Build);
+        assert_eq!(AgentMode::Architect.next(), AgentMode::Plan);
+    }
+
+    #[test]
+    fn test_split_frontmatter() {
+        let raw = "---\ndescription: test\ntool_restrictions: none\n---\nbody text";
+        let (yaml, body) = split_frontmatter(raw);
+        assert!(yaml.contains("description: test"));
+        assert_eq!(body, "body text");
+    }
+
+    #[test]
+    fn test_split_frontmatter_no_frontmatter() {
+        let (yaml, body) = split_frontmatter("just body text");
+        assert!(yaml.is_empty());
+        assert_eq!(body, "just body text");
     }
 }

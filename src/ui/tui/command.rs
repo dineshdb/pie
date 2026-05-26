@@ -61,6 +61,7 @@ impl Command {
                 BuiltinCommand::Help => CommandAction::Help,
                 BuiltinCommand::Quit => CommandAction::Quit,
                 BuiltinCommand::Model => CommandAction::Model(args),
+                BuiltinCommand::Mode => CommandAction::Mode(args),
                 BuiltinCommand::Skills => {
                     let text = build_skills_list(registry);
                     CommandAction::AddMessage(ChatMessage::system(&text))
@@ -81,6 +82,7 @@ pub enum CommandAction {
     Stream(String),
     Shell(String),
     Model(Option<String>),
+    Mode(Option<String>),
     Help,
     Quit,
 }

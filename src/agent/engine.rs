@@ -2,7 +2,8 @@ use crate::agent::AgentEvent;
 use crate::config::CONFIG;
 use crate::error::{AppError, Result};
 use crate::plugin::{
-    HelperBinariesPlugin, PermissionRequest, PersistencePlugin, UserCommandPlugin, WebsearchPlugin,
+    HelperBinariesPlugin, ModePlugin, PermissionRequest, PersistencePlugin, UserCommandPlugin,
+    WebsearchPlugin,
 };
 use crate::prompt::SystemPrompt;
 use crate::registry::Registry;
@@ -204,6 +205,7 @@ impl PieAgent {
             builder = builder
                 .plugin(history_plugin.clone())
                 .plugin(JewelsPlugin::new())
+                .plugin(ModePlugin::default())
                 .plugin(crate::plugin::EmbeddedSystemPromptPlugin::new(
                     include_str!("../../.pie/SYSTEM.md"),
                 ))

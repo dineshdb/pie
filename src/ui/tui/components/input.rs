@@ -4,6 +4,7 @@
 //! Only `ChatComponent` is the active tuirealm component.
 
 use crate::config::{ProviderConfig, ResolvedProvider, pie_home};
+use crate::plugin::AgentMode;
 use crate::registry::Registry;
 use crate::session::{Session, SessionId};
 use crate::ui::tui::realm::{Msg, StreamEvent};
@@ -16,7 +17,7 @@ use crate::ui::tui::widgets::input::{InputView, cursor_position};
 use p1e_sandbox::SandboxConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tachyonfx::{CellFilter, EffectManager, fx};
 use tokio::sync::mpsc;
 use tui_textarea::{Input as TaInput, Key as TaKey, TextArea};
@@ -48,6 +49,9 @@ pub struct InputComponent {
     last_query: Option<String>,
     pub registry: Arc<Registry>,
     pub pending_permissions: PendingPermissions,
+    pub mode: AgentMode,
+    pub pending_mode_toggles: u8,
+    pub mode_toggle_deadline: Option<Instant>,
 }
 
 impl InputComponent {
@@ -97,6 +101,9 @@ impl InputComponent {
             last_query: None,
             registry,
             pending_permissions,
+            mode: AgentMode::Build,
+            pending_mode_toggles: 0,
+            mode_toggle_deadline: None,
         }
     }
 
@@ -267,6 +274,13 @@ impl InputComponent {
             return Some(Msg::Quit);
         }
 
+        if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, Key::Char('k')) {
+            self.mode = self.mode.next();
+            self.pending_mode_toggles += 1;
+            self.mode_toggle_deadline = Some(Instant::now() + Duration::from_millis(200));
+            return Some(Msg::ToggleMode);
+        }
+
         if matches!(key.code, Key::Enter)
             && !key.modifiers.contains(KeyModifiers::CONTROL)
             && !self.is_streaming()
@@ -412,7 +426,7 @@ impl InputComponent {
         // Update spinner frame
         if is_streaming {
             let elapsed = self.last_tick.elapsed();
-            if elapsed >= std::time::Duration::from_millis(80) {
+            if elapsed >= Duration::from_millis(80) {
                 self.spinner_frame = self.spinner_frame.wrapping_add(1);
                 self.last_tick = Instant::now();
             }

@@ -48,6 +48,8 @@ pub enum Msg {
     SwitchProviderAndModel(String, String),
     /// Trigger a UI redraw.
     Redraw,
+    /// Cycle to the next mode (Ctrl+K).
+    ToggleMode,
 }
 
 /// Bridges tokio mpsc events into tuirealm's `SyncPort` system.

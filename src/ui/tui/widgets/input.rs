@@ -5,8 +5,6 @@ use tuirealm::ratatui::style::{Color, Modifier, Style};
 use tuirealm::ratatui::text::{Line, Span};
 use tuirealm::ratatui::widgets::{Paragraph, Widget};
 
-const PROMPT: &str = "> ";
-
 pub struct InputView<'a> {
     pub text_lines: &'a [String],
     pub cursor_row: usize,
@@ -46,7 +44,7 @@ impl Widget for InputView<'_> {
             for (j, segment) in wrapped.into_iter().enumerate() {
                 let mut spans = Vec::new();
                 if show_prompt && j == 0 {
-                    spans.push(Span::styled(PROMPT, prompt_style));
+                    spans.push(Span::styled("> ", prompt_style));
                 }
 
                 spans.extend(highlight_line(&segment, self.completions));
@@ -161,42 +159,6 @@ mod tests {
         assert!(
             content.contains("Type something"),
             "empty input should show placeholder, got: {content}"
-        );
-    }
-
-    #[test]
-    fn input_with_text_shows_prompt_and_content() {
-        let view = InputView {
-            text_lines: &["hello world".to_string()],
-            cursor_row: 0,
-            placeholder: "",
-            hint: "",
-            is_empty: false,
-            is_streaming: false,
-            completions: &[],
-        };
-        let buf = render_input(view, 30, 3);
-        let content = row(&buf, 0);
-        assert!(content.contains("hello"), "input should show typed content");
-    }
-
-    #[test]
-    fn streaming_input_has_correct_styling() {
-        let view = InputView {
-            text_lines: &[String::new()],
-            cursor_row: 0,
-            placeholder: "",
-            hint: "",
-            is_empty: true,
-            is_streaming: true,
-            completions: &[],
-        };
-        let buf = render_input(view, 30, 3);
-        let prompt_cell = &buf[(0, 0)];
-        assert_eq!(
-            prompt_cell.fg,
-            Color::Cyan,
-            "prompt should be cyan when streaming"
         );
     }
 

@@ -15,6 +15,7 @@ use crate::ui::tui::components::chat::{ActiveDialog, ChatComponent, ModelSelecto
 use crate::ui::tui::components::input::InputComponent;
 use crate::ui::tui::realm::{App, Id, Msg, StreamEvent, StreamPort, run_sync};
 use crate::ui::tui::state::ChatMessage;
+use crate::ui::tui::widgets::mode_bar::ModeBar;
 use crate::ui::tui::widgets::status_bar::StatusBar;
 use anyhow::{Context, Result};
 use arboard::Clipboard;
@@ -49,6 +50,41 @@ macro_rules! chat_ref {
     };
 }
 
+/// Persist the current mode marker to session.
+fn apply_mode_toggle(input: &mut InputComponent, app: &mut App) {
+    input.pending_mode_toggles = 0;
+    input.mode_toggle_deadline = None;
+    let target = input.mode;
+    let session_id = input.session_id.clone();
+    let pool = input.session_pool.clone();
+    tokio::spawn(async move {
+        if let Ok(mut session) = Session::load(pool, session_id).await {
+            let _ = session.add_system(&target.system_marker()).await;
+        }
+    });
+    if let Some(chat) = chat_mut!(app) {
+        chat.add_message(ChatMessage::system(&format!(
+            "Switched to **{}** mode (Ctrl+K)",
+            target.short_name()
+        )));
+    }
+}
+
+/// Flush pending mode toggles: immediately for new messages,
+/// or after debounce deadline for idle waits.
+fn flush_pending_toggle(input: &mut InputComponent, app: &mut App, force: bool) {
+    if input.pending_mode_toggles == 0 {
+        return;
+    }
+    if !force
+        && let Some(deadline) = input.mode_toggle_deadline
+        && Instant::now() < deadline
+    {
+        return;
+    }
+    apply_mode_toggle(input, app);
+}
+
 /// Process a single message. Returns `Some(Msg::Quit)` if the app should exit.
 fn process_msg(
     msg: Msg,
@@ -56,6 +92,7 @@ fn process_msg(
     input: &mut InputComponent,
     tx: &mpsc::UnboundedSender<StreamEvent>,
 ) -> Option<Msg> {
+    flush_pending_toggle(input, app, true);
     match msg {
         Msg::Quit => return Some(Msg::Quit),
 
@@ -185,6 +222,9 @@ fn handle_submit(
         CommandAction::Model(name) => {
             handle_model_command(name, app, input, tx);
         }
+        CommandAction::Mode(args) => {
+            handle_mode_command(args.as_deref(), app, input);
+        }
         CommandAction::Help => {
             if let Some(chat) = chat_mut!(app) {
                 chat.set_help_dialog();
@@ -213,6 +253,56 @@ fn handle_submit(
         CommandAction::Quit => return Some(Msg::Quit),
     }
     None
+}
+
+fn handle_mode_command(args: Option<&str>, app: &mut App, input: &mut InputComponent) {
+    use crate::plugin::AgentMode;
+    use crate::plugin::modes::load_mode_file;
+
+    let Some(mode_name) = args.filter(|a| !a.is_empty()) else {
+        let modes = AgentMode::all()
+            .iter()
+            .filter_map(|m| {
+                let desc = load_mode_file(*m).map(|f| f.description)?;
+                Some(format!("  /mode {} — {}", m.short_name(), desc))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if let Some(chat) = chat_mut!(app) {
+            chat.add_message(ChatMessage::system(&format!("Available modes:\n{modes}")));
+        }
+        return;
+    };
+
+    let mode: AgentMode = match mode_name.parse() {
+        Ok(m) => m,
+        Err(e) => {
+            if let Some(chat) = chat_mut!(app) {
+                chat.add_message(ChatMessage::system(&format!("Error: {e}")));
+            }
+            return;
+        }
+    };
+
+    let desc =
+        load_mode_file(mode).map_or_else(|| mode.short_name().to_string(), |f| f.description);
+
+    // Persist mode marker to session — ModePlugin reads it on next init
+    let session_id = input.session_id.clone();
+    let pool = input.session_pool.clone();
+    tokio::spawn(async move {
+        if let Ok(mut session) = Session::load(pool, session_id).await {
+            let _ = session.add_system(&mode.system_marker()).await;
+        }
+    });
+
+    if let Some(chat) = chat_mut!(app) {
+        chat.add_message(ChatMessage::system(&format!(
+            "Next message will be in **{}** mode — {}",
+            mode.short_name(),
+            desc
+        )));
+    }
 }
 
 fn handle_model_command(
@@ -330,62 +420,18 @@ pub async fn run_tui(
     pie_config: PieConfig,
     registry: Arc<crate::registry::Registry>,
 ) -> Result<()> {
-    let mut terminal = tuirealm::ratatui::init();
-    terminal.clear()?;
-
-    // Needed so that `MouseEvents` don't get turned into keyboard events.
-    execute!(stdout(), EnableMouseCapture)?;
-
-    // Build initial messages
-    let mut messages = vec![ChatMessage::system("Welcome to pie! Type ? for help.")];
-    for entry in session.history_entries() {
-        let msg = match entry.role() {
-            Role::User => ChatMessage::user(&entry.content()),
-            Role::Assistant => ChatMessage::assistant(&entry.content()),
-            Role::System => ChatMessage::system(&entry.content()),
-            Role::Tool => ChatMessage::tool(&entry.content()),
-        };
-        messages.push(msg);
-    }
-
-    let (tx, rx) = mpsc::unbounded_channel::<StreamEvent>();
-    let listener_cfg = EventListenerCfg::<StreamEvent>::default()
-        .crossterm_input_listener(Duration::from_millis(10), 3)
-        .add_port(Box::new(StreamPort::new(rx)), Duration::from_millis(20), 1)
-        .tick_interval(Duration::from_millis(20));
-
-    let mut app = App::init(listener_cfg);
-
-    let pending_permissions = Arc::new(std::sync::Mutex::new(None));
-
-    let mut input = InputComponent::new(
+    let (mut terminal, mut app, mut input, tx) = setup_tui(
+        &session,
         model,
         provider,
-        &session,
         sandbox_settings,
         max_steps,
-        pie_config.provider.clone(),
-        registry.clone(),
-        pending_permissions.clone(),
-    );
-    let current_model = input.provider.model.clone();
-
-    app.mount(
-        Id::Chat,
-        Box::new(ChatComponent::new(
-            messages,
-            current_model,
-            registry,
-            pending_permissions,
-        )),
-        vec![],
+        &pie_config,
+        registry,
     )?;
-    app.active(&Id::Chat)?;
 
-    // Render initial frame immediately.
     let mut last_frame;
     let mut batch_buf: Vec<Msg> = Vec::with_capacity(32);
-    render(&mut app, &mut input, &mut terminal)?;
 
     loop {
         last_frame = Instant::now();
@@ -400,6 +446,9 @@ pub async fn run_tui(
 
         let mut exit = false;
         if batch.is_empty() && elapsed < 100_000 {
+            if input.pending_mode_toggles > 0 {
+                flush_pending_toggle(&mut input, &mut app, false);
+            }
             continue;
         }
         for msg in batch {
@@ -439,12 +488,84 @@ pub async fn run_tui(
             }
         }
 
+        if input.pending_mode_toggles > 0 {
+            flush_pending_toggle(&mut input, &mut app, false);
+        }
         render(&mut app, &mut input, &mut terminal)?;
         tracing::debug!(render = last_frame.elapsed().as_micros(), "render");
     }
 
     cleanup(&mut terminal);
     Ok(())
+}
+
+fn setup_tui(
+    session: &Session,
+    model: agentsdk::OpenAI,
+    provider: ResolvedProvider,
+    sandbox_settings: Arc<SandboxConfig>,
+    max_steps: u32,
+    pie_config: &PieConfig,
+    registry: Arc<crate::registry::Registry>,
+) -> Result<(
+    Terminal,
+    App,
+    InputComponent,
+    mpsc::UnboundedSender<StreamEvent>,
+)> {
+    let mut terminal = tuirealm::ratatui::init();
+    terminal.clear()?;
+
+    execute!(stdout(), EnableMouseCapture)?;
+
+    let mut messages = vec![ChatMessage::system("Welcome to pie! Type ? for help.")];
+    for entry in session.history_entries() {
+        let msg = match entry.role() {
+            Role::User => ChatMessage::user(&entry.content()),
+            Role::Assistant => ChatMessage::assistant(&entry.content()),
+            Role::System => ChatMessage::system(&entry.content()),
+            Role::Tool => ChatMessage::tool(&entry.content()),
+        };
+        messages.push(msg);
+    }
+
+    let (tx, rx) = mpsc::unbounded_channel::<StreamEvent>();
+    let listener_cfg = EventListenerCfg::<StreamEvent>::default()
+        .crossterm_input_listener(Duration::from_millis(10), 3)
+        .add_port(Box::new(StreamPort::new(rx)), Duration::from_millis(20), 1)
+        .tick_interval(Duration::from_millis(20));
+
+    let mut app = App::init(listener_cfg);
+
+    let pending_permissions = Arc::new(std::sync::Mutex::new(None));
+
+    let mut input = InputComponent::new(
+        model,
+        provider,
+        session,
+        sandbox_settings,
+        max_steps,
+        pie_config.provider.clone(),
+        registry.clone(),
+        pending_permissions.clone(),
+    );
+    let current_model = input.provider.model.clone();
+
+    app.mount(
+        Id::Chat,
+        Box::new(ChatComponent::new(
+            messages,
+            current_model,
+            registry,
+            pending_permissions,
+        )),
+        vec![],
+    )?;
+    app.active(&Id::Chat)?;
+
+    render(&mut app, &mut input, &mut terminal)?;
+
+    Ok((terminal, app, input, tx))
 }
 
 /// Restore terminal state: disable mouse capture, restore cooked mode.
@@ -464,8 +585,9 @@ fn render(app: &mut App, input: &mut InputComponent, terminal: &mut Terminal) ->
 
         let constraints = vec![
             Constraint::Min(5),               // Messages
-            Constraint::Length(1),            // Status Bar
+            Constraint::Length(1),            // Thinking Status Bar
             Constraint::Length(input_height), // Input
+            Constraint::Length(1),            // Mode Bar
         ];
 
         let chunks = Layout::default()
@@ -476,6 +598,7 @@ fn render(app: &mut App, input: &mut InputComponent, terminal: &mut Terminal) ->
         let messages_area = chunks.first().copied().unwrap_or(area);
         let status_bar_area = chunks.get(1).copied().unwrap_or(area);
         let input_area = chunks.get(2).copied().unwrap_or(area);
+        let mode_bar_area = chunks.get(3).copied().unwrap_or(area);
 
         app.view(&Id::Chat, f, messages_area);
 
@@ -484,6 +607,9 @@ fn render(app: &mut App, input: &mut InputComponent, terminal: &mut Terminal) ->
         let active_steps = InputComponent::active_steps(is_streaming);
         let status_bar = StatusBar::new(active_steps, is_streaming, input.spinner_frame);
         f.render_widget(status_bar, status_bar_area);
+
+        let mode_bar = ModeBar::new(input.mode, input.provider.model.clone());
+        f.render_widget(mode_bar, mode_bar_area);
 
         input.render(f, input_area, is_streaming);
     })?;

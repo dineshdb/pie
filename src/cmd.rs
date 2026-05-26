@@ -37,6 +37,7 @@ define_builtin_commands! {
     Help => ["/help", "/h"],
     Quit => ["/quit", "/exit", "/q"],
     Model => ["/model"],
+    Mode => ["/mode"],
     Skills => ["/skills", "/ls"],
     Clear => ["/clear"],
     New => ["/new"],
@@ -45,6 +46,7 @@ define_builtin_commands! {
 const HELP_DESC: &str = "Show help and available commands";
 const QUIT_DESC: &str = "Exit the application";
 const MODEL_DESC: &str = "Switch or view the current model";
+const MODE_DESC: &str = "Switch mode: plan, build, debug, test, review, architect";
 const SKILLS_DESC: &str = "List available commands and skills";
 const CLEAR_DESC: &str = "Start a new session";
 const NEW_DESC: &str = "Start a new session";
@@ -55,6 +57,7 @@ impl BuiltinCommand {
             Self::Help => HELP_DESC,
             Self::Quit => QUIT_DESC,
             Self::Model => MODEL_DESC,
+            Self::Mode => MODE_DESC,
             Self::Skills => SKILLS_DESC,
             Self::Clear => CLEAR_DESC,
             Self::New => NEW_DESC,
