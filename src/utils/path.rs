@@ -20,7 +20,7 @@ pub fn anonymize_path(path: &str) -> String {
 
 /// A newtype wrapper for paths that automatically anonymizes the home directory on creation.
 /// Transparently serializes to its string representation.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub struct AnonymizedPath(String);
 

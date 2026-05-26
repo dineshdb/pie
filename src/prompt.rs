@@ -3,7 +3,7 @@ use crate::registry::Skill;
 use crate::utils::{AnonymizedPath, git_repo_root};
 use anyhow::{Context, Result};
 use minijinja::Environment;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -14,6 +14,24 @@ static TEMPLATE_ENV: OnceLock<Environment<'static>> = OnceLock::new();
 fn template_env() -> &'static Environment<'static> {
     TEMPLATE_ENV.get_or_init(|| {
         let mut env = Environment::new();
+        env.add_filter(
+            "env_xml",
+            |value: minijinja::Value| -> Result<String, minijinja::Error> {
+                let json_str = serde_json::to_string(&value).map_err(|e| {
+                    minijinja::Error::new(
+                        minijinja::ErrorKind::BadSerialization,
+                        format!("env_xml serialize: {e}"),
+                    )
+                })?;
+                let ctx: ExtraContext = serde_json::from_str(&json_str).map_err(|e| {
+                    minijinja::Error::new(
+                        minijinja::ErrorKind::BadSerialization,
+                        format!("env_xml deserialize: {e}"),
+                    )
+                })?;
+                Ok(render_env_xml(&ctx))
+            },
+        );
         if let Err(e) = env.add_template("system_prompt", SYSTEM_PROMPT_TEMPLATE) {
             tracing::error!("invalid system prompt template: {e}");
         }
@@ -22,7 +40,7 @@ fn template_env() -> &'static Environment<'static> {
 }
 
 /// Context for static project and environment metadata.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ExtraContext {
     pub os: String,
     pub arch: String,
@@ -181,6 +199,66 @@ fn render_template<T: Serialize>(ctx: &T) -> Result<String> {
     template_obj
         .render(ctx)
         .map_err(|e| anyhow::anyhow!("Template render error: {e}"))
+}
+
+#[allow(clippy::format_push_string)]
+/// Render environment context as structured XML for the LLM.
+fn render_env_xml(ctx: &ExtraContext) -> String {
+    let mut xml = String::from("<env>\n");
+
+    xml.push_str(&format!("  <os>{}</os>\n", xml_escape(&ctx.os)));
+    xml.push_str(&format!("  <arch>{}</arch>\n", xml_escape(&ctx.arch)));
+    xml.push_str(&format!(
+        "  <hostname>{}</hostname>\n",
+        xml_escape(&ctx.hostname)
+    ));
+    xml.push_str(&format!("  <date>{}</date>\n", xml_escape(&ctx.date)));
+    xml.push_str(&format!(
+        "  <pwd>{}</pwd>\n",
+        xml_escape(&ctx.pwd.to_string())
+    ));
+
+    match &ctx.repo_root {
+        Some(root) => xml.push_str(&format!(
+            "  <repo>{}</repo>\n",
+            xml_escape(&root.to_string())
+        )),
+        None => xml.push_str("  <repo>(none)</repo>\n"),
+    }
+
+    if !ctx.project_files.is_empty() {
+        xml.push_str("  <project_files>\n");
+        for f in &ctx.project_files {
+            xml.push_str(&format!("    <file>{}</file>\n", xml_escape(f)));
+        }
+        xml.push_str("  </project_files>\n");
+    }
+
+    if !ctx.environment.is_empty() {
+        let mut pairs: Vec<_> = ctx.environment.iter().collect();
+        pairs.sort_by(|a, b| a.0.cmp(b.0));
+        xml.push_str("  <vars>\n");
+        for (k, v) in pairs {
+            xml.push_str(&format!(
+                "    <var name=\"{}\">{}</var>\n",
+                xml_escape(k),
+                xml_escape(v)
+            ));
+        }
+        xml.push_str("  </vars>\n");
+    }
+
+    xml.push_str("</env>");
+    xml
+}
+
+/// Minimal XML escaping for element content and attribute values.
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 #[cfg(test)]

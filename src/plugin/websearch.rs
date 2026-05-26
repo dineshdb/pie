@@ -20,10 +20,11 @@ impl WebsearchPlugin {
 
 #[derive(PluginTools, Serialize, Deserialize)]
 enum WebsearchTools {
-    /// Gather recent information from the internet.
+    /// Gather recent information from the internet. Use only for queries that can't be solved by other local tools.
     /// Use specific variation of the query first. if you don't find relevant answers, go for more generic and broader variation.
     /// User doesn't just want to search. Read few links, relevant pages then synthesize the result.
-    Search(WebsearchInput),
+    /// Using same query would always return same results.
+    WebSearch(WebsearchInput),
 }
 
 #[async_trait]
@@ -42,7 +43,7 @@ impl AgentPlugin for WebsearchPlugin {
         call: &PluginToolCall,
     ) -> Result<Value, String> {
         match WebsearchTools::from_call(call)? {
-            WebsearchTools::Search(input) => {
+            WebsearchTools::WebSearch(input) => {
                 let limit = input.limit.unwrap_or(5);
                 let limit = if limit == 0 { 5 } else { limit };
                 let quoted_query = shell_words::quote(&input.query);
