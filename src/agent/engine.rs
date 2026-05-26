@@ -1,13 +1,12 @@
 use crate::agent::AgentEvent;
 use crate::config::CONFIG;
 use crate::error::{AppError, Result};
-use crate::instructions::Instructions;
 use crate::plugin::{
     HelperBinariesPlugin, PermissionRequest, PersistencePlugin, UserCommandPlugin, WebsearchPlugin,
 };
 use crate::prompt::SystemPrompt;
 use crate::registry::Registry;
-use crate::session::{HistoryContent, Session};
+use crate::session::Session;
 use agentsdk::core::Sandbox;
 use agentsdk::{Agent as SdkAgent, MemoryHistoryPlugin, Message};
 use agentsdk_plugin_fs::FileSystemPlugin;
@@ -34,6 +33,7 @@ pub struct PieAgent {
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentConfig {
     pub agent_name: Option<String>,
+    #[allow(dead_code)]
     pub history_limit: u32,
     pub max_steps: u32,
     pub depth: u32,
@@ -99,29 +99,9 @@ impl PieAgent {
         grants
     }
 
-    fn merged_mentions(&self, query: &Instructions) -> Instructions {
-        let mut merged = query.clone();
-        if self.config.history_limit > 0 {
-            self.session
-                .history_entries()
-                .iter()
-                .rev()
-                .take(self.config.history_limit as usize)
-                .filter_map(|e| match e.to_history_content() {
-                    Ok(HistoryContent::User(c)) => Some(c),
-                    _ => None,
-                })
-                .for_each(|c| merged.merge_mentions(&c));
-        }
-        merged
-    }
-
-    fn prepare_system_prompt(&self, query: &Instructions) -> Result<String> {
-        let query_mentions = self.merged_mentions(query);
-
+    fn prepare_system_prompt(&self) -> Result<String> {
         let sp = SystemPrompt::new(&self.registry.skills, &self.registry.agents)
-            .with_agent(self.config.agent_name.as_deref())
-            .resolve(&query_mentions);
+            .with_agent(self.config.agent_name.as_deref());
 
         Ok(sp.render()?)
     }
@@ -275,8 +255,7 @@ impl PieAgent {
                 let _ = event_tx.send(AgentEvent::UserMessage(query.clone()));
             }
 
-            let query_instructions = Instructions::new(&query);
-            let system = self.prepare_system_prompt(&query_instructions)?;
+            let system = self.prepare_system_prompt()?;
 
             // Inject the system prompt into the agent's context
             if let Some(entity) = agent.entity

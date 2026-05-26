@@ -42,8 +42,7 @@ impl PermissionsPlugin {
         }
     }
 
-    fn check_skill_permissions(&self, skill_name: &str) -> Option<Vec<Permission>> {
-        let skill = self.registry.skills.iter().find(|s| s.name == skill_name)?;
+    fn ungranted_permissions(&self, skill: &crate::registry::Skill) -> Option<Vec<Permission>> {
         let perms_val = skill.extra.get("permissions")?;
         let perms: Vec<Permission> = serde_json::from_value(perms_val.clone()).ok()?;
         let ungranted: Vec<Permission> = perms
@@ -76,7 +75,19 @@ impl PermissionsPlugin {
 }
 
 #[derive(Deserialize)]
-struct SkillExecuteArgs {
+struct LoadSkillsArgs {
+    #[serde(default)]
+    skills: Vec<String>,
+    references: Option<Vec<SkillRefArg>>,
+}
+
+#[derive(Deserialize)]
+struct SkillRefArg {
+    skill: String,
+}
+
+#[derive(Deserialize)]
+struct RunScriptArgs {
     skill: String,
 }
 
@@ -93,16 +104,82 @@ impl AgentPlugin for PermissionsPlugin {
         tool_name: &str,
         args: &Value,
     ) -> PreToolAction {
-        if tool_name != "skills__execute" {
+        match tool_name {
+            "load_skills" => self.handle_load_skills(args).await,
+            "run_skill_script" => self.handle_run_skill_script(args).await,
+            _ => PreToolAction::Proceed(None),
+        }
+    }
+}
+
+impl PermissionsPlugin {
+    async fn handle_load_skills(&self, args: &Value) -> PreToolAction {
+        let Ok(parsed) = serde_json::from_value::<LoadSkillsArgs>(args.clone()) else {
+            return PreToolAction::Proceed(None);
+        };
+
+        let mut all_names: Vec<String> = parsed
+            .skills
+            .iter()
+            .map(|s| s.trim_start_matches('/').to_string())
+            .collect();
+        if let Some(refs) = &parsed.references {
+            for sr in refs {
+                let name = sr.skill.trim_start_matches('/').to_string();
+                if !all_names.contains(&name) {
+                    all_names.push(name);
+                }
+            }
+        }
+
+        if all_names.is_empty() {
             return PreToolAction::Proceed(None);
         }
 
-        let Ok(parsed) = serde_json::from_value::<SkillExecuteArgs>(args.clone()) else {
+        let resolved = crate::registry::resolve_skills(&self.registry.skills, &all_names);
+
+        let mut missing: Vec<(String, Vec<Permission>)> = Vec::new();
+        for skill in &resolved {
+            if let Some(perms) = self.ungranted_permissions(skill) {
+                missing.push((skill.name.clone(), perms));
+            }
+        }
+
+        if missing.is_empty() {
+            return PreToolAction::Proceed(None);
+        }
+
+        let all_perms: Vec<Permission> = missing
+            .iter()
+            .flat_map(|(_, perms)| perms.clone())
+            .collect();
+        let skills_label: Vec<&str> = missing.iter().map(|(name, _)| name.as_str()).collect();
+        let skills_label = skills_label.join(", ");
+
+        tracing::info!(skills = %skills_label, ?all_perms, "prompting for permissions");
+        let granted = self.prompt_permissions(&skills_label, all_perms).await;
+        tracing::info!(skills = %skills_label, granted, "permission response");
+
+        if granted {
+            PreToolAction::Proceed(None)
+        } else {
+            PreToolAction::Stop(format!(
+                "Permission denied: skills '{skills_label}' require additional permissions.",
+            ))
+        }
+    }
+
+    async fn handle_run_skill_script(&self, args: &Value) -> PreToolAction {
+        let Ok(parsed) = serde_json::from_value::<RunScriptArgs>(args.clone()) else {
             return PreToolAction::Proceed(None);
         };
 
         let skill_name = parsed.skill.trim_start_matches('/');
-        let Some(ungranted) = self.check_skill_permissions(skill_name) else {
+        let Some(skill) = self.registry.skills.iter().find(|s| s.name == skill_name) else {
+            return PreToolAction::Proceed(None);
+        };
+
+        let Some(ungranted) = self.ungranted_permissions(skill) else {
             return PreToolAction::Proceed(None);
         };
 
@@ -114,9 +191,9 @@ impl AgentPlugin for PermissionsPlugin {
         if granted {
             PreToolAction::Proceed(None)
         } else {
-            PreToolAction::Abort(format!(
+            PreToolAction::Stop(format!(
                 "Permission denied: skill '{}' requires: {}",
-                parsed.skill,
+                skill_name,
                 perm_display.join(", ")
             ))
         }

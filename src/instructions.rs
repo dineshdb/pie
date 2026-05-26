@@ -77,12 +77,6 @@ impl Instructions {
 
         mentions
     }
-
-    /// Merge mentions from additional text into this instance.
-    /// Does not change `raw` — only augments the mention set.
-    pub fn merge_mentions(&mut self, extra: &str) {
-        self.mentions.extend(Self::extract_mentions(extra));
-    }
 }
 
 impl From<&str> for Instructions {

@@ -1,5 +1,4 @@
 use crate::agent::{Agent, OutputMode};
-use crate::instructions::Instructions;
 use crate::registry::Skill;
 use crate::utils::{AnonymizedPath, git_repo_root};
 use anyhow::{Context, Result};
@@ -43,7 +42,6 @@ pub struct SystemPromptCtx<'a> {
     pub output_mode: OutputMode,
     pub skills: &'a [Skill],
     pub agents: &'a [Agent],
-    pub loaded_skills: &'a [Skill],
     pub extra_context: ExtraContext,
 }
 
@@ -90,7 +88,6 @@ impl<'a> SystemPromptCtx<'a> {
             output_mode,
             skills: sp.skills,
             agents: sp.agents,
-            loaded_skills: &sp.loaded_skills,
             extra_context,
         }
     }
@@ -121,7 +118,6 @@ fn discover_project_files(root: &str) -> Vec<String> {
 pub struct SystemPrompt<'a> {
     skills: &'a [Skill],
     agents: &'a [Agent],
-    pub loaded_skills: Vec<Skill>,
     agent: Option<&'a Agent>,
     output_mode: Option<OutputMode>,
 }
@@ -132,7 +128,6 @@ impl<'a> SystemPrompt<'a> {
         Self {
             skills,
             agents,
-            loaded_skills: Vec::new(),
             agent: None,
             output_mode: None,
         }
@@ -148,24 +143,6 @@ impl<'a> SystemPrompt<'a> {
     /// Set the output mode.
     pub fn with_output_mode(mut self, output_mode: OutputMode) -> Self {
         self.output_mode = Some(output_mode);
-        self
-    }
-
-    /// Resolve all requirements (skills and their dependencies) from instructions.
-    pub fn resolve(mut self, instructions: &Instructions) -> Self {
-        let mut mentions: Vec<String> = instructions.mentions.iter().cloned().collect();
-
-        if let Some(agent) = self.agent {
-            for need in &agent.needs {
-                if !mentions.contains(need) {
-                    mentions.push(need.clone());
-                }
-            }
-        }
-
-        let resolved = crate::registry::resolve_skills(self.skills, &mentions);
-        self.loaded_skills = resolved.iter().map(|&s| s.clone()).collect();
-
         self
     }
 
