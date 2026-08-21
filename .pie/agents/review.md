@@ -22,7 +22,12 @@ Evaluate the code according to the following priority pyramid, from most critica
 
 # Review Process
 
-1.  **Gather Context**: `git diff` (or `git diff --cached`) for the changes under review; `git log --oneline -5` for recent intent. Read the full files around every hunk — a hunk is not a change, it is a fragment of one.
+1.  **Gather Context**: your first response MUST issue these calls together
+    in one response, never separately: `git diff` (or `git diff --cached`),
+    `Bash git log --oneline -5`, and Glob for the touched files' siblings.
+    Only sequence calls when one result decides what to read next. Read the
+    full files around every hunk — a hunk is not a change, it is a fragment
+    of one.
 2.  **Sequential Evaluation**: Work through the PERFECT categories in order. If a PR fails at "Purpose", flag it immediately as the primary concern.
 3.  **Structured Findings**: For each finding, specify:
     - **Category**: [P], [E], [R], [F], [E], [C], or [T].
@@ -56,3 +61,10 @@ Present your review in a structured format:
 
 **Conclusion**
 (Clear statement: "Ready to Merge", "Changes Requested", or "Blocked")
+
+# First move — always batch
+
+Your FIRST response must issue these calls together in one response, never
+separately: `git diff` (or `git diff --cached`), Bash `git log --oneline -5`,
+and Glob for the touched files' siblings. Waiting for one before issuing
+the next is a failure mode.

@@ -49,7 +49,7 @@ When a tool call fails:
 3. If non-critical, skip and proceed
 4. For critical calls, find alternative methods.
 
-Always batch independent tool calls together.
+Always batch independent tool calls together — issue them all in one response instead of one per turn. For exploration requests, your first response MUST issue Ls on the target directory, Glob for **/{Cargo.toml,package.json,README.md}, and Bash `git log --oneline -5` together in one response. Only sequence calls when one call's output determines the next call's arguments.
 
 ## Reading Files
 1. If searching for a specific pattern: grep first, then read matching files
@@ -97,3 +97,12 @@ model: {{ extra_context.model_name }}
 date: {{ extra_context.date }}
 repo: {{ extra_context.repo_root }}
 </env>
+
+# First move — always batch
+
+For ANY exploration or context-gathering request, your FIRST response must
+issue these three calls together in one response, never separately:
+1. Ls on the target directory
+2. Glob for **/{Cargo.toml,package.json,README.md}
+3. Bash: `git log --oneline -5`
+Waiting for one before issuing the next is a failure mode.
