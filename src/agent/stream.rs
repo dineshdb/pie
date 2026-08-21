@@ -1,6 +1,6 @@
 use crate::config::RetryConfig;
 use crate::plugin::PermissionRequest;
-use agentsdk::core::agent::{PostToolAction, PreToolAction};
+use agentsdk::core::agent::{CompletionAction, PostToolAction, PreToolAction};
 use agentsdk::core::retry::RetryAction;
 use agentsdk::error::AgentSdkError;
 use agentsdk::{AgentPlugin, PluginContext};
@@ -34,6 +34,8 @@ pub struct StreamPlugin {
     tool_starts: HashMap<String, Instant>,
     /// Wall-time instrumentation: current iteration start.
     iter_start: Option<Instant>,
+    /// Empty-final-completions rejected so far (bounded retry).
+    empty_rejects: u32,
 }
 
 impl StreamPlugin {
@@ -45,8 +47,31 @@ impl StreamPlugin {
             retry,
             tool_starts: HashMap::new(),
             iter_start: None,
+            empty_rejects: 0,
         }
     }
+}
+
+/// Maximum characters of a tool result fed back into the conversation.
+/// Oversized results (e.g. a runaway Glob or a huge file read) are
+/// head-truncated with a notice — unbounded tool output can otherwise
+/// explode the prompt past the model's context window mid-run.
+const TOOL_OUTPUT_LIMIT: usize = 16_000;
+
+fn clamp_tool_output(text: &str) -> Option<String> {
+    if text.len() <= TOOL_OUTPUT_LIMIT {
+        return None;
+    }
+    // Cut on a char boundary near the limit.
+    let mut end = TOOL_OUTPUT_LIMIT;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(format!(
+        "[output truncated: showing first {end} of {} chars]\n{}",
+        text.len(),
+        &text[..end]
+    ))
 }
 
 #[async_trait]
@@ -86,6 +111,23 @@ impl AgentPlugin for StreamPlugin {
         }
     }
 
+    /// A final completion with no tool calls and no visible text is a
+    /// truncated/degenerate ending (e.g. a reasoning-budget cut mid-thought
+    /// collapsing straight to EOS). Reject it so the model retries with a
+    /// correction — but only twice, then accept whatever we have.
+    async fn on_completion(&mut self, _ctx: &mut PluginContext, text: &str) -> CompletionAction {
+        if text.trim().is_empty() && self.empty_rejects < 2 {
+            self.empty_rejects += 1;
+            tracing::warn!(attempt = self.empty_rejects, "empty final completion, retrying");
+            return CompletionAction::Reject {
+                reason: "Your final answer was empty. Answer the user's question directly \
+                         with visible text now."
+                    .to_string(),
+            };
+        }
+        CompletionAction::Accept
+    }
+
     async fn on_tool_pre_execute(
         &mut self,
         _ctx: &mut PluginContext,
@@ -118,17 +160,21 @@ impl AgentPlugin for StreamPlugin {
                 "timing: tool done"
             );
         }
-        let output = match result {
+        let (output, clamped_value) = match result {
             Ok(value) => {
                 let text = if let Value::String(s) = value {
                     s.clone()
                 } else {
                     value.to_string()
                 };
-                if name == "web_search" {
+                let text = if name == "web_search" {
                     text
                 } else {
                     jewels::redact(&crate::utils::anonymize_path(&text)).into_owned()
+                };
+                match clamp_tool_output(&text) {
+                    Some(clamped) => (clamped.clone(), Some(Value::String(clamped))),
+                    None => (text, None),
                 }
             }
             Err(error) => {
@@ -136,7 +182,7 @@ impl AgentPlugin for StreamPlugin {
                 let _ = self
                     .event_tx
                     .send(AgentEvent::Error(format!("Tool {name} failed: {error}")));
-                format!("Error: {error}")
+                (format!("Error: {error}"), None)
             }
         };
 
@@ -146,7 +192,7 @@ impl AgentPlugin for StreamPlugin {
             output,
         });
 
-        PostToolAction::Proceed(None)
+        PostToolAction::Proceed(clamped_value)
     }
 
     async fn on_api_error(
@@ -188,5 +234,25 @@ impl AgentPlugin for StreamPlugin {
         }
 
         RetryAction::GiveUp
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn small_outputs_pass_through_unchanged() {
+        assert_eq!(clamp_tool_output("hello"), None);
+        assert_eq!(clamp_tool_output(&"x".repeat(TOOL_OUTPUT_LIMIT)), None);
+    }
+
+    #[test]
+    fn oversized_outputs_are_truncated_with_notice() {
+        let big = "é".repeat(TOOL_OUTPUT_LIMIT); // multibyte: boundary safety
+        let clamped = clamp_tool_output(&big).expect("must clamp");
+        assert!(clamped.starts_with("[output truncated: showing first"));
+        assert!(clamped.len() < big.len() + 100);
+        assert!(clamped.is_char_boundary(clamped.len()));
     }
 }

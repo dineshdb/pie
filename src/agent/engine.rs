@@ -308,7 +308,15 @@ impl PieAgent {
 
             let selection = Self::selected_plugins(self.find_agent_definition(), &self.sandbox)?;
             let grants = self.resolve_grants();
+
+            // StreamPlugin must be FIRST: on_tool_post_execute is
+            // first-decisive-wins, and JewelsPlugin returns Proceed(Some(..))
+            // whenever redaction changes a result — anything registered after
+            // it (the output clamp, debug result logging) would be preempted.
+            let stream_plugin =
+                crate::agent::StreamPlugin::new(event_tx.clone(), self.config.retry.clone());
             builder = builder
+                .plugin(stream_plugin)
                 .plugin(history_plugin.clone())
                 .plugin(JewelsPlugin::new())
                 .plugin(ModePlugin::default())
@@ -363,10 +371,6 @@ impl PieAgent {
                     "",
                 ));
             }
-
-            let stream_plugin =
-                crate::agent::StreamPlugin::new(event_tx.clone(), self.config.retry.clone());
-            builder = builder.plugin(stream_plugin);
 
             let mut agent = builder
                 .build()
