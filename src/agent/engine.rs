@@ -375,7 +375,7 @@ impl PieAgent {
             let mut agent = builder
                 .build()
                 .map_err(|e| AppError::Config(e.to_string()))?;
-            tracing::info!(
+            tracing::debug!(
                 ms = t_build.elapsed().as_millis() as u64,
                 "timing: agent built"
             );
@@ -390,7 +390,7 @@ impl PieAgent {
 
             let t_prompt = std::time::Instant::now();
             let system = self.prepare_system_prompt()?;
-            tracing::info!(
+            tracing::debug!(
                 ms = t_prompt.elapsed().as_millis() as u64,
                 "timing: system prompt prepared"
             );
@@ -412,7 +412,7 @@ impl PieAgent {
 
             let t_run = std::time::Instant::now();
             let _output = agent.run().await?;
-            tracing::info!(
+            tracing::debug!(
                 ms = t_run.elapsed().as_millis() as u64,
                 "timing: agent run done"
             );

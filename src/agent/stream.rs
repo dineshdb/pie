@@ -30,12 +30,19 @@ pub struct StreamPlugin {
     pub api_error_count: u32,
     pub rate_limit_count: u32,
     pub retry: RetryConfig,
-    /// Wall-time instrumentation: tool-call id -> start instant.
-    tool_starts: HashMap<String, Instant>,
+    /// Wall-time instrumentation: tool-call id -> start instant + args.
+    tool_starts: HashMap<String, ToolStart>,
     /// Wall-time instrumentation: current iteration start.
     iter_start: Option<Instant>,
     /// Empty-final-completions rejected so far (bounded retry).
     empty_rejects: u32,
+}
+
+/// A pending tool call being timed.
+struct ToolStart {
+    start: Instant,
+    /// Compact JSON of the call arguments, truncated for logging.
+    args: String,
 }
 
 impl StreamPlugin {
@@ -74,6 +81,22 @@ fn clamp_tool_output(text: &str) -> Option<String> {
     ))
 }
 
+/// Maximum characters of tool-call arguments shown in timing logs.
+/// Full arguments can carry entire file bodies (Write/Edit) — logging
+/// those unclamped would flood stderr.
+const TOOL_ARGS_LOG_LIMIT: usize = 160;
+
+fn truncate_for_log(text: &str) -> String {
+    if text.len() <= TOOL_ARGS_LOG_LIMIT {
+        return text.to_string();
+    }
+    let mut end = TOOL_ARGS_LOG_LIMIT;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…[+{} chars]", &text[..end], text.len() - end)
+}
+
 #[async_trait]
 impl AgentPlugin for StreamPlugin {
     fn name(&self) -> &'static str {
@@ -92,7 +115,7 @@ impl AgentPlugin for StreamPlugin {
 
     async fn on_iteration_start(&mut self, _ctx: &mut PluginContext, iteration: usize) {
         self.iter_start = Some(Instant::now());
-        tracing::info!(iteration, "timing: iteration start");
+        tracing::debug!(iteration, "timing: iteration start");
     }
 
     async fn on_iteration_end(
@@ -102,7 +125,7 @@ impl AgentPlugin for StreamPlugin {
         had_tool_calls: bool,
     ) {
         if let Some(start) = self.iter_start.take() {
-            tracing::info!(
+            tracing::debug!(
                 iteration,
                 had_tool_calls,
                 ms = start.elapsed().as_millis() as u64,
@@ -138,7 +161,13 @@ impl AgentPlugin for StreamPlugin {
         name: &str,
         arguments: &Value,
     ) -> PreToolAction {
-        self.tool_starts.insert(id.to_string(), Instant::now());
+        self.tool_starts.insert(
+            id.to_string(),
+            ToolStart {
+                start: Instant::now(),
+                args: truncate_for_log(&arguments.to_string()),
+            },
+        );
         let _ = self.event_tx.send(AgentEvent::ToolCall {
             name: name.to_string(),
             display: format!("{name}({arguments})"),
@@ -155,11 +184,12 @@ impl AgentPlugin for StreamPlugin {
         name: &str,
         result: &Result<Value, String>,
     ) -> PostToolAction {
-        if let Some(start) = self.tool_starts.remove(id) {
+        if let Some(tool_start) = self.tool_starts.remove(id) {
             tracing::info!(
                 tool = name,
-                ms = start.elapsed().as_millis() as u64,
+                ms = tool_start.start.elapsed().as_millis() as u64,
                 ok = result.is_ok(),
+                args = %tool_start.args,
                 "timing: tool done"
             );
         }

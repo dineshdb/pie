@@ -200,7 +200,7 @@ pub async fn run() -> anyhow::Result<()> {
     if format.is_explicit() || has_query {
         init_stderr_subscriber(cli.debug, &config.log_level);
         for (phase, dur) in &timing {
-            tracing::info!(phase, ms = dur.as_millis() as u64, "timing: startup phase");
+            tracing::debug!(phase, ms = dur.as_millis() as u64, "timing: startup phase");
         }
         run_single_shot(
             cli, config, session, format, registry, agent, model, sandbox,
