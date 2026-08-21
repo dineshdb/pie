@@ -118,7 +118,10 @@ impl AgentPlugin for StreamPlugin {
     async fn on_completion(&mut self, _ctx: &mut PluginContext, text: &str) -> CompletionAction {
         if text.trim().is_empty() && self.empty_rejects < 2 {
             self.empty_rejects += 1;
-            tracing::warn!(attempt = self.empty_rejects, "empty final completion, retrying");
+            tracing::warn!(
+                attempt = self.empty_rejects,
+                "empty final completion, retrying"
+            );
             return CompletionAction::Reject {
                 reason: "Your final answer was empty. Answer the user's question directly \
                          with visible text now."
