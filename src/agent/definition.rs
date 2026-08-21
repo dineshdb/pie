@@ -48,6 +48,16 @@ pub struct Agent {
     pub grants: Vec<Permission>,
     /// Restrict this agent's filesystem tools to read-only operations.
     pub readonly: bool,
+    /// Explicit plugin selection. `None` (the default for markdown agents)
+    /// means the full built-in set; `Some(..)` is the complete tool set —
+    /// YAML agents start with no tools and opt in via this list.
+    /// Known names: `fs`, `fs-readonly`, `shell`, `websearch`, `skills`,
+    /// `agentsmd`. Unknown names fail the agent run.
+    pub plugins: Option<Vec<String>>,
+    /// Extra skill search directories for the skills plugin.
+    pub skills_paths: Vec<String>,
+    /// Override the configured max steps for this agent.
+    pub max_steps: Option<u32>,
 }
 
 /// Serde-deserializable frontmatter for agent files.
@@ -68,6 +78,12 @@ struct AgentFrontmatter {
     /// Restrict this agent's filesystem tools to read-only operations.
     #[serde(default)]
     readonly: bool,
+    #[serde(default)]
+    plugins: Option<Vec<String>>,
+    #[serde(default)]
+    skills_paths: Vec<String>,
+    #[serde(default)]
+    max_steps: Option<u32>,
 }
 
 fn agents_root_global() -> PathBuf {
@@ -125,6 +141,9 @@ fn parse_agent(raw: &str, filename: &str) -> Option<Agent> {
         sandbox: meta.sandbox,
         grants: meta.grants,
         readonly: meta.readonly,
+        plugins: meta.plugins,
+        skills_paths: meta.skills_paths,
+        max_steps: meta.max_steps,
     })
 }
 
@@ -161,16 +180,18 @@ fn load_embedded_agents() -> Vec<Agent> {
         .collect()
 }
 
-/// Load all agents: embedded + global (~/.pie/agents/) + local (.pie/agents/).
-/// Local overrides global, global overrides embedded.
+/// Load all agents: markdown (embedded + global `~/.pie/commands/` + local
+/// `.pie/commands/`) then YAML (`~/.pie/agents/` + local `.pie/agents/`).
+/// YAML replaces markdown by name; local overrides global.
 pub fn get_all_agents() -> Vec<Agent> {
-    crate::utils::load_resources(
+    let markdown = crate::utils::load_resources(
         load_embedded_agents(),
         &agents_root_global(),
         agents_root_local(),
         load_agents_from_dir,
         |a| &a.name,
-    )
+    );
+    super::yaml::load_yaml_agents(markdown)
 }
 
 #[cfg(test)]

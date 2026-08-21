@@ -62,6 +62,12 @@ pub struct ResolvedConfig {
 }
 
 impl ResolvedProvider {
+    /// Return a copy of this provider using a different model id.
+    pub fn with_model(mut self, model: String) -> Self {
+        self.model = model;
+        self
+    }
+
     pub fn env_vars(&self) -> HashMap<&'static str, String> {
         let mut env = HashMap::new();
         env.insert(ENV_OPENAI_MODEL, self.model.clone());

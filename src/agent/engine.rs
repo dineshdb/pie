@@ -23,6 +23,51 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::definition::Agent;
 
+/// Which filesystem plugin variant a run gets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum FsMode {
+    #[default]
+    Full,
+    Readonly,
+    Off,
+}
+
+/// The optional, selectable plugins. Defaults = the full set (markdown
+/// agents and agent-less runs); [`PluginSelection::none`] = YAML agents
+/// that opt in explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PluginSelection {
+    fs: FsMode,
+    shell: bool,
+    websearch: bool,
+    skills: bool,
+    agentsmd: bool,
+}
+
+impl Default for PluginSelection {
+    fn default() -> Self {
+        Self {
+            fs: FsMode::Full,
+            shell: true,
+            websearch: true,
+            skills: true,
+            agentsmd: true,
+        }
+    }
+}
+
+impl PluginSelection {
+    fn none() -> Self {
+        Self {
+            fs: FsMode::Off,
+            shell: false,
+            websearch: false,
+            skills: false,
+            agentsmd: false,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct PieAgent {
     pub model: agentsdk::OpenAI,
@@ -112,6 +157,41 @@ impl PieAgent {
     fn find_agent_definition(&self) -> Option<&Agent> {
         let name = self.config.agent_name.as_deref()?;
         self.registry.agents.iter().find(|a| a.name == name)
+    }
+
+    /// Resolve which optional plugins this run gets. `plugins: None` on the
+    /// agent (markdown agents, default runs) means the full set; an explicit
+    /// YAML list is the complete tool set — everything else stays off.
+    fn selected_plugins(agent: Option<&Agent>, sandbox: &SandboxConfig) -> Result<PluginSelection> {
+        let Some(names) = agent.and_then(|a| a.plugins.as_deref()) else {
+            let mut sel = PluginSelection::default();
+            if Self::wants_readonly(agent, sandbox) {
+                sel.fs = FsMode::Readonly;
+            }
+            return Ok(sel);
+        };
+
+        let mut sel = PluginSelection::none();
+        for name in names {
+            match name.trim() {
+                "fs" => sel.fs = FsMode::Full,
+                "fs-readonly" => sel.fs = FsMode::Readonly,
+                "shell" => sel.shell = true,
+                "websearch" => sel.websearch = true,
+                "skills" => sel.skills = true,
+                "agentsmd" => sel.agentsmd = true,
+                other => {
+                    return Err(AppError::Config(format!(
+                        "agent '{}' lists unknown plugin '{other}' (known: fs, fs-readonly, shell, websearch, skills, agentsmd)",
+                        agent.map_or("?", |a| a.name.as_str())
+                    )));
+                }
+            }
+        }
+        if sel.fs == FsMode::Full && Self::wants_readonly(agent, sandbox) {
+            sel.fs = FsMode::Readonly;
+        }
+        Ok(sel)
     }
 
     fn prepare_system_prompt(&self) -> Result<String> {
@@ -214,7 +294,17 @@ impl PieAgent {
             if let Some(root) = crate::utils::git_repo_root() {
                 paths.push(std::path::PathBuf::from(root).join(".pie").join("skills"));
             }
+            if let Some(agent) = self.find_agent_definition() {
+                for p in &agent.skills_paths {
+                    let expanded = p
+                        .strip_prefix("~/")
+                        .and_then(|rest| dirs::home_dir().map(|h| h.join(rest)))
+                        .unwrap_or_else(|| std::path::PathBuf::from(p));
+                    paths.push(expanded);
+                }
+            }
 
+            let selection = Self::selected_plugins(self.find_agent_definition(), &self.sandbox)?;
             let grants = self.resolve_grants();
             builder = builder
                 .plugin(history_plugin.clone())
@@ -223,13 +313,17 @@ impl PieAgent {
                 .plugin(crate::plugin::EmbeddedSystemPromptPlugin::new(
                     include_str!("../../.pie/SYSTEM.md"),
                 ))
-                .plugin(crate::plugin::build_agentsmd_plugin()?)
                 .plugin(crate::plugin::PermissionsPlugin::new(
                     self.registry.clone(),
                     grants,
                     self.permission_tx.clone(),
-                ))
-                .plugin(
+                ));
+
+            if selection.agentsmd {
+                builder = builder.plugin(crate::plugin::build_agentsmd_plugin()?);
+            }
+            if selection.skills {
+                builder = builder.plugin(
                     SkillsPlugin::builder()
                         .search_paths(paths)
                         .build()
@@ -237,21 +331,29 @@ impl PieAgent {
                             AppError::Plugin(format!("failed to build skills plugin: {e}"))
                         })?,
                 );
-
-            builder = if Self::wants_readonly(self.find_agent_definition(), &self.sandbox) {
-                builder.plugin(ReadOnlyFileSystemPlugin::new())
-            } else {
-                builder.plugin(FileSystemPlugin::new())
             }
-            .plugin(PersistencePlugin::new(self.session.clone()))
-            .plugin(ShellPlugin::new())
-            .plugin(WebsearchPlugin::new())
-            .plugin(HelperBinariesPlugin::new())
-            .plugin(UserCommandPlugin::new(
-                self.registry.clone(),
-                self.config.agent_name.clone(),
-            ))
-            .plugin(crate::plugin::DoomLoopPlugin::new());
+
+            builder = match selection.fs {
+                FsMode::Full => builder.plugin(FileSystemPlugin::new()),
+                FsMode::Readonly => builder.plugin(ReadOnlyFileSystemPlugin::new()),
+                FsMode::Off => builder,
+            }
+            .plugin(PersistencePlugin::new(self.session.clone()));
+
+            if selection.shell {
+                builder = builder.plugin(ShellPlugin::new());
+            }
+            if selection.websearch {
+                builder = builder.plugin(WebsearchPlugin::new());
+            }
+
+            builder = builder
+                .plugin(HelperBinariesPlugin::new())
+                .plugin(UserCommandPlugin::new(
+                    self.registry.clone(),
+                    self.config.agent_name.clone(),
+                ))
+                .plugin(crate::plugin::DoomLoopPlugin::new());
 
             if AgentConfig::is_debug() {
                 builder = builder.plugin(crate::plugin::DebugPlugin::new(
@@ -331,6 +433,9 @@ mod tests {
             sandbox: None,
             grants: Vec::new(),
             readonly,
+            plugins: None,
+            skills_paths: Vec::new(),
+            max_steps: None,
         }
     }
 
@@ -365,5 +470,72 @@ mod tests {
             &sandbox(&["."])
         ));
         assert!(!PieAgent::wants_readonly(None, &sandbox(&["."])));
+    }
+
+    fn yaml_agent(plugins: Option<Vec<String>>, readonly: bool) -> Agent {
+        Agent {
+            plugins,
+            readonly,
+            ..test_agent(false)
+        }
+    }
+
+    #[test]
+    fn no_plugins_key_means_full_default_set() {
+        let sel =
+            PieAgent::selected_plugins(Some(&yaml_agent(None, false)), &sandbox(&["."])).unwrap();
+        assert_eq!(sel, PluginSelection::default());
+
+        // empty allow_write demotes fs even in the default set
+        let sel =
+            PieAgent::selected_plugins(Some(&yaml_agent(None, false)), &sandbox(&[])).unwrap();
+        assert_eq!(sel.fs, FsMode::Readonly);
+    }
+
+    #[test]
+    fn explicit_plugins_are_the_whole_set() {
+        let sel = PieAgent::selected_plugins(
+            Some(&yaml_agent(
+                Some(vec!["fs-readonly".into(), "shell".into()]),
+                false,
+            )),
+            &sandbox(&["."]),
+        )
+        .unwrap();
+        assert_eq!(sel.fs, FsMode::Readonly);
+        assert!(sel.shell);
+        assert!(!sel.websearch);
+        assert!(!sel.skills);
+        assert!(!sel.agentsmd);
+
+        // empty list = no tools at all
+        let sel =
+            PieAgent::selected_plugins(Some(&yaml_agent(Some(vec![]), false)), &sandbox(&["."]))
+                .unwrap();
+        assert_eq!(sel, PluginSelection::none());
+    }
+
+    #[test]
+    fn readonly_demotes_explicit_fs_to_readonly() {
+        let sel = PieAgent::selected_plugins(
+            Some(&yaml_agent(Some(vec!["fs".into()]), true)),
+            &sandbox(&["."]),
+        )
+        .unwrap();
+        assert_eq!(sel.fs, FsMode::Readonly);
+    }
+
+    #[test]
+    fn unknown_plugin_name_fails() {
+        let err = PieAgent::selected_plugins(
+            Some(&yaml_agent(
+                Some(vec!["fs".into(), "webserch".into()]),
+                false,
+            )),
+            &sandbox(&["."]),
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("unknown plugin 'webserch'"), "{msg}");
     }
 }

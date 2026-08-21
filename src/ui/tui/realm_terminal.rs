@@ -425,6 +425,7 @@ pub async fn run_tui(
     max_steps: u32,
     pie_config: PieConfig,
     registry: Arc<crate::registry::Registry>,
+    agent_name: Option<String>,
 ) -> Result<()> {
     let (mut terminal, mut app, mut input, tx) = setup_tui(
         &session,
@@ -434,6 +435,7 @@ pub async fn run_tui(
         max_steps,
         &pie_config,
         registry,
+        agent_name,
     )?;
 
     let mut last_frame;
@@ -513,6 +515,7 @@ fn setup_tui(
     max_steps: u32,
     pie_config: &PieConfig,
     registry: Arc<crate::registry::Registry>,
+    agent_name: Option<String>,
 ) -> Result<(
     Terminal,
     App,
@@ -554,6 +557,7 @@ fn setup_tui(
         pie_config.provider.clone(),
         registry.clone(),
         pending_permissions.clone(),
+        agent_name,
     );
     let current_model = input.provider.model.clone();
 

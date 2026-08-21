@@ -49,6 +49,7 @@ pub struct InputComponent {
     last_query: Option<String>,
     pub registry: Arc<Registry>,
     pub pending_permissions: PendingPermissions,
+    pub agent_name: Option<String>,
     pub mode: AgentMode,
     pub pending_mode_toggles: u8,
     pub mode_toggle_deadline: Option<Instant>,
@@ -65,6 +66,7 @@ impl InputComponent {
         available_providers: HashMap<String, ProviderConfig>,
         registry: Arc<Registry>,
         pending_permissions: PendingPermissions,
+        agent_name: Option<String>,
     ) -> Self {
         let session_id = session.id.clone();
         let session_pool = session.pool().clone();
@@ -101,6 +103,7 @@ impl InputComponent {
             last_query: None,
             registry,
             pending_permissions,
+            agent_name,
             mode: AgentMode::Build,
             pending_mode_toggles: 0,
             mode_toggle_deadline: None,

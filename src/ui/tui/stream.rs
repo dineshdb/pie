@@ -19,6 +19,7 @@ pub struct StreamContext {
     pub max_steps: u32,
     pub registry: Arc<crate::registry::Registry>,
     pub pending_permissions: PendingPermissions,
+    pub agent_name: Option<String>,
 }
 
 impl From<&InputComponent> for StreamContext {
@@ -31,6 +32,7 @@ impl From<&InputComponent> for StreamContext {
             max_steps: input.max_steps,
             registry: input.registry.clone(),
             pending_permissions: input.pending_permissions.clone(),
+            agent_name: input.agent_name.clone(),
         }
     }
 }
@@ -52,6 +54,7 @@ pub async fn spawn_stream(
 
     let config = AgentConfig {
         max_steps: ctx.max_steps,
+        agent_name: ctx.agent_name.clone(),
         ..Default::default()
     };
 
