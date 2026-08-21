@@ -53,7 +53,7 @@ pie --json "list files"   # pipe into jq, etc.
 # Use a specific skill
 pie "/explore summarize this repo"
 
-# Run a custom agent (YAML definition)
+# Run a custom agent (markdown definition)
 pie reviewer "check src/agent for me"
 pie explore                      # opens the TUI running as that agent
 ```
@@ -67,39 +67,44 @@ pie explore                      # opens the TUI running as that agent
 | `?`                | Show help                            |
 | `Ctrl+C`           | Abort stream / quit                  |
 
-## Custom agents (YAML)
+## Custom agents (markdown)
 
-Drop a `*.yaml` file into `~/.pie/agents/` (global) or `.pie/agents/`
-(project-local, overrides global by name) and run it with
-`pie <name> [query...]`. The first query token that matches an agent name
-selects that agent — `pie reviewer check this` runs the `reviewer` agent
-with `check this` as the query.
+Agents are markdown files: frontmatter for configuration, body is the
+agent's system prompt. Drop a `*.md` file into `~/.pie/agents/` (global)
+or `.pie/agents/` (project-local, overrides global by name) and run it
+with `pie <name> [query...]` — a first query token matching an agent name
+selects it.
 
-```yaml
-# .pie/agents/reviewer.yaml
+```markdown
+---
 name: reviewer            # default: file name
 description: Read-only code reviewer
 model: deep               # a model tier from pie.toml, or a literal model id
 max_steps: 50             # override the iteration limit
 output_mode: md           # md | json | interactive
+temperature: 0.3
 
-system_prompt: |          # the agent's persona; or use system_prompt_file: path
-  You are a senior code reviewer. Be blunt and specific.
-
-# Tools are opt-in: without a `plugins` list the agent has NO tools.
-# Known names: fs, fs-readonly, shell, websearch, skills, agentsmd
+# Tools are opt-in for agents/ drops: without a `plugins` list the agent
+# has NO tools. Known names: fs, fs-readonly, shell, websearch, skills,
+# agentsmd — unknown names fail the run.
 plugins: [fs-readonly, shell]
 
 skills_paths: ["~/src/my-skills"]   # extra skill directories (needs skills)
-
 readonly: true            # demotes fs to fs-readonly (belt and suspenders)
 sandbox:                  # full sandbox config, merged like pie.toml's
   allow_write: ["."]
 grants: ["fs-read:/tmp"]  # pre-granted permissions
+---
+
+You are a senior code reviewer. Be blunt and specific.
+(The rest of this file is the agent's system prompt.)
 ```
 
-Markdown agents (`.pie/commands/*.md`) keep working; a YAML file with the
-same name replaces its markdown twin. `pie skills` lists both.
+Built-in commands (`.pie/commands/*.md`, embedded and global/local
+`commands/` dirs) keep working unchanged and keep the full default tool
+set — a `plugins:` list there is also honored if present. An `agents/`
+file with the same name overrides its `commands/` twin. `pie skills`
+lists everything.
 
 ## Configuration
 

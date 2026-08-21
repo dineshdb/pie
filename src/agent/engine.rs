@@ -160,8 +160,9 @@ impl PieAgent {
     }
 
     /// Resolve which optional plugins this run gets. `plugins: None` on the
-    /// agent (markdown agents, default runs) means the full set; an explicit
-    /// YAML list is the complete tool set — everything else stays off.
+    /// agent (legacy `commands/` agents, default runs) means the full set;
+    /// an explicit frontmatter list is the complete tool set — everything
+    /// else stays off.
     fn selected_plugins(agent: Option<&Agent>, sandbox: &SandboxConfig) -> Result<PluginSelection> {
         let Some(names) = agent.and_then(|a| a.plugins.as_deref()) else {
             let mut sel = PluginSelection::default();
@@ -472,7 +473,7 @@ mod tests {
         assert!(!PieAgent::wants_readonly(None, &sandbox(&["."])));
     }
 
-    fn yaml_agent(plugins: Option<Vec<String>>, readonly: bool) -> Agent {
+    fn tooled_agent(plugins: Option<Vec<String>>, readonly: bool) -> Agent {
         Agent {
             plugins,
             readonly,
@@ -483,19 +484,19 @@ mod tests {
     #[test]
     fn no_plugins_key_means_full_default_set() {
         let sel =
-            PieAgent::selected_plugins(Some(&yaml_agent(None, false)), &sandbox(&["."])).unwrap();
+            PieAgent::selected_plugins(Some(&tooled_agent(None, false)), &sandbox(&["."])).unwrap();
         assert_eq!(sel, PluginSelection::default());
 
         // empty allow_write demotes fs even in the default set
         let sel =
-            PieAgent::selected_plugins(Some(&yaml_agent(None, false)), &sandbox(&[])).unwrap();
+            PieAgent::selected_plugins(Some(&tooled_agent(None, false)), &sandbox(&[])).unwrap();
         assert_eq!(sel.fs, FsMode::Readonly);
     }
 
     #[test]
     fn explicit_plugins_are_the_whole_set() {
         let sel = PieAgent::selected_plugins(
-            Some(&yaml_agent(
+            Some(&tooled_agent(
                 Some(vec!["fs-readonly".into(), "shell".into()]),
                 false,
             )),
@@ -510,7 +511,7 @@ mod tests {
 
         // empty list = no tools at all
         let sel =
-            PieAgent::selected_plugins(Some(&yaml_agent(Some(vec![]), false)), &sandbox(&["."]))
+            PieAgent::selected_plugins(Some(&tooled_agent(Some(vec![]), false)), &sandbox(&["."]))
                 .unwrap();
         assert_eq!(sel, PluginSelection::none());
     }
@@ -518,7 +519,7 @@ mod tests {
     #[test]
     fn readonly_demotes_explicit_fs_to_readonly() {
         let sel = PieAgent::selected_plugins(
-            Some(&yaml_agent(Some(vec!["fs".into()]), true)),
+            Some(&tooled_agent(Some(vec!["fs".into()]), true)),
             &sandbox(&["."]),
         )
         .unwrap();
@@ -528,7 +529,7 @@ mod tests {
     #[test]
     fn unknown_plugin_name_fails() {
         let err = PieAgent::selected_plugins(
-            Some(&yaml_agent(
+            Some(&tooled_agent(
                 Some(vec!["fs".into(), "webserch".into()]),
                 false,
             )),
