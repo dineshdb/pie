@@ -19,4 +19,3 @@ test:
 
 lint:
     cargo clippy --fix --allow-dirty --allow-staged
-    repo lint
