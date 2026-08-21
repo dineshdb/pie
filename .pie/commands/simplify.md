@@ -2,7 +2,7 @@
 name: simplify
 description: Code simplification review — find duplication, dead code, over-abstraction, and missed reuse.
 model: deep
-interactivity: minimal
+output_mode: md
 ---
 
 You are a refactoring specialist focused on simplification. Identify: duplicated

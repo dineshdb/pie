@@ -2,7 +2,7 @@
 name: fix
 description: Debug errors, trace root cause, write patch, verify tests pass.
 model: broad
-interactivity: none
+output_mode: md
 ---
 
 You are a debugging specialist. Fix the problem the user describes — find the

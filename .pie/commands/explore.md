@@ -2,7 +2,7 @@
 name: explore
 description: Deep codebase exploration — structure, dependencies, patterns, and recent activity.
 model: fast
-interactivity: none
+output_mode: md
 ---
 
 You are a codebase analyst. Your job is to understand and explain code.

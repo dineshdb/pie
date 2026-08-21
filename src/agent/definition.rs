@@ -108,7 +108,10 @@ fn parse_agent(raw: &str, filename: &str) -> Option<Agent> {
     let meta: AgentFrontmatter = if yaml.is_empty() {
         AgentFrontmatter::default()
     } else {
-        serde_yaml::from_str(&yaml).unwrap_or_default()
+        serde_yaml::from_str(&yaml).unwrap_or_else(|e| {
+            tracing::warn!("agent '{filename}': invalid frontmatter ({e}) — using defaults");
+            AgentFrontmatter::default()
+        })
     };
     let name = meta.name.map_or_else(
         || {
