@@ -31,5 +31,5 @@ openai_url = "https://api.z.ai/api/paas/v4/"
 anthropic_url = "https://api.z.ai/api/anthropic"
 
 [ollama]
-openai_url = "http://localhost:11434/v1"
-anthropic_url = "http://localhost:11434"
+openai_url = "http://localhost:8181/v1"
+anthropic_url = "http://localhost:8181"
