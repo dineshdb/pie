@@ -151,13 +151,19 @@ async fn resolve_session(pool: Arc<DbPool>, resume: bool) -> Result<Session> {
 /// - Subscriber initialization fails.
 /// - The command or interactive session fails.
 pub async fn run() -> anyhow::Result<()> {
+    let mut timing: Vec<(&'static str, std::time::Duration)> = Vec::new();
+    let t0 = std::time::Instant::now();
+
     let mut cli = Cli::parse();
     let format = cli.output_format();
 
     let pool = Arc::new(db::create_persistent_pool().await?);
+    timing.push(("db_pool", t0.elapsed()));
 
+    let t = std::time::Instant::now();
     let pie_config = load_config()?;
     let config: ResolvedConfig = (cli.clone(), pie_config.clone()).try_into()?;
+    timing.push(("config_resolve", t.elapsed()));
 
     config::CONFIG
         .set(config)
@@ -165,7 +171,9 @@ pub async fn run() -> anyhow::Result<()> {
 
     let config = config::CONFIG.get().context("config should be set")?;
 
+    let t = std::time::Instant::now();
     let registry = Registry::load();
+    timing.push(("registry_load", t.elapsed()));
     if let Some(cmd) = cli.command {
         return handle_command(cmd, config, &registry, pool.clone()).await;
     }
@@ -183,10 +191,17 @@ pub async fn run() -> anyhow::Result<()> {
     }
     let sandbox = Arc::new(sandbox);
 
+    let t = std::time::Instant::now();
     let session = resolve_session(pool.clone(), cli.resume).await?;
+    timing.push(("session_resolve", t.elapsed()));
+    timing.push(("startup_total", t0.elapsed()));
+
     let has_query = !cli.query.is_empty() || !io::stdin().is_terminal();
     if format.is_explicit() || has_query {
         init_stderr_subscriber(cli.debug, &config.log_level);
+        for (phase, dur) in &timing {
+            tracing::info!(phase, ms = dur.as_millis() as u64, "timing: startup phase");
+        }
         run_single_shot(
             cli, config, session, format, registry, agent, model, sandbox,
         )

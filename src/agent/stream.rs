@@ -6,6 +6,8 @@ use agentsdk::error::AgentSdkError;
 use agentsdk::{AgentPlugin, PluginContext};
 use async_trait::async_trait;
 use serde_json::Value;
+use std::collections::HashMap;
+use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug)]
@@ -28,6 +30,10 @@ pub struct StreamPlugin {
     pub api_error_count: u32,
     pub rate_limit_count: u32,
     pub retry: RetryConfig,
+    /// Wall-time instrumentation: tool-call id -> start instant.
+    tool_starts: HashMap<String, Instant>,
+    /// Wall-time instrumentation: current iteration start.
+    iter_start: Option<Instant>,
 }
 
 impl StreamPlugin {
@@ -37,6 +43,8 @@ impl StreamPlugin {
             api_error_count: 0,
             rate_limit_count: 0,
             retry,
+            tool_starts: HashMap::new(),
+            iter_start: None,
         }
     }
 }
@@ -57,13 +65,35 @@ impl AgentPlugin for StreamPlugin {
         text
     }
 
+    async fn on_iteration_start(&mut self, _ctx: &mut PluginContext, iteration: usize) {
+        self.iter_start = Some(Instant::now());
+        tracing::info!(iteration, "timing: iteration start");
+    }
+
+    async fn on_iteration_end(
+        &mut self,
+        _ctx: &mut PluginContext,
+        iteration: usize,
+        had_tool_calls: bool,
+    ) {
+        if let Some(start) = self.iter_start.take() {
+            tracing::info!(
+                iteration,
+                had_tool_calls,
+                ms = start.elapsed().as_millis() as u64,
+                "timing: iteration end"
+            );
+        }
+    }
+
     async fn on_tool_pre_execute(
         &mut self,
         _ctx: &mut PluginContext,
-        _id: &str,
+        id: &str,
         name: &str,
         arguments: &Value,
     ) -> PreToolAction {
+        self.tool_starts.insert(id.to_string(), Instant::now());
         let _ = self.event_tx.send(AgentEvent::ToolCall {
             name: name.to_string(),
             display: format!("{name}({arguments})"),
@@ -76,10 +106,18 @@ impl AgentPlugin for StreamPlugin {
     async fn on_tool_post_execute(
         &mut self,
         _ctx: &mut PluginContext,
-        _id: &str,
+        id: &str,
         name: &str,
         result: &Result<Value, String>,
     ) -> PostToolAction {
+        if let Some(start) = self.tool_starts.remove(id) {
+            tracing::info!(
+                tool = name,
+                ms = start.elapsed().as_millis() as u64,
+                ok = result.is_ok(),
+                "timing: tool done"
+            );
+        }
         let output = match result {
             Ok(value) => {
                 let text = if let Value::String(s) = value {

@@ -284,6 +284,7 @@ impl PieAgent {
         event_tx: UnboundedSender<AgentEvent>,
     ) -> BoxFuture<'a, Result<String>> {
         Box::pin(async move {
+            let t_build = std::time::Instant::now();
             let mut builder = self.build_sdk_agent()?;
 
             let history_plugin = MemoryHistoryPlugin::new();
@@ -370,6 +371,10 @@ impl PieAgent {
             let mut agent = builder
                 .build()
                 .map_err(|e| AppError::Config(e.to_string()))?;
+            tracing::info!(
+                ms = t_build.elapsed().as_millis() as u64,
+                "timing: agent built"
+            );
 
             // Dispatch user message to plugins for transformation/redaction (Fast)
             let query = agent.dispatch_user_message(query_str).await;
@@ -379,7 +384,12 @@ impl PieAgent {
                 let _ = event_tx.send(AgentEvent::UserMessage(query.clone()));
             }
 
+            let t_prompt = std::time::Instant::now();
             let system = self.prepare_system_prompt()?;
+            tracing::info!(
+                ms = t_prompt.elapsed().as_millis() as u64,
+                "timing: system prompt prepared"
+            );
 
             // Inject the system prompt into the agent's context
             if let Some(entity) = agent.entity
@@ -396,7 +406,12 @@ impl PieAgent {
                 .await;
             self.session.add_user(&query).await?;
 
+            let t_run = std::time::Instant::now();
             let _output = agent.run().await?;
+            tracing::info!(
+                ms = t_run.elapsed().as_millis() as u64,
+                "timing: agent run done"
+            );
 
             let final_messages = history_plugin.messages().await;
 
