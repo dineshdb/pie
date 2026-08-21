@@ -1,4 +1,4 @@
-use agentsdk::core::sandbox::{SandboxError, SandboxOutput, SandboxProvider};
+use agentsdk::core::sandbox::{FSProvider, SandboxError, SandboxOutput};
 use async_trait::async_trait;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::path::Path;
@@ -705,7 +705,7 @@ impl PlatformSandbox {
 }
 
 #[async_trait]
-impl SandboxProvider for PlatformSandbox {
+impl FSProvider for PlatformSandbox {
     fn read(&self, path: &Path) -> Result<String, SandboxError> {
         self.check_read_access(path)?;
         Ok(std::fs::read_to_string(path)?)

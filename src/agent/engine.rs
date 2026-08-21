@@ -10,7 +10,7 @@ use crate::registry::Registry;
 use crate::session::Session;
 use agentsdk::core::Sandbox;
 use agentsdk::{Agent as SdkAgent, MemoryHistoryPlugin, Message};
-use agentsdk_plugin_fs::FileSystemPlugin;
+use agentsdk_plugin_fs::{FileSystemPlugin, ReadOnlyFileSystemPlugin};
 use agentsdk_plugin_jewels::JewelsPlugin;
 use agentsdk_plugin_shell::ShellPlugin;
 use agentsdk_plugin_skills::SkillsPlugin;
@@ -20,6 +20,8 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
+
+use super::definition::Agent;
 
 #[derive(Clone)]
 pub struct PieAgent {
@@ -98,6 +100,18 @@ impl PieAgent {
             }
         }
         grants
+    }
+
+    /// Whether the agent should run with read-only filesystem tools: either
+    /// the agent forces it via frontmatter, or the sandbox permits no writes
+    /// so `Write`/`Edit` would only ever fail.
+    fn wants_readonly(agent: Option<&Agent>, sandbox: &SandboxConfig) -> bool {
+        agent.is_some_and(|a| a.readonly) || sandbox.allow_write.is_empty()
+    }
+
+    fn find_agent_definition(&self) -> Option<&Agent> {
+        let name = self.config.agent_name.as_deref()?;
+        self.registry.agents.iter().find(|a| a.name == name)
     }
 
     fn prepare_system_prompt(&self) -> Result<String> {
@@ -222,17 +236,22 @@ impl PieAgent {
                         .map_err(|e| {
                             AppError::Plugin(format!("failed to build skills plugin: {e}"))
                         })?,
-                )
-                .plugin(FileSystemPlugin::new())
-                .plugin(PersistencePlugin::new(self.session.clone()))
-                .plugin(ShellPlugin::new())
-                .plugin(WebsearchPlugin::new())
-                .plugin(HelperBinariesPlugin::new())
-                .plugin(UserCommandPlugin::new(
-                    self.registry.clone(),
-                    self.config.agent_name.clone(),
-                ))
-                .plugin(crate::plugin::DoomLoopPlugin::new());
+                );
+
+            builder = if Self::wants_readonly(self.find_agent_definition(), &self.sandbox) {
+                builder.plugin(ReadOnlyFileSystemPlugin::new())
+            } else {
+                builder.plugin(FileSystemPlugin::new())
+            }
+            .plugin(PersistencePlugin::new(self.session.clone()))
+            .plugin(ShellPlugin::new())
+            .plugin(WebsearchPlugin::new())
+            .plugin(HelperBinariesPlugin::new())
+            .plugin(UserCommandPlugin::new(
+                self.registry.clone(),
+                self.config.agent_name.clone(),
+            ))
+            .plugin(crate::plugin::DoomLoopPlugin::new());
 
             if AgentConfig::is_debug() {
                 builder = builder.plugin(crate::plugin::DebugPlugin::new(
@@ -291,5 +310,60 @@ impl PieAgent {
 
             Ok(final_text)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::OutputMode;
+
+    fn test_agent(readonly: bool) -> Agent {
+        Agent {
+            name: "t".into(),
+            description: String::new(),
+            output_mode: OutputMode::default(),
+            model: None,
+            temperature: None,
+            content: String::new(),
+            needs: Vec::new(),
+            tools: Vec::new(),
+            sandbox: None,
+            grants: Vec::new(),
+            readonly,
+        }
+    }
+
+    fn sandbox(write_paths: &[&str]) -> SandboxConfig {
+        SandboxConfig {
+            allow_write: write_paths.iter().map(|p| (*p).into()).collect(),
+            ..SandboxConfig::default()
+        }
+    }
+
+    #[test]
+    fn readonly_forced_by_agent_frontmatter() {
+        assert!(PieAgent::wants_readonly(
+            Some(&test_agent(true)),
+            &sandbox(&["."])
+        ));
+    }
+
+    #[test]
+    fn readonly_when_sandbox_permits_no_writes() {
+        assert!(PieAgent::wants_readonly(None, &sandbox(&[])));
+        assert!(PieAgent::wants_readonly(
+            Some(&test_agent(false)),
+            &sandbox(&[])
+        ));
+    }
+
+    #[test]
+    fn full_fs_when_agent_writable_and_sandbox_allows_write() {
+        assert!(!PieAgent::wants_readonly(
+            Some(&test_agent(false)),
+            &sandbox(&["."])
+        ));
+        assert!(!PieAgent::wants_readonly(None, &sandbox(&["."])));
     }
 }

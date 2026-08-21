@@ -46,6 +46,8 @@ pub struct Agent {
     pub tools: Vec<String>,
     pub sandbox: Option<SandboxConfig>,
     pub grants: Vec<Permission>,
+    /// Restrict this agent's filesystem tools to read-only operations.
+    pub readonly: bool,
 }
 
 /// Serde-deserializable frontmatter for agent files.
@@ -63,6 +65,9 @@ struct AgentFrontmatter {
     sandbox: Option<SandboxConfig>,
     #[serde(default)]
     grants: Vec<Permission>,
+    /// Restrict this agent's filesystem tools to read-only operations.
+    #[serde(default)]
+    readonly: bool,
 }
 
 fn agents_root_global() -> PathBuf {
@@ -119,6 +124,7 @@ fn parse_agent(raw: &str, filename: &str) -> Option<Agent> {
         tools: meta.tools,
         sandbox: meta.sandbox,
         grants: meta.grants,
+        readonly: meta.readonly,
     })
 }
 
@@ -201,6 +207,19 @@ mod tests {
                 .ok_or_else(|| anyhow::anyhow!("parse failed for {val}"))?;
             assert_eq!(agent.output_mode, expected, "failed for {val}");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn parse_agent_readonly() -> Result<()> {
+        let raw = "---\nname: explorer\ndescription: reads only\nreadonly: true\n---\ncontent";
+        let agent =
+            parse_agent(raw, "explorer.md").ok_or_else(|| anyhow::anyhow!("parse failed"))?;
+        assert!(agent.readonly);
+
+        let raw = "---\nname: writer\ndescription: writes\n---\ncontent";
+        let agent = parse_agent(raw, "writer.md").ok_or_else(|| anyhow::anyhow!("parse failed"))?;
+        assert!(!agent.readonly);
         Ok(())
     }
 
