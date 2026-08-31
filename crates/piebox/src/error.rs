@@ -20,6 +20,11 @@ pub enum Error {
     Krun { call: &'static str, code: i32 },
     /// A value rejected before it ever reached libkrun.
     InvalidValue { what: &'static str, detail: String },
+    /// An external program piebox depends on failed.
+    Command {
+        program: &'static str,
+        detail: String,
+    },
 }
 
 impl Error {
@@ -30,7 +35,8 @@ impl Error {
         Ok(code)
     }
 
-    pub(crate) fn invalid(what: &'static str, detail: impl Into<String>) -> Self {
+    /// Rejects a value before it reaches libkrun.
+    pub fn invalid(what: &'static str, detail: impl Into<String>) -> Self {
         Self::InvalidValue {
             what,
             detail: detail.into(),
@@ -85,6 +91,7 @@ impl fmt::Display for Error {
                 write!(f, "{call} failed: {errno} (code {code})")
             }
             Self::InvalidValue { what, detail } => write!(f, "invalid {what}: {detail}"),
+            Self::Command { program, detail } => write!(f, "{program}: {detail}"),
         }
     }
 }
@@ -94,7 +101,7 @@ impl std::error::Error for Error {
         match self {
             Self::LibraryLoad { source, .. } => source.as_ref().map(|e| e as _),
             Self::Symbol { source, .. } => Some(source),
-            Self::Krun { .. } | Self::InvalidValue { .. } => None,
+            Self::Krun { .. } | Self::InvalidValue { .. } | Self::Command { .. } => None,
         }
     }
 }

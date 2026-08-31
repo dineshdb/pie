@@ -1,11 +1,14 @@
 //! piebox — a libkrun-backed Linux microVM devbox that hosts pie and, inside
 //! it, pie's own sandboxes.
 //!
-//! This stage is the libkrun binding: load the library, ask the host what it
-//! supports, and build/destroy VM configuration contexts. Booting a guest is
-//! deliberately absent here, because `krun_start_enter` never returns — it
-//! takes over the calling process and `exit()`s with the workload's status — so
-//! the VM has to run in a dedicated child process (see the `piebox-vmm` helper).
+//! The library loads libkrun at runtime, reports what the host supports, builds
+//! VM configuration contexts, and boots guests ([`VmSpec`]).
+//!
+//! One constraint shapes everything: `krun_start_enter` never returns. It takes
+//! over the calling process and `exit()`s with the workload's status, so a
+//! process that boots a guest can do nothing else. The `piebox` binary
+//! therefore re-execs itself as a hidden `__vmm` subcommand whose only job is
+//! to become the VM, while the parent supervises it.
 
 #![cfg_attr(
     test,
@@ -19,8 +22,12 @@
 
 mod error;
 mod ffi;
+mod rootfs;
+mod vm;
 
 pub use error::{Error, Result};
+pub use rootfs::{ContainerStorage, container_rootfs};
+pub use vm::{EXIT_EXEC_FAILED, EXIT_EXEC_NOT_FOUND, EXIT_INIT_SETUP_FAILED, VmSpec, loader_env};
 
 use ffi::Krun;
 use std::num::NonZeroU8;
@@ -215,6 +222,11 @@ impl Libkrun {
         &self.path
     }
 
+    /// Resolved libkrun entry points.
+    pub(crate) const fn krun(&self) -> &Krun {
+        &self.krun
+    }
+
     /// Sets libkrun's log verbosity. Only the first call in a process takes
     /// effect; later calls report an error instead of being forwarded.
     ///
@@ -276,7 +288,18 @@ pub struct Ctx<'lib> {
     id: u32,
 }
 
-impl Ctx<'_> {
+impl<'lib> Ctx<'lib> {
+    /// Raw libkrun context id. Crate-internal: libkrun's context map is
+    /// per-process, so this id means nothing to any other process.
+    pub(crate) const fn raw_id(&self) -> u32 {
+        self.id
+    }
+
+    /// The library this context belongs to.
+    pub(crate) const fn lib(&self) -> &'lib Libkrun {
+        self.lib
+    }
+
     /// Sets vCPU count and RAM.
     ///
     /// The vCPU count is checked against the hypervisor limit first, so an

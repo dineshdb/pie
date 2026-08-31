@@ -7,6 +7,7 @@
 
 use crate::error::{Error, Result};
 use libloading::{Library, Symbol};
+use std::ffi::c_char;
 use std::path::{Path, PathBuf};
 
 /// Resolved libkrun entry points.
@@ -22,6 +23,11 @@ pub(crate) struct Krun {
     pub(crate) set_vm_config: unsafe extern "C" fn(u32, u8, u32) -> i32,
     pub(crate) get_max_vcpus: unsafe extern "C" fn() -> i32,
     pub(crate) has_feature: unsafe extern "C" fn(u64) -> i32,
+    pub(crate) set_root: unsafe extern "C" fn(u32, *const c_char) -> i32,
+    pub(crate) set_workdir: unsafe extern "C" fn(u32, *const c_char) -> i32,
+    pub(crate) set_exec:
+        unsafe extern "C" fn(u32, *const c_char, *const *const c_char, *const *const c_char) -> i32,
+    pub(crate) start_enter: unsafe extern "C" fn(u32) -> i32,
 }
 
 impl Krun {
@@ -63,6 +69,10 @@ impl Krun {
                 set_vm_config: sym(&lib, "krun_set_vm_config")?,
                 get_max_vcpus: sym(&lib, "krun_get_max_vcpus")?,
                 has_feature: sym(&lib, "krun_has_feature")?,
+                set_root: sym(&lib, "krun_set_root")?,
+                set_workdir: sym(&lib, "krun_set_workdir")?,
+                set_exec: sym(&lib, "krun_set_exec")?,
+                start_enter: sym(&lib, "krun_start_enter")?,
                 _lib: lib,
             })
         }
