@@ -81,6 +81,13 @@ struct VmArgs {
     #[arg(long, conflicts_with = "container")]
     rootfs_path: Option<PathBuf>,
 
+    /// Expose a host directory to the guest, as HOST:GUEST or HOST:GUEST:ro.
+    ///
+    /// Implies --supervised: attaching the device is all the host can do, and
+    /// only the in-guest supervisor can mount it.
+    #[arg(long = "mount", short = 'm', value_name = "HOST:GUEST[:ro]")]
+    mounts: Vec<String>,
+
     /// Run the command through the in-guest supervisor instead of as the boot
     /// workload.
     ///
@@ -210,7 +217,7 @@ fn build_spec(
         )
     })?;
 
-    check_workdir(vm, rootfs)?;
+    check_workdir(vm, rootfs, &[])?;
 
     let mut spec = VmSpec::new(rootfs, utf8(exec)?)?;
     spec.vcpus = Vcpus::new(vm.vcpus)?;
@@ -227,8 +234,17 @@ fn build_spec(
 /// libkrun's init lets a failed chdir slide and runs the workload in `/`, and
 /// the supervisor would report the failure as if the *program* were missing, so
 /// neither path can be trusted to notice.
-fn check_workdir(vm: &VmArgs, rootfs: &std::path::Path) -> Result<(), Error> {
+fn check_workdir(
+    vm: &VmArgs,
+    rootfs: &std::path::Path,
+    mounts: &[piebox::Mount],
+) -> Result<(), Error> {
     if let Some(workdir) = &vm.workdir
+        // A workdir inside a mount does not exist in the image and is not
+        // supposed to: the mount provides it once the guest is running.
+        && !mounts
+            .iter()
+            .any(|mount| workdir.starts_with(&mount.guest_path))
         && let Ok(relative) = workdir.strip_prefix("/")
         && !rootfs.join(relative).is_dir()
     {
@@ -261,6 +277,23 @@ fn resolve_env(entries: &[String]) -> Result<Vec<(String, String)>, Error> {
         .collect()
 }
 
+/// A mount's guest path as UTF-8, which the protocol requires.
+fn guest_path_str(mount: &piebox::Mount) -> Result<String, Error> {
+    mount
+        .guest_path
+        .to_str()
+        .map(ToString::to_string)
+        .ok_or_else(|| {
+            Error::invalid(
+                "mount",
+                format!(
+                    "guest path {} is not valid UTF-8",
+                    mount.guest_path.display()
+                ),
+            )
+        })
+}
+
 /// Converts an argv entry, which libkrun and the guest both require as UTF-8.
 fn utf8(value: &std::ffi::OsString) -> Result<String, Error> {
     value.to_str().map(ToString::to_string).ok_or_else(|| {
@@ -279,6 +312,7 @@ fn utf8(value: &std::ffi::OsString) -> Result<String, Error> {
 fn run_supervised(
     vm: &VmArgs,
     rootfs: &std::path::Path,
+    mounts: Vec<piebox::Mount>,
     command: &[std::ffi::OsString],
     log_level: Option<Verbosity>,
 ) -> Result<ExitCode, Error> {
@@ -288,7 +322,11 @@ fn run_supervised(
             "no command given; put it after `--`, e.g. `piebox run --supervised -- /bin/sh -c date`",
         )
     })?;
-    check_workdir(vm, rootfs)?;
+    check_workdir(vm, rootfs, &mounts)?;
+
+    // Created before the guest boots and removed after it exits, so a mount
+    // point piebox invented does not stay in the image forever.
+    let _mount_points = piebox::MountPoints::create(rootfs, &mounts)?;
 
     let request = piebox::Request {
         program: utf8(program)?,
@@ -298,6 +336,18 @@ fn run_supervised(
             .workdir
             .as_ref()
             .map(|dir| dir.to_string_lossy().into_owned()),
+        // The guest is told the tag and where to put it; the host attaches the
+        // matching device below, and the two agree by index.
+        mounts: piebox::tagged(&mounts)
+            .into_iter()
+            .map(|(tag, mount)| {
+                Ok(piebox_proto::Mount {
+                    tag,
+                    target: guest_path_str(mount)?,
+                    read_only: mount.read_only,
+                })
+            })
+            .collect::<Result<Vec<_>, Error>>()?,
     };
 
     let binary = piebox::guest_binary()?;
@@ -314,6 +364,7 @@ fn run_supervised(
         port: piebox::SUPERVISOR_PORT,
         socket: endpoint.socket().to_path_buf(),
     });
+    spec.mounts = mounts;
     spec.validate()?;
 
     let lib = Libkrun::load()?;
@@ -389,6 +440,15 @@ fn run(
     command: &[std::ffi::OsString],
     log_level: Option<Verbosity>,
 ) -> Result<ExitCode, Error> {
+    // Parsed first: a typo'd --mount should not leave a buildah mount
+    // reference behind on the way to being rejected.
+    let mounts = vm
+        .mounts
+        .iter()
+        .map(|raw| raw.parse::<piebox::Mount>())
+        .collect::<Result<Vec<_>, _>>()?;
+    piebox::check_mount_collisions(&mounts)?;
+
     let rootfs = match &vm.rootfs_path {
         Some(path) => path.clone(),
         None => {
@@ -397,8 +457,10 @@ fn run(
         }
     };
 
-    if vm.supervised {
-        return run_supervised(vm, &rootfs, command, log_level);
+    // Mounts can only be set up from inside the guest, so asking for one
+    // selects the supervised path rather than being refused.
+    if vm.supervised || !mounts.is_empty() {
+        return run_supervised(vm, &rootfs, mounts, command, log_level);
     }
 
     // Refuse bad input before a VM process exists: the error is clearer, and

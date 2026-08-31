@@ -73,6 +73,23 @@ impl Kind {
     }
 }
 
+/// A filesystem the guest should have mounted.
+///
+/// The host attaches the virtio-fs device; only the guest can mount it, and
+/// `krun_set_mapped_volumes` — the API that used to do this for you — is marked
+/// "NO LONGER SUPPORTED" in libkrun.h.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Mount {
+    /// virtio-fs tag identifying the device inside the guest.
+    pub tag: String,
+    /// Absolute path to mount it at.
+    pub target: String,
+    /// Mount read-only as well. The host already exposes the device read-only;
+    /// this makes the guest kernel refuse writes too, so a bug on either side
+    /// alone is not enough to let one through.
+    pub read_only: bool,
+}
+
 /// A command for the guest to run.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Request {
@@ -84,6 +101,12 @@ pub struct Request {
     pub env: Vec<(String, String)>,
     /// Working directory inside the guest.
     pub cwd: Option<String>,
+    /// Filesystems to have mounted before the command runs.
+    ///
+    /// Carried on every request and applied idempotently, so the supervisor
+    /// needs no setup handshake and no state of its own.
+    #[serde(default)]
+    pub mounts: Vec<Mount>,
 }
 
 /// How a command ended.
@@ -234,6 +257,11 @@ mod tests {
             ],
             env: vec![("A".to_string(), "b\"c".to_string())],
             cwd: Some("/tmp".to_string()),
+            mounts: vec![Mount {
+                tag: "piebox0".to_string(),
+                target: "/work".to_string(),
+                read_only: true,
+            }],
         };
         let mut buffer = Vec::new();
         write_json(&mut buffer, Kind::Request, &request).unwrap();
@@ -246,10 +274,21 @@ mod tests {
         assert_eq!(back.args[2], "--");
         assert_eq!(back.args[3].len(), 100_000);
         assert_eq!(back.env[0].1, "b\"c");
+        assert_eq!(back.mounts[0].target, "/work");
+        assert!(back.mounts[0].read_only);
     }
 
     /// A length prefix is untrusted: it must not be able to ask for a huge
     /// allocation, and a truncated frame must be an error rather than a hang.
+    /// `mounts` was added after the first version of this protocol, so a
+    /// request without it must still parse rather than failing outright.
+    #[test]
+    fn a_request_without_mounts_still_parses() {
+        let json = r#"{"program":"/bin/true","args":[],"env":[],"cwd":null}"#;
+        let request: Request = serde_json::from_str(json).expect("should parse");
+        assert!(request.mounts.is_empty());
+    }
+
     #[test]
     fn a_hostile_header_is_rejected() {
         let mut oversized = vec![Kind::Stdout.as_byte()];

@@ -290,6 +290,7 @@ fn a_failure_without_an_exit_does_not_hang_the_host() {
         args: Vec::new(),
         env: Vec::new(),
         cwd: None,
+        mounts: Vec::new(),
     };
     let mut out = Vec::new();
     let mut err = Vec::new();
@@ -347,6 +348,7 @@ fn one_connection_serves_several_commands() {
         args: Vec::new(),
         env: Vec::new(),
         cwd: None,
+        mounts: Vec::new(),
     };
     for expected in ["first", "second", "third"] {
         let mut out = Vec::new();
@@ -470,4 +472,299 @@ fn a_nonexistent_workdir_is_named() {
         !stderr.contains("could not run /bin/pwd"),
         "a bad workdir must not read as a missing program: {stderr}"
     );
+}
+
+// --- Mounts ---------------------------------------------------------------
+//
+// piebox's own mounts: a host directory becomes a virtio-fs device, and the
+// guest supervisor mounts it. Only the supervised path can do this, because
+// libkrun's host-side mounting API is no longer supported.
+
+/// A scratch host directory, removed when the test ends.
+struct Workspace(PathBuf);
+
+impl Workspace {
+    fn new(name: &str) -> Self {
+        let path = std::env::temp_dir().join(format!("piebox-work-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&path).expect("workspace");
+        Self(path)
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for Workspace {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).ok();
+    }
+}
+
+#[test]
+fn a_mounted_host_directory_is_readable_in_the_guest() {
+    guest_or_skip!();
+    let work = Workspace::new("read");
+    std::fs::write(work.path().join("from-host.txt"), b"host wrote this\n").expect("write");
+
+    let spec = format!("{}:/work", work.path().display());
+    let output = supervised(&["--mount", &spec], &["/bin/cat", "/work/from-host.txt"]);
+    assert_stdout(&output, "host wrote this");
+}
+
+#[test]
+fn what_the_guest_writes_appears_on_the_host() {
+    guest_or_skip!();
+    let work = Workspace::new("write");
+    let spec = format!("{}:/work", work.path().display());
+
+    let output = supervised(
+        &["--mount", &spec],
+        &[
+            "/bin/sh",
+            "-c",
+            "echo guest wrote this > /work/from-guest.txt",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let written = std::fs::read_to_string(work.path().join("from-guest.txt")).expect("host read");
+    assert_eq!(written.trim(), "guest wrote this");
+}
+
+/// Read-only is enforced twice over: the host exposes the device read-only and
+/// the guest mounts it MS_RDONLY, so neither side alone failing lets a write
+/// through.
+#[test]
+fn a_read_only_mount_cannot_be_written_to() {
+    guest_or_skip!();
+    let work = Workspace::new("ro");
+    std::fs::write(work.path().join("readable.txt"), b"still readable\n").expect("write");
+    let spec = format!("{}:/work:ro", work.path().display());
+
+    let output = supervised(
+        &["--mount", &spec],
+        &["/bin/sh", "-c", "echo nope > /work/blocked.txt"],
+    );
+    assert!(!output.status.success(), "a write must fail: {output:?}");
+    assert!(
+        !work.path().join("blocked.txt").exists(),
+        "nothing may reach the host"
+    );
+
+    // ...and reading still works.
+    let output = supervised(&["--mount", &spec], &["/bin/cat", "/work/readable.txt"]);
+    assert_stdout(&output, "still readable");
+}
+
+#[test]
+fn several_directories_can_be_mounted_at_once() {
+    guest_or_skip!();
+    let one = Workspace::new("multi-one");
+    let two = Workspace::new("multi-two");
+    std::fs::write(one.path().join("a"), b"first\n").expect("write");
+    std::fs::write(two.path().join("b"), b"second\n").expect("write");
+
+    let output = supervised(
+        &[
+            "--mount",
+            &format!("{}:/one", one.path().display()),
+            "--mount",
+            &format!("{}:/two:ro", two.path().display()),
+        ],
+        &["/bin/sh", "-c", "cat /one/a /two/b"],
+    );
+    assert_stdout(&output, "first\nsecond");
+}
+
+/// The mount point need not exist in the image: piebox creates it.
+#[test]
+fn a_mount_point_that_does_not_exist_yet_is_created() {
+    guest_or_skip!();
+    let work = Workspace::new("mkdir");
+    std::fs::write(work.path().join("f"), b"deep\n").expect("write");
+    let spec = format!("{}:/piebox-created/deeper", work.path().display());
+
+    let output = supervised(
+        &["--mount", &spec],
+        &["/bin/cat", "/piebox-created/deeper/f"],
+    );
+    assert_stdout(&output, "deep");
+}
+
+/// Asking for a mount selects the supervised path, since only the guest can
+/// mount one — the caller should not have to know that.
+#[test]
+fn a_mount_does_not_require_passing_supervised() {
+    guest_or_skip!();
+    let harness = harness().expect("checked");
+    let work = Workspace::new("implies");
+    std::fs::write(work.path().join("f"), b"implied\n").expect("write");
+
+    let output = Command::new(&harness.binary)
+        .arg("run")
+        .arg("--rootfs-path")
+        .arg(&harness.rootfs)
+        .args(["--mount", &format!("{}:/work", work.path().display())])
+        .args(["--", "/bin/cat", "/work/f"])
+        .output()
+        .expect("spawn piebox");
+    assert_stdout(&output, "implied");
+}
+
+/// Runs piebox without needing a bootable guest: a bad mount is rejected during
+/// validation, before anything is started.
+fn run_expecting_rejection(args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_piebox"))
+        .arg("run")
+        .args(["--rootfs-path", "/"])
+        .args(args)
+        .args(["--", "/bin/true"])
+        .output()
+        .expect("spawn piebox")
+}
+
+#[test]
+fn a_bad_mount_specification_is_refused_before_booting() {
+    let output = run_expecting_rejection(&["--mount", "/nonexistent/piebox-src:/work"]);
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("mount"), "{stderr}");
+
+    for bad in [
+        "missing-colon",
+        "/tmp:relative-guest-path",
+        "/tmp:/work:maybe",
+    ] {
+        let output = run_expecting_rejection(&["--mount", bad]);
+        assert!(
+            !output.status.success(),
+            "{bad:?} must be refused: {output:?}"
+        );
+    }
+}
+
+/// `:ro` has to hold against a guest that actively fights it. The guest *can*
+/// flip its own mount table to `rw` — only the host-side device flag stops the
+/// write, which is the half a compromised guest cannot reach.
+#[test]
+fn a_read_only_mount_survives_the_guest_remounting_it_rw() {
+    guest_or_skip!();
+    let work = Workspace::new("remount");
+    let spec = format!("{}:/ro:ro", work.path().display());
+
+    let output = supervised(
+        &["--mount", &spec],
+        &[
+            "/bin/sh",
+            "-c",
+            "mount -o remount,rw /ro; echo escaped > /ro/escaped.txt",
+        ],
+    );
+    assert!(!output.status.success(), "the write must fail: {output:?}");
+    assert!(
+        !work.path().join("escaped.txt").exists(),
+        "a remount must not let a write reach the host"
+    );
+}
+
+/// A symlink inside a mounted directory must resolve in the *guest*, not on the
+/// host. virtio-fs sends LOOKUP per component and hands symlinks back to the
+/// guest kernel, so this holds — worth pinning so it cannot regress quietly.
+#[test]
+fn symlinks_in_a_mount_cannot_reach_host_files() {
+    guest_or_skip!();
+    let work = Workspace::new("symlink");
+    std::os::unix::fs::symlink("/etc/hostname", work.path().join("absolute")).expect("symlink");
+    std::os::unix::fs::symlink("../../../../etc/hostname", work.path().join("relative"))
+        .expect("symlink");
+
+    // The host's /etc/hostname either does not exist or is not the guest's.
+    let host_content = std::fs::read_to_string("/etc/hostname").unwrap_or_default();
+
+    for link in ["absolute", "relative"] {
+        let output = supervised(
+            &["--mount", &format!("{}:/work", work.path().display())],
+            &["/bin/cat", &format!("/work/{link}")],
+        );
+        let seen = stdout_of(&output);
+        assert!(
+            seen.is_empty() || seen != host_content.trim(),
+            "{link} resolved to the host's file: {seen:?}"
+        );
+    }
+}
+
+/// Mounting over a path the guest already has mounted would either hide
+/// something the guest needs or silently run against the wrong filesystem.
+#[test]
+fn a_target_that_is_already_a_mount_point_is_refused() {
+    guest_or_skip!();
+    let work = Workspace::new("occupied");
+    std::fs::write(work.path().join("f"), b"mine\n").expect("write");
+
+    // /dev/shm is a tmpfs mounted by libkrun's init before the supervisor runs.
+    let output = supervised(
+        &["--mount", &format!("{}:/dev/shm", work.path().display())],
+        &["/bin/cat", "/dev/shm/f"],
+    );
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("already mounted"), "{stderr}");
+}
+
+/// The whole point of a mount for pie: run a command *in* the mounted checkout.
+/// The directory does not exist in the image, so a host-side existence check
+/// must not refuse it.
+#[test]
+fn the_working_directory_can_be_inside_a_mount() {
+    guest_or_skip!();
+    let work = Workspace::new("cwd");
+    std::fs::write(work.path().join("marker"), b"here\n").expect("write");
+    let target = format!("/piebox-cwd-{}", std::process::id());
+
+    let output = supervised(
+        &[
+            "--mount",
+            &format!("{}:{target}", work.path().display()),
+            "--workdir",
+            &target,
+        ],
+        &["/bin/sh", "-c", "pwd; cat marker"],
+    );
+    assert_stdout(&output, &format!("{target}\nhere"));
+}
+
+#[test]
+fn nested_and_reserved_targets_are_refused_without_booting() {
+    let work = Workspace::new("refused");
+    let host = work.path().display().to_string();
+    let cases: Vec<Vec<String>> = vec![
+        // nested
+        vec![
+            "--mount".into(),
+            format!("{host}:/n"),
+            "--mount".into(),
+            format!("{host}:/n/inner"),
+        ],
+        // reserved for piebox itself
+        vec!["--mount".into(), format!("{host}:/.piebox")],
+        // traversal: `/bar/..` is `/`
+        vec!["--mount".into(), format!("{host}:/bar/..")],
+        // the same target twice
+        vec![
+            "--mount".into(),
+            format!("{host}:/d"),
+            "--mount".into(),
+            format!("{host}:/d"),
+        ],
+    ];
+    for case in &cases {
+        let args: Vec<&str> = case.iter().map(String::as_str).collect();
+        let output = run_expecting_rejection(&args);
+        assert!(!output.status.success(), "{args:?} must be refused");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("mount"),
+            "{args:?}: {output:?}"
+        );
+    }
 }

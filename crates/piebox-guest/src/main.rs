@@ -14,6 +14,8 @@
 //! `cargo build -p piebox-guest --release --target aarch64-unknown-linux-musl`
 
 #[cfg(target_os = "linux")]
+mod mounts;
+#[cfg(target_os = "linux")]
 mod supervisor;
 
 #[cfg(target_os = "linux")]

@@ -23,12 +23,14 @@
 mod channel;
 mod error;
 mod ffi;
+mod mount;
 mod rootfs;
 mod supervisor;
 mod vm;
 
 pub use channel::{EXIT_PARENT_GONE, SPEC_FD, attach_spec_fd, send_spec};
 pub use error::{Error, Result};
+pub use mount::{Mount, MountPoints, check_collisions as check_mount_collisions, tagged};
 pub use rootfs::{ContainerStorage, container_rootfs};
 pub use supervisor::{
     DEFAULT_REPLY_TIMEOUT, ENV_GUEST_BIN, Endpoint, GUEST_BINARY_PREFIX, GUEST_STAGING_DIR,

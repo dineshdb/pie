@@ -70,6 +70,13 @@ pub struct VmSpec {
     /// Control channel between the guest supervisor and the host, if any.
     #[serde(default)]
     pub vsock: Option<Vsock>,
+    /// Host directories to expose as virtio-fs devices.
+    ///
+    /// Attaching the device is all the host can do; the guest supervisor
+    /// mounts it. These are device calls, so unlike arguments and environment
+    /// they cost nothing against the kernel command line budget.
+    #[serde(default)]
+    pub mounts: Vec<crate::mount::Mount>,
 }
 
 /// A vsock port wired to a host socket.
@@ -94,6 +101,7 @@ impl VmSpec {
             args: Vec::new(),
             env: Self::default_env(),
             vsock: None,
+            mounts: Vec::new(),
         })
     }
 
@@ -111,6 +119,7 @@ impl VmSpec {
         self.apply_root(&ctx)?;
         self.apply_workdir(&ctx)?;
         self.apply_vsock(&ctx)?;
+        self.apply_mounts(&ctx)?;
         self.apply_exec(&ctx)?;
 
         tracing::debug!(
@@ -149,6 +158,7 @@ impl VmSpec {
                 format!("{} must be absolute inside the guest", self.exec.display()),
             ));
         }
+        crate::mount::check_collisions(&self.mounts)?;
         self.validate_cmdline()
     }
 
@@ -300,6 +310,33 @@ impl VmSpec {
             (ctx.lib().krun().add_vsock_port2)(ctx.raw_id(), vsock.port, socket.as_ptr(), false)
         };
         Error::check("krun_add_vsock_port2", code).map(drop)
+    }
+
+    fn apply_mounts(&self, ctx: &Ctx<'_>) -> Result<()> {
+        for (tag, mount) in crate::mount::tagged(&self.mounts) {
+            let tag = c_str(&tag, "mount tag")?;
+            let path = c_path(&mount.host_path, "mount host path")?;
+            // shm_size 0: no DAX window. DAX needs a sized shared-memory
+            // window and buys throughput piebox has no measurement for yet.
+            // SAFETY: both strings outlive the call and libkrun copies them.
+            let code = unsafe {
+                (ctx.lib().krun().add_virtiofs3)(
+                    ctx.raw_id(),
+                    tag.as_ptr(),
+                    path.as_ptr(),
+                    0,
+                    mount.read_only,
+                )
+            };
+            Error::check("krun_add_virtiofs3", code)?;
+            tracing::debug!(
+                host = %mount.host_path.display(),
+                guest = %mount.guest_path.display(),
+                read_only = mount.read_only,
+                "attached virtio-fs device",
+            );
+        }
+        Ok(())
     }
 
     fn apply_exec(&self, ctx: &Ctx<'_>) -> Result<()> {

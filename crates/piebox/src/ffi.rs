@@ -29,6 +29,8 @@ pub(crate) struct Krun {
         unsafe extern "C" fn(u32, *const c_char, *const *const c_char, *const *const c_char) -> i32,
     pub(crate) start_enter: unsafe extern "C" fn(u32) -> i32,
     pub(crate) add_vsock_port2: unsafe extern "C" fn(u32, u32, *const c_char, bool) -> i32,
+    pub(crate) add_virtiofs3:
+        unsafe extern "C" fn(u32, *const c_char, *const c_char, u64, bool) -> i32,
 }
 
 impl Krun {
@@ -75,6 +77,7 @@ impl Krun {
                 set_exec: sym(&lib, "krun_set_exec")?,
                 start_enter: sym(&lib, "krun_start_enter")?,
                 add_vsock_port2: sym(&lib, "krun_add_vsock_port2")?,
+                add_virtiofs3: sym(&lib, "krun_add_virtiofs3")?,
                 _lib: lib,
             })
         }

@@ -70,6 +70,13 @@ fn fail<W: std::io::Write>(writer: &mut W, message: &str) {
 
 /// Runs one request, streaming its output back as it is produced.
 fn execute<W: std::io::Write>(request: &Request, writer: &mut W) {
+    // Before anything else: a command that expected a mount and got an empty
+    // directory would read nothing and report success.
+    if let Err(err) = crate::mounts::ensure(&request.mounts) {
+        fail(writer, &err);
+        return;
+    }
+
     let mut command = Command::new(&request.program);
     command
         .args(&request.args)
