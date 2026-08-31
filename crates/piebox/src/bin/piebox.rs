@@ -13,13 +13,17 @@ use std::process::ExitCode;
     version,
     about = "libkrun-backed Linux microVM devbox for pie",
     after_help = "\
-The guest command follows `--`:
+Flags follow docker where they mean the same thing (-v, -e, -w, -m). The guest
+command follows `--`:
 
     piebox run -- /bin/sh -c 'uname -r'
-    piebox run --vcpus 4 --ram 4096 -- /usr/bin/make -j4
+    piebox run --cpus 4 -m 4g -- /usr/bin/make -j4
+    piebox run -v .:/work -w /work -- cargo test
+    piebox run -v ~/src:/src:ro -- /bin/ls /src
 
-Secrets are better passed by name than by value, since a command line is
-readable by every user on the machine:
+Unlike docker, a bare -m value is MiB rather than bytes, and secrets are better
+passed by name than by value, since a command line is readable by every user on
+the machine:
 
     TOKEN=... piebox run -e TOKEN -- ./deploy"
 )]
@@ -57,16 +61,27 @@ enum Command {
 /// Guest sizing and source, shared by `run` and `__vmm`.
 #[derive(clap::Args, Clone, Debug)]
 struct VmArgs {
-    /// Guest vCPUs.
-    #[arg(long, default_value_t = 2, env = "PIEBOX_VCPUS")]
-    vcpus: u8,
+    /// Number of guest CPUs.
+    ///
+    /// A whole number of vCPUs, unlike docker's fractional share.
+    #[arg(long, default_value_t = 2, env = "PIEBOX_CPUS")]
+    cpus: u8,
 
-    /// Guest RAM in MiB.
-    #[arg(long, default_value_t = 1024, env = "PIEBOX_RAM")]
-    ram: u32,
+    /// Guest memory, as a plain number of MiB or with a `m`/`g` suffix.
+    ///
+    /// A bare number is MiB, not bytes as docker reads it: this sizes a VM, and
+    /// `-m 1024` meaning one kilobyte would be a trap.
+    #[arg(
+        long,
+        short = 'm',
+        default_value = "1024",
+        env = "PIEBOX_MEMORY",
+        value_name = "SIZE"
+    )]
+    memory: String,
 
     /// Working directory inside the guest.
-    #[arg(long)]
+    #[arg(long, short = 'w')]
     workdir: Option<PathBuf>,
 
     /// Buildah container whose root filesystem the guest boots.
@@ -85,8 +100,8 @@ struct VmArgs {
     ///
     /// Implies --supervised: attaching the device is all the host can do, and
     /// only the in-guest supervisor can mount it.
-    #[arg(long = "mount", short = 'm', value_name = "HOST:GUEST[:ro]")]
-    mounts: Vec<String>,
+    #[arg(long = "volume", short = 'v', value_name = "HOST:GUEST[:ro]")]
+    volumes: Vec<String>,
 
     /// Run the command through the in-guest supervisor instead of as the boot
     /// workload.
@@ -220,8 +235,8 @@ fn build_spec(
     check_workdir(vm, rootfs, &[])?;
 
     let mut spec = VmSpec::new(rootfs, utf8(exec)?)?;
-    spec.vcpus = Vcpus::new(vm.vcpus)?;
-    spec.ram = RamMib::new(vm.ram)?;
+    spec.vcpus = Vcpus::new(vm.cpus)?;
+    spec.ram = parse_memory(&vm.memory)?;
     spec.workdir = vm.workdir.clone();
     spec.args = args.iter().map(utf8).collect::<Result<_, _>>()?;
     spec.env.extend(resolve_env(&vm.env)?);
@@ -275,6 +290,31 @@ fn resolve_env(entries: &[String]) -> Result<Vec<(String, String)>, Error> {
             }
         })
         .collect()
+}
+
+/// Parses a memory size: a plain number of MiB, or one with a `m`/`g` suffix.
+///
+/// Docker reads a bare number as *bytes*; piebox reads MiB, because this sizes a
+/// VM and `-m 1024` meaning a kilobyte would be a trap rather than a nicety.
+fn parse_memory(raw: &str) -> Result<RamMib, Error> {
+    let text = raw.trim().to_ascii_lowercase();
+    let (digits, multiplier) = match text.as_str() {
+        rest if rest.ends_with("gib") => (rest.trim_end_matches("gib"), 1024),
+        rest if rest.ends_with("mib") => (rest.trim_end_matches("mib"), 1),
+        rest if rest.ends_with('g') => (rest.trim_end_matches('g'), 1024),
+        rest if rest.ends_with('m') => (rest.trim_end_matches('m'), 1),
+        rest => (rest, 1),
+    };
+    let value: u32 = digits.trim().parse().map_err(|_| {
+        Error::invalid(
+            "memory",
+            format!("{raw:?} is not a size; use MiB (1024) or a suffix (1g, 512m)"),
+        )
+    })?;
+    let mib = value.checked_mul(multiplier).ok_or_else(|| {
+        Error::invalid("memory", format!("{raw:?} overflows the addressable range"))
+    })?;
+    RamMib::new(mib)
 }
 
 /// A mount's guest path as UTF-8, which the protocol requires.
@@ -358,8 +398,8 @@ fn run_supervised(
     // The supervisor is the boot workload, and it takes no arguments, so the
     // kernel command line stays short no matter what the command looks like.
     let mut spec = VmSpec::new(rootfs, staged.guest_path())?;
-    spec.vcpus = Vcpus::new(vm.vcpus)?;
-    spec.ram = RamMib::new(vm.ram)?;
+    spec.vcpus = Vcpus::new(vm.cpus)?;
+    spec.ram = parse_memory(&vm.memory)?;
     spec.vsock = Some(piebox::Vsock {
         port: piebox::SUPERVISOR_PORT,
         socket: endpoint.socket().to_path_buf(),
@@ -440,10 +480,10 @@ fn run(
     command: &[std::ffi::OsString],
     log_level: Option<Verbosity>,
 ) -> Result<ExitCode, Error> {
-    // Parsed first: a typo'd --mount should not leave a buildah mount
+    // Parsed first: a typo'd --volume should not leave a buildah mount
     // reference behind on the way to being rejected.
     let mounts = vm
-        .mounts
+        .volumes
         .iter()
         .map(|raw| raw.parse::<piebox::Mount>())
         .collect::<Result<Vec<_>, _>>()?;

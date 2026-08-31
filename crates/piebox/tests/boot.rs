@@ -183,7 +183,7 @@ fn workdir_is_applied() {
 #[test]
 fn requested_sizing_reaches_the_guest() {
     guest_or_skip!();
-    let output = run_in_guest(&["--vcpus", "1"], &["/usr/bin/nproc"]);
+    let output = run_in_guest(&["--cpus", "1"], &["/usr/bin/nproc"]);
     assert_eq!(stdout_of(&output), "1");
 }
 

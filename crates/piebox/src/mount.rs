@@ -65,7 +65,7 @@ impl Mount {
         let host_path = host_path.into();
         let guest_path = guest_path.into();
 
-        // Canonicalized so a relative `--mount .:/work` means what the caller
+        // Canonicalized so a relative `-v .:/work` means what the caller
         // saw, and so the device points at a stable path.
         let host_path = host_path.canonicalize().map_err(|err| {
             Error::invalid("mount", format!("host path {}: {err}", host_path.display()))

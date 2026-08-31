@@ -508,7 +508,7 @@ fn a_mounted_host_directory_is_readable_in_the_guest() {
     std::fs::write(work.path().join("from-host.txt"), b"host wrote this\n").expect("write");
 
     let spec = format!("{}:/work", work.path().display());
-    let output = supervised(&["--mount", &spec], &["/bin/cat", "/work/from-host.txt"]);
+    let output = supervised(&["--volume", &spec], &["/bin/cat", "/work/from-host.txt"]);
     assert_stdout(&output, "host wrote this");
 }
 
@@ -519,7 +519,7 @@ fn what_the_guest_writes_appears_on_the_host() {
     let spec = format!("{}:/work", work.path().display());
 
     let output = supervised(
-        &["--mount", &spec],
+        &["--volume", &spec],
         &[
             "/bin/sh",
             "-c",
@@ -542,7 +542,7 @@ fn a_read_only_mount_cannot_be_written_to() {
     let spec = format!("{}:/work:ro", work.path().display());
 
     let output = supervised(
-        &["--mount", &spec],
+        &["--volume", &spec],
         &["/bin/sh", "-c", "echo nope > /work/blocked.txt"],
     );
     assert!(!output.status.success(), "a write must fail: {output:?}");
@@ -552,7 +552,7 @@ fn a_read_only_mount_cannot_be_written_to() {
     );
 
     // ...and reading still works.
-    let output = supervised(&["--mount", &spec], &["/bin/cat", "/work/readable.txt"]);
+    let output = supervised(&["--volume", &spec], &["/bin/cat", "/work/readable.txt"]);
     assert_stdout(&output, "still readable");
 }
 
@@ -566,9 +566,9 @@ fn several_directories_can_be_mounted_at_once() {
 
     let output = supervised(
         &[
-            "--mount",
+            "--volume",
             &format!("{}:/one", one.path().display()),
-            "--mount",
+            "--volume",
             &format!("{}:/two:ro", two.path().display()),
         ],
         &["/bin/sh", "-c", "cat /one/a /two/b"],
@@ -585,7 +585,7 @@ fn a_mount_point_that_does_not_exist_yet_is_created() {
     let spec = format!("{}:/piebox-created/deeper", work.path().display());
 
     let output = supervised(
-        &["--mount", &spec],
+        &["--volume", &spec],
         &["/bin/cat", "/piebox-created/deeper/f"],
     );
     assert_stdout(&output, "deep");
@@ -604,7 +604,7 @@ fn a_mount_does_not_require_passing_supervised() {
         .arg("run")
         .arg("--rootfs-path")
         .arg(&harness.rootfs)
-        .args(["--mount", &format!("{}:/work", work.path().display())])
+        .args(["--volume", &format!("{}:/work", work.path().display())])
         .args(["--", "/bin/cat", "/work/f"])
         .output()
         .expect("spawn piebox");
@@ -625,7 +625,7 @@ fn run_expecting_rejection(args: &[&str]) -> Output {
 
 #[test]
 fn a_bad_mount_specification_is_refused_before_booting() {
-    let output = run_expecting_rejection(&["--mount", "/nonexistent/piebox-src:/work"]);
+    let output = run_expecting_rejection(&["--volume", "/nonexistent/piebox-src:/work"]);
     assert!(!output.status.success(), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("mount"), "{stderr}");
@@ -635,7 +635,7 @@ fn a_bad_mount_specification_is_refused_before_booting() {
         "/tmp:relative-guest-path",
         "/tmp:/work:maybe",
     ] {
-        let output = run_expecting_rejection(&["--mount", bad]);
+        let output = run_expecting_rejection(&["--volume", bad]);
         assert!(
             !output.status.success(),
             "{bad:?} must be refused: {output:?}"
@@ -653,7 +653,7 @@ fn a_read_only_mount_survives_the_guest_remounting_it_rw() {
     let spec = format!("{}:/ro:ro", work.path().display());
 
     let output = supervised(
-        &["--mount", &spec],
+        &["--volume", &spec],
         &[
             "/bin/sh",
             "-c",
@@ -683,7 +683,7 @@ fn symlinks_in_a_mount_cannot_reach_host_files() {
 
     for link in ["absolute", "relative"] {
         let output = supervised(
-            &["--mount", &format!("{}:/work", work.path().display())],
+            &["--volume", &format!("{}:/work", work.path().display())],
             &["/bin/cat", &format!("/work/{link}")],
         );
         let seen = stdout_of(&output);
@@ -704,7 +704,7 @@ fn a_target_that_is_already_a_mount_point_is_refused() {
 
     // /dev/shm is a tmpfs mounted by libkrun's init before the supervisor runs.
     let output = supervised(
-        &["--mount", &format!("{}:/dev/shm", work.path().display())],
+        &["--volume", &format!("{}:/dev/shm", work.path().display())],
         &["/bin/cat", "/dev/shm/f"],
     );
     assert!(!output.status.success(), "{output:?}");
@@ -724,7 +724,7 @@ fn the_working_directory_can_be_inside_a_mount() {
 
     let output = supervised(
         &[
-            "--mount",
+            "--volume",
             &format!("{}:{target}", work.path().display()),
             "--workdir",
             &target,
@@ -741,20 +741,20 @@ fn nested_and_reserved_targets_are_refused_without_booting() {
     let cases: Vec<Vec<String>> = vec![
         // nested
         vec![
-            "--mount".into(),
+            "--volume".into(),
             format!("{host}:/n"),
-            "--mount".into(),
+            "--volume".into(),
             format!("{host}:/n/inner"),
         ],
         // reserved for piebox itself
-        vec!["--mount".into(), format!("{host}:/.piebox")],
+        vec!["--volume".into(), format!("{host}:/.piebox")],
         // traversal: `/bar/..` is `/`
-        vec!["--mount".into(), format!("{host}:/bar/..")],
+        vec!["--volume".into(), format!("{host}:/bar/..")],
         // the same target twice
         vec![
-            "--mount".into(),
+            "--volume".into(),
             format!("{host}:/d"),
-            "--mount".into(),
+            "--volume".into(),
             format!("{host}:/d"),
         ],
     ];
