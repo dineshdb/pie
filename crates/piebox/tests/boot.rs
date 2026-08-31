@@ -48,8 +48,8 @@ fn build_harness() -> Option<Harness> {
     }
 
     let storage = ContainerStorage::from_env();
-    let container = std::env::var("PIEBOX_CONTAINER")
-        .unwrap_or_else(|_| "ubuntu-working-container".to_string());
+    let container =
+        std::env::var("PIEBOX_IMAGE").unwrap_or_else(|_| "ubuntu-working-container".to_string());
     let rootfs = match piebox::container_rootfs(&storage, &container) {
         Ok(rootfs) => rootfs,
         Err(err) => return skip(&format!("no bootable rootfs: {err}")),
@@ -82,7 +82,6 @@ fn run_in_guest(args: &[&str], command: &[&str]) -> Output {
     let harness = harness().expect("harness checked by the caller");
     Command::new(&harness.binary)
         .arg("run")
-        .arg("--rootfs-path")
         .arg(&harness.rootfs)
         .args(args)
         .arg("--")
@@ -99,7 +98,6 @@ fn run_locally(args: &[&str], command: &[String]) -> Output {
     let rootfs = harness().map_or_else(|| PathBuf::from("/"), |h| h.rootfs.clone());
     Command::new(env!("CARGO_BIN_EXE_piebox"))
         .arg("run")
-        .arg("--rootfs-path")
         .arg(rootfs)
         .args(args)
         .arg("--")
@@ -157,7 +155,6 @@ fn host_environment_does_not_leak_into_the_guest() {
     let harness = harness().expect("checked");
     let output = Command::new(&harness.binary)
         .arg("run")
-        .arg("--rootfs-path")
         .arg(&harness.rootfs)
         .env("PIEBOX_TEST_SECRET", "leaked")
         .args(["--", "/bin/sh", "-c", "echo secret=[$PIEBOX_TEST_SECRET]"])
@@ -292,7 +289,7 @@ fn a_nonexistent_workdir_is_refused_rather_than_ignored() {
 fn an_unusable_rootfs_is_refused_before_booting() {
     let output = Command::new(env!("CARGO_BIN_EXE_piebox"))
         .arg("run")
-        .args(["--rootfs-path", "/nonexistent/piebox-rootfs"])
+        .arg("/nonexistent/piebox-rootfs")
         .args(["--", "/bin/true"])
         .output()
         .expect("spawn piebox");
@@ -349,7 +346,6 @@ fn the_vmm_child_reveals_nothing_about_the_guest_in_its_argv() {
     let harness = harness().expect("checked");
     let mut parent = Command::new(&harness.binary)
         .arg("run")
-        .arg("--rootfs-path")
         .arg(&harness.rootfs)
         .args(["-e", "TOKEN=sup3rs3cret"])
         .args(["--", "/bin/sleep", "10"])
@@ -381,7 +377,6 @@ fn an_environment_variable_can_be_passed_by_name_instead_of_value() {
     let harness = harness().expect("checked");
     let output = Command::new(&harness.binary)
         .arg("run")
-        .arg("--rootfs-path")
         .arg(&harness.rootfs)
         .args(["-e", "TOKEN"])
         .env("TOKEN", "sup3rs3cret")
@@ -415,7 +410,6 @@ fn killing_the_parent_shuts_the_microvm_down() {
     let harness = harness().expect("checked");
     let mut parent = Command::new(&harness.binary)
         .arg("run")
-        .arg("--rootfs-path")
         .arg(&harness.rootfs)
         .args(["--", "/bin/sleep", "120"])
         .stdout(std::process::Stdio::null())

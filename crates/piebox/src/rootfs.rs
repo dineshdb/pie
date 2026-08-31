@@ -71,7 +71,6 @@ impl ContainerStorage {
 /// is unusable, the container is unknown, or the reported path is not a
 /// directory.
 pub fn container_rootfs(storage: &ContainerStorage, container: &str) -> Result<PathBuf> {
-    validate_container_name(container)?;
     if !storage.root.is_dir() {
         return Err(Error::invalid(
             "container storage",
@@ -116,22 +115,6 @@ pub fn container_rootfs(storage: &ContainerStorage, container: &str) -> Result<P
     Ok(path)
 }
 
-/// Rejects container names that buildah would misread or that are not names.
-fn validate_container_name(container: &str) -> Result<()> {
-    let valid = !container.is_empty()
-        && container
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
-        && !container.starts_with('-');
-    if !valid {
-        return Err(Error::invalid(
-            "container",
-            format!("{container:?} is not a container name"),
-        ));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,26 +139,6 @@ mod tests {
             .map(|a| a.to_string_lossy().to_string())
             .collect();
         assert_eq!(args, ["--root", "/s/root", "--runroot", "/s/runroot"]);
-    }
-
-    #[test]
-    fn container_names_that_buildah_would_misread_are_rejected() {
-        for name in [
-            "",
-            "-rf",
-            "--storage-driver=overlay",
-            "a b",
-            "a;rm -rf /",
-            "a$(id)",
-        ] {
-            assert!(
-                validate_container_name(name).is_err(),
-                "{name:?} must be rejected"
-            );
-        }
-        for name in ["ubuntu-working-container", "piebox_1.2-base"] {
-            assert!(validate_container_name(name).is_ok(), "{name:?}");
-        }
     }
 
     #[test]

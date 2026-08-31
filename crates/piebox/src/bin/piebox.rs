@@ -16,10 +16,12 @@ use std::process::ExitCode;
 Flags follow docker where they mean the same thing (-v, -e, -w, -m). The guest
 command follows `--`:
 
-    piebox run -- /bin/sh -c 'uname -r'
-    piebox run --cpus 4 -m 4g -- /usr/bin/make -j4
-    piebox run -v .:/work -w /work -- cargo test
-    piebox run -v ~/src:/src:ro -- /bin/ls /src
+    piebox run IMAGE -- /bin/sh -c 'uname -r'
+    piebox run ./rootfs --cpus 4 -m 4g -- /usr/bin/make -j4
+    piebox run my-container -v .:/work -w /work -- cargo test
+
+IMAGE is a host directory when it contains `/`, and a buildah container
+otherwise, so `./rootfs` is a path and `rootfs` is a container name.
 
 Unlike docker, a bare -m value is MiB rather than bytes, and secrets are better
 passed by name than by value, since a command line is readable by every user on
@@ -43,6 +45,11 @@ enum Command {
 
     /// Run a command inside a piebox guest, given after `--`.
     Run {
+        /// Root filesystem to boot: a host directory (anything containing `/`)
+        /// or a container in the local buildah store.
+        #[arg(value_name = "IMAGE", env = piebox::ENV_IMAGE)]
+        image: piebox::Image,
+
         #[command(flatten)]
         vm: VmArgs,
     },
@@ -83,18 +90,6 @@ struct VmArgs {
     /// Working directory inside the guest.
     #[arg(long, short = 'w')]
     workdir: Option<PathBuf>,
-
-    /// Buildah container whose root filesystem the guest boots.
-    #[arg(
-        long,
-        default_value = "ubuntu-working-container",
-        env = "PIEBOX_CONTAINER"
-    )]
-    container: String,
-
-    /// Host directory to boot directly, instead of resolving a container.
-    #[arg(long, conflicts_with = "container")]
-    rootfs_path: Option<PathBuf>,
 
     /// Expose a host directory to the guest, as HOST:GUEST or HOST:GUEST:ro.
     ///
@@ -168,7 +163,7 @@ fn main() -> ExitCode {
     let log_level = cli.log_level.map(LogLevel::from);
     match cli.command {
         Command::Doctor => doctor(log_level),
-        Command::Run { vm } => match run(&vm, &guest_command, cli.log_level) {
+        Command::Run { image, vm } => match run(&image, &vm, &guest_command, cli.log_level) {
             Ok(code) => code,
             Err(err) => {
                 eprintln!("{}", report(&err));
@@ -235,8 +230,9 @@ fn build_spec(
     check_workdir(vm, rootfs, &[])?;
 
     let mut spec = VmSpec::new(rootfs, utf8(exec)?)?;
-    spec.vcpus = Vcpus::new(vm.cpus)?;
-    spec.ram = parse_memory(&vm.memory)?;
+    let (vcpus, ram) = guest_sizing(vm)?;
+    spec.vcpus = vcpus;
+    spec.ram = ram;
     spec.workdir = vm.workdir.clone();
     spec.args = args.iter().map(utf8).collect::<Result<_, _>>()?;
     spec.env.extend(resolve_env(&vm.env)?);
@@ -290,6 +286,11 @@ fn resolve_env(entries: &[String]) -> Result<Vec<(String, String)>, Error> {
             }
         })
         .collect()
+}
+
+/// The guest's CPU and memory sizing, parsed and validated.
+fn guest_sizing(vm: &VmArgs) -> Result<(Vcpus, RamMib), Error> {
+    Ok((Vcpus::new(vm.cpus)?, parse_memory(&vm.memory)?))
 }
 
 /// Parses a memory size: a plain number of MiB, or one with a `m`/`g` suffix.
@@ -398,8 +399,9 @@ fn run_supervised(
     // The supervisor is the boot workload, and it takes no arguments, so the
     // kernel command line stays short no matter what the command looks like.
     let mut spec = VmSpec::new(rootfs, staged.guest_path())?;
-    spec.vcpus = Vcpus::new(vm.cpus)?;
-    spec.ram = parse_memory(&vm.memory)?;
+    let (vcpus, ram) = guest_sizing(vm)?;
+    spec.vcpus = vcpus;
+    spec.ram = ram;
     spec.vsock = Some(piebox::Vsock {
         port: piebox::SUPERVISOR_PORT,
         socket: endpoint.socket().to_path_buf(),
@@ -476,26 +478,24 @@ fn guest_env(vm: &VmArgs) -> Result<Vec<(String, String)>, Error> {
 
 /// Resolves the rootfs, then re-execs piebox as the VM and waits for it.
 fn run(
+    image: &piebox::Image,
     vm: &VmArgs,
     command: &[std::ffi::OsString],
     log_level: Option<Verbosity>,
 ) -> Result<ExitCode, Error> {
-    // Parsed first: a typo'd --volume should not leave a buildah mount
-    // reference behind on the way to being rejected.
+    // Everything that can be judged without touching the filesystem goes
+    // first: resolving an image mounts a container (which bumps a persistent
+    // buildah reference) and a typo'd flag should not get that far, nor be
+    // reported second when it is the actual mistake.
     let mounts = vm
         .volumes
         .iter()
         .map(|raw| raw.parse::<piebox::Mount>())
         .collect::<Result<Vec<_>, _>>()?;
     piebox::check_mount_collisions(&mounts)?;
+    guest_sizing(vm)?;
 
-    let rootfs = match &vm.rootfs_path {
-        Some(path) => path.clone(),
-        None => {
-            let storage = ContainerStorage::from_env();
-            piebox::container_rootfs(&storage, &vm.container)?
-        }
-    };
+    let rootfs = image.rootfs(&ContainerStorage::from_env())?;
 
     // Mounts can only be set up from inside the guest, so asking for one
     // selects the supervised path rather than being refused.
@@ -766,7 +766,7 @@ fn report_hypervisor_entitlement() -> bool {
     }
     println!(
         "entitlement  MISSING {ENTITLEMENT}\n             \
-         sign it: just sign-piebox  (unsigned binaries cannot start a VM)"
+         sign it: just piebox  (unsigned binaries cannot start a VM)"
     );
     false
 }

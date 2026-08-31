@@ -50,8 +50,8 @@ fn build_harness() -> Option<Harness> {
         return skip(&format!("{err}"));
     }
     let storage = ContainerStorage::from_env();
-    let container = std::env::var("PIEBOX_CONTAINER")
-        .unwrap_or_else(|_| "ubuntu-working-container".to_string());
+    let container =
+        std::env::var("PIEBOX_IMAGE").unwrap_or_else(|_| "ubuntu-working-container".to_string());
     let rootfs = match piebox::container_rootfs(&storage, &container) {
         Ok(rootfs) => rootfs,
         Err(err) => return skip(&format!("no bootable rootfs: {err}")),
@@ -90,7 +90,6 @@ fn supervised(args: &[&str], command: &[&str]) -> Output {
     let harness = harness().expect("checked by the caller");
     Command::new(&harness.binary)
         .arg("run")
-        .arg("--rootfs-path")
         .arg(&harness.rootfs)
         .arg("--supervised")
         .args(args)
@@ -208,7 +207,6 @@ fn the_environment_is_exactly_what_was_asked_for() {
     let harness = harness().expect("checked");
     let output = Command::new(&harness.binary)
         .arg("run")
-        .arg("--rootfs-path")
         .arg(&harness.rootfs)
         .arg("--supervised")
         .args(["-e", "TOKEN"])
@@ -437,7 +435,6 @@ fn piebox_does_not_leave_the_callers_pipes_non_blocking() {
 
     let status = Command::new(&harness.binary)
         .arg("run")
-        .arg("--rootfs-path")
         .arg(&harness.rootfs)
         .arg("--supervised")
         .args(["--", "/bin/true"])
@@ -602,7 +599,6 @@ fn a_mount_does_not_require_passing_supervised() {
 
     let output = Command::new(&harness.binary)
         .arg("run")
-        .arg("--rootfs-path")
         .arg(&harness.rootfs)
         .args(["--volume", &format!("{}:/work", work.path().display())])
         .args(["--", "/bin/cat", "/work/f"])
@@ -616,7 +612,7 @@ fn a_mount_does_not_require_passing_supervised() {
 fn run_expecting_rejection(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_piebox"))
         .arg("run")
-        .args(["--rootfs-path", "/"])
+        .arg("/")
         .args(args)
         .args(["--", "/bin/true"])
         .output()
