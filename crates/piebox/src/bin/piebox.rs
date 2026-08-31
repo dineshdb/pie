@@ -11,7 +11,17 @@ use std::process::ExitCode;
 #[command(
     name = "piebox",
     version,
-    about = "libkrun-backed Linux microVM devbox for pie"
+    about = "libkrun-backed Linux microVM devbox for pie",
+    after_help = "\
+The guest command follows `--`:
+
+    piebox run -- /bin/sh -c 'uname -r'
+    piebox run --vcpus 4 --ram 4096 -- /usr/bin/make -j4
+
+Secrets are better passed by name than by value, since a command line is
+readable by every user on the machine:
+
+    TOKEN=... piebox run -e TOKEN -- ./deploy"
 )]
 struct Cli {
     /// libkrun log verbosity. Can only be set once per process.
@@ -27,14 +37,10 @@ enum Command {
     /// Report whether this host can run a piebox.
     Doctor,
 
-    /// Run a command inside a piebox guest.
+    /// Run a command inside a piebox guest, given after `--`.
     Run {
         #[command(flatten)]
         vm: VmArgs,
-
-        /// Command to run in the guest, then its arguments.
-        #[arg(required = true, allow_hyphen_values = true, trailing_var_arg = true)]
-        command: Vec<String>,
     },
 
     /// Become the VM. Internal: `run` re-execs piebox with this.
@@ -42,40 +48,10 @@ enum Command {
     /// It exists because `krun_start_enter` never returns — it takes over the
     /// process — so the VM cannot share a process with anything that has to
     /// outlive it.
+    /// It takes no arguments: the spec arrives on a pipe, because argv is
+    /// visible to every user on the machine and cannot carry a literal `--`.
     #[command(hide = true, name = "__vmm")]
-    Vmm {
-        #[command(flatten)]
-        vm: VmArgs,
-
-        /// Host directory to expose as the guest root, already resolved.
-        #[arg(long)]
-        rootfs: PathBuf,
-
-        #[arg(required = true, allow_hyphen_values = true, trailing_var_arg = true)]
-        command: Vec<String>,
-    },
-}
-
-impl VmArgs {
-    /// Rebuilds the flags the child needs. The rootfs is passed separately
-    /// because the parent has already resolved it.
-    fn to_forwarded_args(&self) -> Vec<String> {
-        let mut args = vec![
-            "--vcpus".to_string(),
-            self.vcpus.to_string(),
-            "--ram".to_string(),
-            self.ram.to_string(),
-        ];
-        if let Some(workdir) = &self.workdir {
-            args.push("--workdir".to_string());
-            args.push(workdir.to_string_lossy().into_owned());
-        }
-        for entry in &self.env {
-            args.push("--env".to_string());
-            args.push(entry.clone());
-        }
-        args
-    }
+    Vmm,
 }
 
 /// Guest sizing and source, shared by `run` and `__vmm`.
@@ -105,8 +81,12 @@ struct VmArgs {
     #[arg(long, conflicts_with = "container")]
     rootfs_path: Option<PathBuf>,
 
-    /// Extra environment variable for the guest workload, as KEY=VALUE.
-    #[arg(long = "env", short = 'e', value_name = "KEY=VALUE")]
+    /// Environment variable for the guest, as KEY=VALUE, or just KEY to pass
+    /// through piebox's own value.
+    ///
+    /// Prefer bare KEY for anything secret: a value written as KEY=VALUE is
+    /// visible to every user on the machine in *this* process's `ps` output.
+    #[arg(long = "env", short = 'e', value_name = "KEY[=VALUE]")]
     env: Vec<String>,
 }
 
@@ -148,23 +128,24 @@ impl From<Verbosity> for LogLevel {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    // The guest command is taken from argv directly rather than through clap,
+    // which consumes a `--` token wherever it appears and would silently
+    // truncate a command like `cargo test -- --nocapture`.
+    let (piebox_args, guest_command) = split_at_first_double_dash(std::env::args_os());
+
+    let cli = Cli::parse_from(piebox_args);
     let log_level = cli.log_level.map(LogLevel::from);
     match cli.command {
         Command::Doctor => doctor(log_level),
-        Command::Run { vm, command } => match run(&vm, &command, cli.log_level) {
+        Command::Run { vm } => match run(&vm, &guest_command, cli.log_level) {
             Ok(code) => code,
             Err(err) => {
                 eprintln!("piebox: {err}");
                 ExitCode::FAILURE
             }
         },
-        Command::Vmm {
-            vm,
-            rootfs,
-            command,
-        } => match become_vm(&vm, &rootfs, &command, log_level) {
-            // `boot` only returns on failure; success replaces this process.
+        // `boot` only returns on failure; on success it replaces this process.
+        Command::Vmm => match become_vm(log_level) {
             Err(err) => {
                 eprintln!("piebox vmm: {err}");
                 ExitCode::FAILURE
@@ -173,12 +154,51 @@ fn main() -> ExitCode {
     }
 }
 
+/// Splits `piebox … -- guest command` into its two halves.
+///
+/// Only the first `--` separates; any later one belongs to the guest.
+fn split_at_first_double_dash<I>(args: I) -> (Vec<std::ffi::OsString>, Vec<std::ffi::OsString>)
+where
+    I: IntoIterator<Item = std::ffi::OsString>,
+{
+    let mut ours = Vec::new();
+    let mut guest = Vec::new();
+    let mut seen_separator = false;
+    for arg in args {
+        if seen_separator {
+            guest.push(arg);
+        } else if arg == "--" {
+            seen_separator = true;
+        } else {
+            ours.push(arg);
+        }
+    }
+    (ours, guest)
+}
+
 /// Builds and validates the spec. Used by both sides: the parent to refuse bad
 /// input before spawning, the child because it is the one that boots.
-fn build_spec(vm: &VmArgs, rootfs: &std::path::Path, command: &[String]) -> Result<VmSpec, Error> {
-    let (exec, args) = command
-        .split_first()
-        .ok_or_else(|| Error::invalid("command", "no command given"))?;
+fn build_spec(
+    vm: &VmArgs,
+    rootfs: &std::path::Path,
+    command: &[std::ffi::OsString],
+) -> Result<VmSpec, Error> {
+    let (exec, args) = command.split_first().ok_or_else(|| {
+        Error::invalid(
+            "command",
+            "no command given; put it after `--`, e.g. `piebox run -- /bin/sh -c date`",
+        )
+    })?;
+    // libkrun requires UTF-8 for every string it takes, so say so here rather
+    // than letting it answer with a bare -EINVAL.
+    let utf8 = |value: &std::ffi::OsString| -> Result<String, Error> {
+        value.to_str().map(ToString::to_string).ok_or_else(|| {
+            Error::invalid(
+                "command",
+                format!("{value:?} is not valid UTF-8, which libkrun requires"),
+            )
+        })
+    };
 
     // libkrun's init lets a failed chdir slide and runs the workload in `/`
     // anyway, so a typo'd workdir would otherwise be silently ignored.
@@ -192,23 +212,38 @@ fn build_spec(vm: &VmArgs, rootfs: &std::path::Path, command: &[String]) -> Resu
         ));
     }
 
-    let mut spec = VmSpec::new(rootfs, exec)?;
+    let mut spec = VmSpec::new(rootfs, utf8(exec)?)?;
     spec.vcpus = Vcpus::new(vm.vcpus)?;
     spec.ram = RamMib::new(vm.ram)?;
     spec.workdir = vm.workdir.clone();
-    spec.args = args.to_vec();
+    spec.args = args.iter().map(utf8).collect::<Result<_, _>>()?;
     for entry in &vm.env {
-        let (key, value) = entry
-            .split_once('=')
-            .ok_or_else(|| Error::invalid("env", format!("{entry:?} is not KEY=VALUE")))?;
-        spec.env.push((key.to_string(), value.to_string()));
+        let (key, value) = match entry.split_once('=') {
+            Some((key, value)) => (key.to_string(), value.to_string()),
+            // Bare KEY: take the value from piebox's own environment, so a
+            // secret never has to appear on anybody's command line.
+            None => {
+                let value = std::env::var(entry).map_err(|_| {
+                    Error::invalid(
+                        "env",
+                        format!("{entry:?} is not set in piebox's environment"),
+                    )
+                })?;
+                (entry.clone(), value)
+            }
+        };
+        spec.env.push((key, value));
     }
     spec.validate()?;
     Ok(spec)
 }
 
 /// Resolves the rootfs, then re-execs piebox as the VM and waits for it.
-fn run(vm: &VmArgs, command: &[String], log_level: Option<Verbosity>) -> Result<ExitCode, Error> {
+fn run(
+    vm: &VmArgs,
+    command: &[std::ffi::OsString],
+    log_level: Option<Verbosity>,
+) -> Result<ExitCode, Error> {
     let rootfs = match &vm.rootfs_path {
         Some(path) => path.clone(),
         None => {
@@ -219,7 +254,7 @@ fn run(vm: &VmArgs, command: &[String], log_level: Option<Verbosity>) -> Result<
 
     // Refuse bad input before a VM process exists: the error is clearer, and
     // it does not need a hypervisor to report it.
-    build_spec(vm, &rootfs, command)?;
+    let spec = build_spec(vm, &rootfs, command)?;
 
     // Load libkrun here as well: it fails early with a good message, and the
     // child has to be told where the library and its payload live.
@@ -230,26 +265,38 @@ fn run(vm: &VmArgs, command: &[String], log_level: Option<Verbosity>) -> Result<
         detail: format!("cannot locate own executable: {err}"),
     })?;
 
-    // TODO(stage 3): pass the spec as JSON over an inherited pipe instead of
-    // argv. Three things depend on it: `-e` values are currently visible to
-    // every user on the machine through `ps`; a literal `--` cannot be
-    // forwarded (clap eats it); and the same pipe can double as a lifetime
-    // guard, since killing this parent today orphans a running microVM.
+    let (reader, writer) = std::io::pipe().map_err(|err| Error::Command {
+        program: "piebox",
+        detail: format!("could not create the spec pipe: {err}"),
+    })?;
+
     let mut child = std::process::Command::new(exe);
     child.envs(piebox::loader_env(lib.path()));
-    child.arg("__vmm").arg("--rootfs").arg(&rootfs);
+    child.arg("__vmm");
     if let Some(level) = log_level {
         child.arg("--log-level").arg(level.to_possible_value_name());
     }
-    child.args(vm.to_forwarded_args());
-    // Everything after `--` is the guest command, kept as separate argv entries
-    // so no quoting or shell is involved.
-    child.arg("--").args(command);
+    // The spec travels on a pipe: nothing about the guest — its command, its
+    // arguments, its environment — appears in argv, where `ps` would show it.
+    piebox::attach_spec_fd(&mut child, &reader);
 
-    let status = child.status().map_err(|err| Error::Command {
+    let mut spawned = child.spawn().map_err(|err| Error::Command {
         program: "piebox __vmm",
         detail: format!("could not start the VM process: {err}"),
     })?;
+    // The child has its own duplicate now; holding this copy open would keep
+    // the guard from ever seeing EOF.
+    drop(reader);
+
+    // Held until the child is reaped: closing it is how the child learns this
+    // process is gone, so a killed parent cannot leave a microVM running.
+    let lifeline = piebox::send_spec(writer, &spec)?;
+
+    let status = spawned.wait().map_err(|err| Error::Command {
+        program: "piebox __vmm",
+        detail: format!("could not wait for the VM process: {err}"),
+    })?;
+    drop(lifeline);
 
     Ok(exit_code_from(status))
 }
@@ -287,13 +334,14 @@ fn exit_code_from(status: std::process::ExitStatus) -> ExitCode {
 }
 
 /// Configures and enters the microVM. Returns only on failure.
-fn become_vm(
-    vm: &VmArgs,
-    rootfs: &std::path::Path,
-    command: &[String],
-    log_level: Option<LogLevel>,
-) -> Result<std::convert::Infallible, Error> {
-    let spec = build_spec(vm, rootfs, command)?;
+///
+/// The spec arrives on a pipe from the parent; the same pipe stays open so the
+/// VM shuts down if the parent disappears.
+fn become_vm(log_level: Option<LogLevel>) -> Result<std::convert::Infallible, Error> {
+    let spec = VmSpec::read_from_parent()?;
+    // Re-validated on this side too: the spec crossed a process boundary, and
+    // boot() must never be reachable with one that was not checked here.
+    spec.validate()?;
 
     let lib = Libkrun::load()?;
     if let Some(level) = log_level {

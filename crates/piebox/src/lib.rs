@@ -20,11 +20,13 @@
     )
 )]
 
+mod channel;
 mod error;
 mod ffi;
 mod rootfs;
 mod vm;
 
+pub use channel::{EXIT_PARENT_GONE, SPEC_FD, attach_spec_fd, send_spec};
 pub use error::{Error, Result};
 pub use rootfs::{ContainerStorage, container_rootfs};
 pub use vm::{EXIT_EXEC_FAILED, EXIT_EXEC_NOT_FOUND, EXIT_INIT_SETUP_FAILED, VmSpec, loader_env};
@@ -44,7 +46,11 @@ const MIN_RAM_MIB: u32 = 128;
 const MAX_RAM_MIB: u32 = 1024 * 1024;
 
 /// Number of guest vCPUs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `try_from` on deserialization, so a spec arriving from another process is
+/// checked exactly like one built in code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "u8")]
 pub struct Vcpus(NonZeroU8);
 
 impl Vcpus {
@@ -60,7 +66,8 @@ impl Vcpus {
 }
 
 /// Guest RAM, in MiB.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "u32")]
 pub struct RamMib(u32);
 
 impl RamMib {

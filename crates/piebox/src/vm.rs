@@ -43,7 +43,13 @@ pub const EXIT_EXEC_FAILED: i32 = 126;
 pub const EXIT_EXEC_NOT_FOUND: i32 = 127;
 
 /// Everything needed to boot one guest.
-#[derive(Debug, Clone)]
+///
+/// Serializable because it is what crosses the process boundary: the parent
+/// builds and validates it, then hands it to the VMM child over a pipe. It
+/// deliberately does *not* travel as command-line flags — argv is visible to
+/// every user on the machine through `ps`, cannot carry non-UTF-8, and gets
+/// mangled by argument parsing.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VmSpec {
     /// Host directory exposed as the guest's root filesystem (virtio-fs).
     pub rootfs: PathBuf,
@@ -145,7 +151,13 @@ impl VmSpec {
     ///   re-read as kernel parameters — an environment value containing
     ///   `" init=/bin/echo "` replaces the workload entirely;
     /// - an over-long line makes `krun_start_enter` panic across the FFI
-    ///   boundary, which aborts the process rather than returning an error.
+    ///   boundary, which aborts the process rather than returning an error;
+    /// - a literal `--` truncates the argument list, because the guest kernel
+    ///   stops parsing init arguments at one.
+    ///
+    /// These are limits of *this* path only — the workload libkrun starts at
+    /// boot. Commands run later through the guest supervisor never touch the
+    /// kernel command line and are subject to none of it.
     fn validate_cmdline(&self) -> Result<()> {
         if self.args.len() > MAX_GUEST_ARGS {
             return Err(Error::invalid(
@@ -182,14 +194,16 @@ impl VmSpec {
 
         for arg in &self.args {
             no_quotes_or_control(arg, "argument")?;
-            // clap consumes a `--` token wherever it appears, so this argument
-            // would be dropped silently on its way to the child VMM process.
-            // TODO(stage 3): forward the spec over a pipe instead of argv and
-            // this restriction, along with the secrecy problem below, goes away.
+            // Linux's `parse_args` stops at a `--` token, and the kernel parses
+            // the part after libkrun's own `--` with that same function — so a
+            // second one truncates init's argv and everything past it is lost.
+            // Quoting does not help; the token is detected before unquoting.
+            // Verified: `-- /bin/echo a -- b` prints "a".
             if arg == "--" {
                 return Err(Error::invalid(
                     "argument",
-                    "a literal `--` cannot be forwarded to the guest yet",
+                    "a literal `--` would truncate the guest's arguments: the guest kernel stops \
+                     parsing init arguments there",
                 ));
             }
         }

@@ -3141,7 +3141,10 @@ name = "piebox"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "libc",
  "libloading 0.9.0",
+ "serde",
+ "serde_json",
  "tracing",
 ]
 

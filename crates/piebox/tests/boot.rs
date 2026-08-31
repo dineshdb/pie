@@ -259,6 +259,10 @@ fn an_over_long_command_line_is_refused_instead_of_aborting() {
     assert!(output.status.code().is_some(), "{output:?}");
 }
 
+/// Not a transport problem, and not fixable by one: Linux's `parse_args` stops
+/// at a `--`, and the kernel parses the part after libkrun's own `--` with that
+/// same function, so a second one truncates init's argv. Measured: passing
+/// `a -- b` to /bin/echo printed "a". Refused loudly instead.
 #[test]
 fn a_literal_double_dash_argument_is_refused_not_dropped() {
     let output = run_locally(
@@ -267,7 +271,7 @@ fn a_literal_double_dash_argument_is_refused_not_dropped() {
     );
     assert!(!output.status.success(), "{output:?}");
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("`--`"),
+        String::from_utf8_lossy(&output.stderr).contains("truncate"),
         "{output:?}"
     );
 }
@@ -295,4 +299,144 @@ fn an_unusable_rootfs_is_refused_before_booting() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("rootfs"), "{stderr}");
+}
+
+// --- The parent/child boundary -------------------------------------------
+//
+// The spec travels on a pipe rather than as command-line flags. These check
+// the two things that buys: nothing about the guest is visible in the VMM
+// child's argv, and the VM does not outlive the process that asked for it.
+
+/// PID of the VMM process spawned by `parent`, once it exists.
+fn vmm_child_of(parent: u32) -> Option<u32> {
+    for _ in 0..100 {
+        let output = Command::new("pgrep")
+            .args(["-P", &parent.to_string()])
+            .output()
+            .expect("pgrep");
+        if let Some(pid) = String::from_utf8_lossy(&output.stdout)
+            .split_whitespace()
+            .next()
+            .and_then(|pid| pid.parse().ok())
+        {
+            return Some(pid);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    None
+}
+
+fn is_alive(pid: u32) -> bool {
+    Command::new("ps")
+        .args(["-p", &pid.to_string()])
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+fn argv_of(pid: u32) -> String {
+    let output = Command::new("ps")
+        .args(["-o", "args=", "-p", &pid.to_string()])
+        .output()
+        .expect("ps");
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// argv is world-readable, so the guest's command and environment must not be
+/// there. Passed as flags, `-e TOKEN=…` used to be visible to every user.
+#[test]
+fn the_vmm_child_reveals_nothing_about_the_guest_in_its_argv() {
+    guest_or_skip!();
+    let harness = harness().expect("checked");
+    let mut parent = Command::new(&harness.binary)
+        .arg("run")
+        .arg("--rootfs-path")
+        .arg(&harness.rootfs)
+        .args(["-e", "TOKEN=sup3rs3cret"])
+        .args(["--", "/bin/sleep", "10"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn piebox");
+
+    let vmm = vmm_child_of(parent.id()).expect("VMM child never appeared");
+    let argv = argv_of(vmm);
+    let _ = parent.kill();
+    let _ = parent.wait();
+
+    assert!(
+        !argv.contains("sup3rs3cret"),
+        "secret leaked into argv: {argv}"
+    );
+    assert!(
+        !argv.contains("/bin/sleep"),
+        "guest command in argv: {argv}"
+    );
+    assert!(argv.contains("__vmm"), "unexpected VMM argv: {argv}");
+}
+
+/// A secret passed by name is never written on any command line at all.
+#[test]
+fn an_environment_variable_can_be_passed_by_name_instead_of_value() {
+    guest_or_skip!();
+    let harness = harness().expect("checked");
+    let output = Command::new(&harness.binary)
+        .arg("run")
+        .arg("--rootfs-path")
+        .arg(&harness.rootfs)
+        .args(["-e", "TOKEN"])
+        .env("TOKEN", "sup3rs3cret")
+        .args(["--", "/bin/sh", "-c", "echo got=$TOKEN"])
+        .output()
+        .expect("spawn piebox");
+    assert_eq!(stdout_of(&output), "got=sup3rs3cret");
+}
+
+/// A bare name that is not set must be an error rather than an empty value,
+/// which would look like the variable had been passed.
+#[test]
+fn an_unset_environment_name_is_an_error() {
+    let output = run_locally(
+        &["-e", "PIEBOX_DEFINITELY_NOT_SET"],
+        &["/bin/true".to_string()],
+    );
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("not set"),
+        "{output:?}"
+    );
+}
+
+/// Killing the parent used to leave a microVM running with its RAM and vCPU
+/// threads, reparented and unfindable. The spec pipe doubles as a lifeline:
+/// its EOF tells the child nobody is waiting for it any more.
+#[test]
+fn killing_the_parent_shuts_the_microvm_down() {
+    guest_or_skip!();
+    let harness = harness().expect("checked");
+    let mut parent = Command::new(&harness.binary)
+        .arg("run")
+        .arg("--rootfs-path")
+        .arg(&harness.rootfs)
+        .args(["--", "/bin/sleep", "120"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn piebox");
+
+    let vmm = vmm_child_of(parent.id()).expect("VMM child never appeared");
+    assert!(is_alive(vmm), "VMM should be running");
+
+    // SIGKILL: the parent gets no chance to clean up after itself.
+    parent.kill().expect("kill parent");
+    parent.wait().expect("reap parent");
+
+    for _ in 0..100 {
+        if !is_alive(vmm) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    // Do not leave a stray VM behind for the next test run.
+    let _ = Command::new("kill").args(["-9", &vmm.to_string()]).status();
+    panic!("VMM {vmm} outlived its parent");
 }
