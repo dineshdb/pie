@@ -20,6 +20,19 @@ test:
 lint:
     cargo clippy --fix --allow-dirty --allow-staged
 
+# Cross-build the in-guest supervisor. Needs no C toolchain: rust-lld links a
+# fully static musl binary, and the guest rootfs may have a different libc.
+piebox-guest:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # macOS reports arm64 where Rust says aarch64.
+    ARCH="$(uname -m)"; [ "$ARCH" = arm64 ] && ARCH=aarch64
+    TRIPLE="$ARCH-unknown-linux-musl"
+    rustup target add "$TRIPLE"
+    cargo build -p piebox-guest --release --target "$TRIPLE" \
+        --config "target.$TRIPLE.linker=\"rust-lld\""
+    file "target/$TRIPLE/release/piebox-guest"
+
 # Build piebox and (on macOS) sign it with the hypervisor entitlement, without
 # which libkrun's hv_vm_create() fails and no guest can start.
 piebox profile="debug":

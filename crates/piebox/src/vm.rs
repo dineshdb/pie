@@ -67,6 +67,19 @@ pub struct VmSpec {
     /// environment into the guest, which leaks host paths and secrets into a
     /// place that is supposed to be isolated.
     pub env: Vec<(String, String)>,
+    /// Control channel between the guest supervisor and the host, if any.
+    #[serde(default)]
+    pub vsock: Option<Vsock>,
+}
+
+/// A vsock port wired to a host socket.
+///
+/// The guest connects out to `port`; libkrun forwards that to `socket` on the
+/// host, where piebox is already listening.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Vsock {
+    pub port: u32,
+    pub socket: PathBuf,
 }
 
 impl VmSpec {
@@ -79,7 +92,8 @@ impl VmSpec {
             workdir: None,
             exec: exec.into(),
             args: Vec::new(),
-            env: default_env(),
+            env: Self::default_env(),
+            vsock: None,
         })
     }
 
@@ -96,6 +110,7 @@ impl VmSpec {
         ctx.set_vm_config(self.vcpus, self.ram)?;
         self.apply_root(&ctx)?;
         self.apply_workdir(&ctx)?;
+        self.apply_vsock(&ctx)?;
         self.apply_exec(&ctx)?;
 
         tracing::debug!(
@@ -271,6 +286,22 @@ impl VmSpec {
         Error::check("krun_set_workdir", code).map(drop)
     }
 
+    fn apply_vsock(&self, ctx: &Ctx<'_>) -> Result<()> {
+        let Some(vsock) = &self.vsock else {
+            return Ok(());
+        };
+        let socket = c_path(&vsock.socket, "vsock socket")?;
+        // `listen = false` means the guest initiates: it connects to the vsock
+        // port and libkrun forwards that to this socket, which the host must
+        // already be listening on. Getting the flag wrong presents as a hang,
+        // not an error.
+        // SAFETY: `socket` outlives the call and libkrun copies the string.
+        let code = unsafe {
+            (ctx.lib().krun().add_vsock_port2)(ctx.raw_id(), vsock.port, socket.as_ptr(), false)
+        };
+        Error::check("krun_add_vsock_port2", code).map(drop)
+    }
+
     fn apply_exec(&self, ctx: &Ctx<'_>) -> Result<()> {
         let exec = c_path(&self.exec, "exec")?;
 
@@ -369,19 +400,24 @@ fn loader_env_with(
     env
 }
 
-/// Environment given to a guest workload when the caller supplies none.
-fn default_env() -> Vec<(String, String)> {
-    [
-        (
-            "PATH",
-            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        ),
-        ("HOME", "/root"),
-        ("TERM", "xterm-256color"),
-    ]
-    .into_iter()
-    .map(|(k, v)| (k.to_string(), v.to_string()))
-    .collect()
+impl VmSpec {
+    /// Environment given to a guest workload when the caller supplies none.
+    ///
+    /// Public because commands run through the guest supervisor need the same
+    /// baseline, and two copies of this list drifted apart once already.
+    pub fn default_env() -> Vec<(String, String)> {
+        [
+            (
+                "PATH",
+                "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            ),
+            ("HOME", "/root"),
+            ("TERM", "xterm-256color"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+    }
 }
 
 /// Builds the NULL-terminated pointer array libkrun expects.

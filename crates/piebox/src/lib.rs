@@ -24,12 +24,23 @@ mod channel;
 mod error;
 mod ffi;
 mod rootfs;
+mod supervisor;
 mod vm;
 
 pub use channel::{EXIT_PARENT_GONE, SPEC_FD, attach_spec_fd, send_spec};
 pub use error::{Error, Result};
 pub use rootfs::{ContainerStorage, container_rootfs};
-pub use vm::{EXIT_EXEC_FAILED, EXIT_EXEC_NOT_FOUND, EXIT_INIT_SETUP_FAILED, VmSpec, loader_env};
+pub use supervisor::{
+    DEFAULT_REPLY_TIMEOUT, ENV_GUEST_BIN, Endpoint, GUEST_BINARY_PREFIX, GUEST_STAGING_DIR,
+    StagedSupervisor, Supervisor, guest_binary, guest_target_triple, stage_guest_binary,
+};
+pub use vm::{
+    EXIT_EXEC_FAILED, EXIT_EXEC_NOT_FOUND, EXIT_INIT_SETUP_FAILED, VmSpec, Vsock, loader_env,
+};
+
+// The wire types are part of piebox's surface: a caller driving the guest
+// supervisor needs them, and re-exporting saves depending on the proto crate.
+pub use piebox_proto::{Exit, Request, SUPERVISOR_PORT};
 
 use ffi::Krun;
 use std::num::NonZeroU8;

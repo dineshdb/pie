@@ -81,6 +81,15 @@ struct VmArgs {
     #[arg(long, conflicts_with = "container")]
     rootfs_path: Option<PathBuf>,
 
+    /// Run the command through the in-guest supervisor instead of as the boot
+    /// workload.
+    ///
+    /// Slower to start, but nothing goes near the guest's kernel command line,
+    /// so quotes, long commands, many arguments and a literal `--` all work,
+    /// and stdout and stderr stay separate.
+    #[arg(long)]
+    supervised: bool,
+
     /// Environment variable for the guest, as KEY=VALUE, or just KEY to pass
     /// through piebox's own value.
     ///
@@ -140,7 +149,7 @@ fn main() -> ExitCode {
         Command::Run { vm } => match run(&vm, &guest_command, cli.log_level) {
             Ok(code) => code,
             Err(err) => {
-                eprintln!("piebox: {err}");
+                eprintln!("{}", report(&err));
                 ExitCode::FAILURE
             }
         },
@@ -151,6 +160,17 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+    }
+}
+
+/// Renders an error without doubling the `piebox:` prefix that
+/// [`Error::Command`] already carries.
+fn report(err: &Error) -> String {
+    let text = err.to_string();
+    if text.starts_with("piebox") {
+        text
+    } else {
+        format!("piebox: {text}")
     }
 }
 
@@ -189,19 +209,25 @@ fn build_spec(
             "no command given; put it after `--`, e.g. `piebox run -- /bin/sh -c date`",
         )
     })?;
-    // libkrun requires UTF-8 for every string it takes, so say so here rather
-    // than letting it answer with a bare -EINVAL.
-    let utf8 = |value: &std::ffi::OsString| -> Result<String, Error> {
-        value.to_str().map(ToString::to_string).ok_or_else(|| {
-            Error::invalid(
-                "command",
-                format!("{value:?} is not valid UTF-8, which libkrun requires"),
-            )
-        })
-    };
 
-    // libkrun's init lets a failed chdir slide and runs the workload in `/`
-    // anyway, so a typo'd workdir would otherwise be silently ignored.
+    check_workdir(vm, rootfs)?;
+
+    let mut spec = VmSpec::new(rootfs, utf8(exec)?)?;
+    spec.vcpus = Vcpus::new(vm.vcpus)?;
+    spec.ram = RamMib::new(vm.ram)?;
+    spec.workdir = vm.workdir.clone();
+    spec.args = args.iter().map(utf8).collect::<Result<_, _>>()?;
+    spec.env.extend(resolve_env(&vm.env)?);
+    spec.validate()?;
+    Ok(spec)
+}
+
+/// Refuses a working directory that does not exist inside the guest.
+///
+/// libkrun's init lets a failed chdir slide and runs the workload in `/`, and
+/// the supervisor would report the failure as if the *program* were missing, so
+/// neither path can be trusted to notice.
+fn check_workdir(vm: &VmArgs, rootfs: &std::path::Path) -> Result<(), Error> {
     if let Some(workdir) = &vm.workdir
         && let Ok(relative) = workdir.strip_prefix("/")
         && !rootfs.join(relative).is_dir()
@@ -211,15 +237,15 @@ fn build_spec(
             format!("{} does not exist in the guest", workdir.display()),
         ));
     }
+    Ok(())
+}
 
-    let mut spec = VmSpec::new(rootfs, utf8(exec)?)?;
-    spec.vcpus = Vcpus::new(vm.vcpus)?;
-    spec.ram = RamMib::new(vm.ram)?;
-    spec.workdir = vm.workdir.clone();
-    spec.args = args.iter().map(utf8).collect::<Result<_, _>>()?;
-    for entry in &vm.env {
-        let (key, value) = match entry.split_once('=') {
-            Some((key, value)) => (key.to_string(), value.to_string()),
+/// Resolves `KEY=VALUE` entries, and bare `KEY` from piebox's own environment.
+fn resolve_env(entries: &[String]) -> Result<Vec<(String, String)>, Error> {
+    entries
+        .iter()
+        .map(|entry| match entry.split_once('=') {
+            Some((key, value)) => Ok((key.to_string(), value.to_string())),
             // Bare KEY: take the value from piebox's own environment, so a
             // secret never has to appear on anybody's command line.
             None => {
@@ -229,13 +255,132 @@ fn build_spec(
                         format!("{entry:?} is not set in piebox's environment"),
                     )
                 })?;
-                (entry.clone(), value)
+                Ok((entry.clone(), value))
             }
-        };
-        spec.env.push((key, value));
-    }
+        })
+        .collect()
+}
+
+/// Converts an argv entry, which libkrun and the guest both require as UTF-8.
+fn utf8(value: &std::ffi::OsString) -> Result<String, Error> {
+    value.to_str().map(ToString::to_string).ok_or_else(|| {
+        Error::invalid(
+            "command",
+            format!("{value:?} is not valid UTF-8, which the guest requires"),
+        )
+    })
+}
+
+/// Runs the command through the guest supervisor.
+///
+/// The VM boots the supervisor instead of the command, so the command itself
+/// travels over a socket and is subject to none of the kernel command line's
+/// limits.
+fn run_supervised(
+    vm: &VmArgs,
+    rootfs: &std::path::Path,
+    command: &[std::ffi::OsString],
+    log_level: Option<Verbosity>,
+) -> Result<ExitCode, Error> {
+    let (program, args) = command.split_first().ok_or_else(|| {
+        Error::invalid(
+            "command",
+            "no command given; put it after `--`, e.g. `piebox run --supervised -- /bin/sh -c date`",
+        )
+    })?;
+    check_workdir(vm, rootfs)?;
+
+    let request = piebox::Request {
+        program: utf8(program)?,
+        args: args.iter().map(utf8).collect::<Result<_, _>>()?,
+        env: guest_env(vm)?,
+        cwd: vm
+            .workdir
+            .as_ref()
+            .map(|dir| dir.to_string_lossy().into_owned()),
+    };
+
+    let binary = piebox::guest_binary()?;
+    // Held until the VM has exited: dropping it removes the staged file.
+    let staged = piebox::stage_guest_binary(rootfs, &binary)?;
+    let endpoint = piebox::Endpoint::bind()?;
+
+    // The supervisor is the boot workload, and it takes no arguments, so the
+    // kernel command line stays short no matter what the command looks like.
+    let mut spec = VmSpec::new(rootfs, staged.guest_path())?;
+    spec.vcpus = Vcpus::new(vm.vcpus)?;
+    spec.ram = RamMib::new(vm.ram)?;
+    spec.vsock = Some(piebox::Vsock {
+        port: piebox::SUPERVISOR_PORT,
+        socket: endpoint.socket().to_path_buf(),
+    });
     spec.validate()?;
-    Ok(spec)
+
+    let lib = Libkrun::load()?;
+    // The console goes to a file: it is only boot chatter here, and leaving it
+    // on stdout would let libkrun make that descriptor non-blocking underneath
+    // us. Kept so a guest that never connects can still be explained.
+    let console = Console::File(endpoint.socket().with_extension("console"));
+    let mut vmm = spawn_vmm(&lib, &spec, log_level, &console)?;
+
+    // Boot plus connect; generous because a cold rootfs can be slow to read.
+    let mut supervisor = match endpoint.accept(std::time::Duration::from_secs(30)) {
+        Ok(supervisor) => supervisor,
+        Err(err) => {
+            let _ = vmm.child.kill();
+            let _ = vmm.wait();
+            return Err(with_console_tail(err, &console));
+        }
+    };
+    let exit = supervisor.run(
+        &request,
+        &mut std::io::stdout().lock(),
+        &mut std::io::stderr().lock(),
+    );
+
+    // Dropping the connection tells the supervisor to exit, which shuts the VM
+    // down; the lifeline then closes on its own.
+    drop(supervisor);
+    let _ = vmm.wait();
+    // Only now: the guest was executing this file until the VM exited.
+    drop(staged);
+    if let Console::File(path) = &console {
+        let _ = std::fs::remove_file(path);
+    }
+
+    let exit = exit?;
+    Ok(ExitCode::from(u8::try_from(i32::from(exit)).unwrap_or(1)))
+}
+
+/// Adds the guest's console output to an error, which is usually where the
+/// reason a supervisor never appeared is written.
+fn with_console_tail(err: Error, console: &Console) -> Error {
+    let Console::File(path) = console else {
+        return err;
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return err;
+    };
+    let tail: Vec<&str> = text.lines().rev().take(10).collect();
+    if tail.is_empty() {
+        return err;
+    }
+    let tail: Vec<&str> = tail.into_iter().rev().collect();
+    Error::Command {
+        program: "piebox",
+        detail: format!("{err}\nguest console:\n  {}", tail.join("\n  ")),
+    }
+}
+
+/// Environment for a guest command: the same defaults the boot path uses, plus
+/// whatever was asked for.
+///
+/// Shares [`VmSpec::default_env`] rather than restating it, because the two
+/// lists had already drifted apart once.
+fn guest_env(vm: &VmArgs) -> Result<Vec<(String, String)>, Error> {
+    let mut env = VmSpec::default_env();
+    env.extend(resolve_env(&vm.env)?);
+    Ok(env)
 }
 
 /// Resolves the rootfs, then re-execs piebox as the VM and waits for it.
@@ -252,6 +397,10 @@ fn run(
         }
     };
 
+    if vm.supervised {
+        return run_supervised(vm, &rootfs, command, log_level);
+    }
+
     // Refuse bad input before a VM process exists: the error is clearer, and
     // it does not need a hypervisor to report it.
     let spec = build_spec(vm, &rootfs, command)?;
@@ -259,7 +408,58 @@ fn run(
     // Load libkrun here as well: it fails early with a good message, and the
     // child has to be told where the library and its payload live.
     let lib = Libkrun::load()?;
+    let mut vmm = spawn_vmm(&lib, &spec, log_level, &Console::Inherit)?;
+    Ok(exit_code_from(vmm.wait()?))
+}
 
+/// A running VM process, and the pipe keeping it alive.
+struct Vmm {
+    child: std::process::Child,
+    /// Closing this tells the VM its parent is gone, so it must not be dropped
+    /// before the child has been waited for.
+    lifeline: Option<std::io::PipeWriter>,
+}
+
+impl Drop for Vmm {
+    fn drop(&mut self) {
+        // Only reached when `wait` was skipped, e.g. an early `?`. Without this
+        // the VM keeps running until the lifeline closes, and the process stays
+        // a zombie until piebox itself exits.
+        if self.lifeline.is_some() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
+impl Vmm {
+    fn wait(&mut self) -> Result<std::process::ExitStatus, Error> {
+        let status = self.child.wait().map_err(|err| Error::Command {
+            program: "piebox __vmm",
+            detail: format!("could not wait for the VM process: {err}"),
+        })?;
+        drop(self.lifeline.take());
+        Ok(status)
+    }
+}
+
+/// Where the guest's console output goes.
+enum Console {
+    /// Straight to this process's stdout, for an interactive guest.
+    Inherit,
+    /// To a file. Used when the host needs its own stdout back: libkrun's
+    /// console shares the descriptor and sets it non-blocking, after which
+    /// piebox's own writes start failing with EAGAIN.
+    File(PathBuf),
+}
+
+/// Re-execs piebox as the VM process and hands it the spec over a pipe.
+fn spawn_vmm(
+    lib: &Libkrun,
+    spec: &VmSpec,
+    log_level: Option<Verbosity>,
+    console: &Console,
+) -> Result<Vmm, Error> {
     let exe = std::env::current_exe().map_err(|err| Error::Command {
         program: "piebox",
         detail: format!("cannot locate own executable: {err}"),
@@ -280,7 +480,25 @@ fn run(
     // arguments, its environment — appears in argv, where `ps` would show it.
     piebox::attach_spec_fd(&mut child, &reader);
 
-    let mut spawned = child.spawn().map_err(|err| Error::Command {
+    if let Console::File(path) = console {
+        let log = std::fs::File::create(path).map_err(|err| Error::Command {
+            program: "piebox",
+            detail: format!("could not create {}: {err}", path.display()),
+        })?;
+        let log_err = log.try_clone().map_err(|err| Error::Command {
+            program: "piebox",
+            detail: format!("could not duplicate {}: {err}", path.display()),
+        })?;
+        // All three, not just stdout: libkrun's console sets O_NONBLOCK on the
+        // descriptors it is handed, and because that flag belongs to the shared
+        // open file description it propagates back out past piebox to whatever
+        // invoked it — an interactive terminal included.
+        child.stdin(std::process::Stdio::null());
+        child.stdout(std::process::Stdio::from(log));
+        child.stderr(std::process::Stdio::from(log_err));
+    }
+
+    let spawned = child.spawn().map_err(|err| Error::Command {
         program: "piebox __vmm",
         detail: format!("could not start the VM process: {err}"),
     })?;
@@ -288,17 +506,11 @@ fn run(
     // the guard from ever seeing EOF.
     drop(reader);
 
-    // Held until the child is reaped: closing it is how the child learns this
-    // process is gone, so a killed parent cannot leave a microVM running.
-    let lifeline = piebox::send_spec(writer, &spec)?;
-
-    let status = spawned.wait().map_err(|err| Error::Command {
-        program: "piebox __vmm",
-        detail: format!("could not wait for the VM process: {err}"),
-    })?;
-    drop(lifeline);
-
-    Ok(exit_code_from(status))
+    let lifeline = piebox::send_spec(writer, spec)?;
+    Ok(Vmm {
+        child: spawned,
+        lifeline: Some(lifeline),
+    })
 }
 
 /// Translates the VM process's exit status, naming libkrun's reserved codes.
@@ -406,6 +618,12 @@ fn doctor(log_level: Option<LogLevel>) -> ExitCode {
             println!("buildah      NOT FOUND (needed to build guest rootfs images)");
             ok = false;
         }
+    }
+
+    // Needed only for --supervised, so a missing one is a warning.
+    match piebox::guest_binary() {
+        Ok(path) => println!("supervisor   {}", path.display()),
+        Err(err) => println!("supervisor   {err}"),
     }
 
     ok &= report_hypervisor_entitlement();

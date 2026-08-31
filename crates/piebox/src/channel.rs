@@ -48,6 +48,17 @@ impl VmSpec {
     /// Fails when the descriptor is absent, closed early, or carries something
     /// that is not a spec.
     pub fn read_from_parent() -> Result<Self> {
+        // Checked first: `from_raw_fd` on a closed descriptor is an IO-safety
+        // violation, which aborts the process rather than returning an error.
+        // SAFETY: fcntl with F_GETFD only inspects the descriptor.
+        if unsafe { libc::fcntl(SPEC_FD, libc::F_GETFD) } == -1 {
+            return Err(Error::Command {
+                program: "piebox __vmm",
+                detail: format!(
+                    "fd {SPEC_FD} is not open; __vmm is internal and is spawned by `piebox run`"
+                ),
+            });
+        }
         // SAFETY: the parent dup2'd the pipe onto this descriptor before exec,
         // and nothing else in this process owns it.
         let pipe = unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(SPEC_FD) };
@@ -93,7 +104,10 @@ fn watch_parent<R: Read + Send + 'static>(mut reader: R) {
             }
         }
         eprintln!("piebox: parent exited, shutting the microVM down");
-        std::process::exit(EXIT_PARENT_GONE);
+        // _exit, not exit: libkrun's vCPU threads are still running, and there
+        // is nothing this process needs to unwind or flush.
+        // SAFETY: _exit is async-signal-safe and never returns.
+        unsafe { libc::_exit(EXIT_PARENT_GONE) };
     });
 }
 

@@ -10,9 +10,13 @@ repository = "https://github.com/dineshdb/pie"
 clap = { version = "4", features = ["derive", "env"] }
 libc = "0.2"
 libloading = "0.9"
+piebox-proto = { path = "../piebox-proto" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing.workspace = true
+
+[dev-dependencies]
+libc = "0.2"
 
 [[bin]]
 name = "piebox"

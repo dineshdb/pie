@@ -3143,9 +3143,27 @@ dependencies = [
  "clap",
  "libc",
  "libloading 0.9.0",
+ "piebox-proto",
  "serde",
  "serde_json",
  "tracing",
+]
+
+[[package]]
+name = "piebox-guest"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "piebox-proto",
+ "serde_json",
+]
+
+[[package]]
+name = "piebox-proto"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
