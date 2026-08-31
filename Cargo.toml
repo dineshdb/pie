@@ -8,14 +8,7 @@ license = "MIT"
 repository = "https://github.com/dineshdb/pie"
 
 [workspace]
-members = [
-    ".",
-    "crates/p1e-sandbox",
-    "crates/piebox",
-    "crates/piebox-guest",
-    "crates/piebox-proto",
-    "crates/pie-proxy",
-]
+members = [".", "crates/p1e-sandbox"]
 
 [workspace.dependencies]
 dirs = "6"
