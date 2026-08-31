@@ -1,19 +1,31 @@
 [package]
-name = "piebox"
+name = "pie-proxy"
 version = "0.1.0"
 edition = "2024"
-description = "libkrun-backed Linux microVM devbox that hosts pie and its sandboxes"
+description = "Hostname-filtering egress proxy for pie sandboxes and piebox microVMs"
 license = "MIT"
 repository = "https://github.com/dineshdb/pie"
 
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
-libloading = "0.9"
+rama = { version = "0.4.0", features = ["http-full"] }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "io-util",
+    "time",
+    "signal",
+] }
 tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
 
 [[bin]]
-name = "piebox"
-path = "src/bin/piebox.rs"
+name = "pie-proxy"
+path = "src/bin/pie-proxy.rs"
 
 # Panic-safety: a proxy sits on hostile input and a VMM controller supervises a
 # VM, so neither may abort on a malformed value. (The workspace table also

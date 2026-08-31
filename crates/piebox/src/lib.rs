@@ -7,6 +7,16 @@
 //! takes over the calling process and `exit()`s with the workload's status — so
 //! the VM has to run in a dedicated child process (see the `piebox-vmm` helper).
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )
+)]
+
 mod error;
 mod ffi;
 

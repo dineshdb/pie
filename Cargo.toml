@@ -8,7 +8,7 @@ license = "MIT"
 repository = "https://github.com/dineshdb/pie"
 
 [workspace]
-members = [".", "crates/p1e-sandbox", "crates/piebox"]
+members = [".", "crates/p1e-sandbox", "crates/piebox", "crates/pie-proxy"]
 
 [workspace.dependencies]
 dirs = "6"
@@ -66,6 +66,9 @@ url = { version = "2.5.8", features = ["serde"] }
 thiserror = "2.0.18"
 derive_more = { version = "2.1.1", features = ["display", "from"] }
 
+[lints]
+workspace = true
+
 [dev-dependencies]
 tempfile = "3"
 
@@ -74,7 +77,8 @@ lto = true
 panic = "abort"
 strip = true
 
-[lints.rust]
+# Shared lint policy. Members opt in with `lints.workspace = true`.
+[workspace.lints.rust]
 future_incompatible = "warn"
 nonstandard_style = "warn"
 rust_2024_compatibility = "warn"
@@ -88,7 +92,7 @@ unused_lifetimes = "warn"
 unused_qualifications = "warn"
 variant_size_differences = "warn"
 
-[lints.clippy]
+[workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 unwrap_used = "deny"
 expect_used = "deny"
