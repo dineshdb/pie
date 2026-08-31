@@ -19,3 +19,20 @@ test:
 
 lint:
     cargo clippy --fix --allow-dirty --allow-staged
+
+# Build piebox and (on macOS) sign it with the hypervisor entitlement, without
+# which libkrun's hv_vm_create() fails and no guest can start.
+piebox profile="debug":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "{{profile}}" = "release" ]; then
+        cargo build -p piebox --release
+    else
+        cargo build -p piebox
+    fi
+    BIN="target/{{profile}}/piebox"
+    if [ "$(uname -s)" = "Darwin" ]; then
+        codesign -s - -f --entitlements crates/piebox/piebox.entitlements "$BIN"
+        echo "signed $BIN"
+    fi
+    "$BIN" doctor

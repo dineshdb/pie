@@ -1,0 +1,16 @@
+[package]
+name = "piebox"
+version = "0.1.0"
+edition = "2024"
+description = "libkrun-backed Linux microVM devbox that hosts pie and its sandboxes"
+license = "MIT"
+repository = "https://github.com/dineshdb/pie"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+libloading = "0.9"
+tracing.workspace = true
+
+[[bin]]
+name = "piebox"
+path = "src/bin/piebox.rs"
