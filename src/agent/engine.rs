@@ -324,7 +324,16 @@ impl PieAgent {
 
     pub fn run<'a>(&'a mut self, query_str: &'a str) -> BoxFuture<'a, Result<String>> {
         Box::pin(async move {
-            let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+            let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+            let label = self.config.agent_name.clone().unwrap_or_else(|| {
+                let mut q = query_str.trim().to_string();
+                if q.chars().count() > 80 {
+                    q = q.chars().take(80).collect();
+                    q.push('…');
+                }
+                q
+            });
+            super::progress::spawn(label, event_rx);
 
             let query = if let Some(ref name) = self.config.agent_name
                 && !query_str.contains(name)

@@ -81,12 +81,12 @@ fn clamp_tool_output(text: &str) -> Option<String> {
     ))
 }
 
-/// Maximum characters of tool-call arguments shown in timing logs.
-/// Full arguments can carry entire file bodies (Write/Edit) — logging
-/// those unclamped would flood stderr.
+/// Maximum characters of tool-call arguments shown in timing logs and
+/// non-interactive progress lines. Full arguments can carry entire file
+/// bodies (Write/Edit) — logging those unclamped would flood stderr.
 const TOOL_ARGS_LOG_LIMIT: usize = 160;
 
-fn truncate_for_log(text: &str) -> String {
+pub(crate) fn truncate_for_log(text: &str) -> String {
     if text.len() <= TOOL_ARGS_LOG_LIMIT {
         return text.to_string();
     }
@@ -95,6 +95,32 @@ fn truncate_for_log(text: &str) -> String {
         end -= 1;
     }
     format!("{}…[+{} chars]", &text[..end], text.len() - end)
+}
+
+/// Human-friendly single-line rendering of tool arguments for progress and
+/// chat lines: `key = value` pairs instead of JSON escapes. Newlines inside
+/// values are re-escaped — a display must stay one terminal line.
+fn display_args(arguments: &Value) -> String {
+    let Value::Object(map) = arguments else {
+        return arguments.to_string();
+    };
+    if map.is_empty() {
+        return "{}".to_string();
+    }
+    let pairs: Vec<String> = map
+        .iter()
+        .map(|(k, v)| {
+            let value = match v {
+                Value::String(s) => s
+                    .replace('\n', "\\n")
+                    .replace('\r', "\\r")
+                    .replace('\t', "\\t"),
+                other => other.to_string(),
+            };
+            format!("{k} = {value}")
+        })
+        .collect();
+    format!("{{{}}}", pairs.join(", "))
 }
 
 #[async_trait]
@@ -170,7 +196,7 @@ impl AgentPlugin for StreamPlugin {
         );
         let _ = self.event_tx.send(AgentEvent::ToolCall {
             name: name.to_string(),
-            display: format!("{name}({arguments})"),
+            display: format!("{name}{}", display_args(arguments)),
             output: String::new(),
         });
 
@@ -287,5 +313,24 @@ mod tests {
         assert!(clamped.starts_with("[output truncated: showing first"));
         assert!(clamped.len() < big.len() + 100);
         assert!(clamped.is_char_boundary(clamped.len()));
+    }
+
+    #[test]
+    fn display_args_shows_pairs_without_json_escapes() {
+        let args: Value = serde_json::from_str(r#"{"command":"rg -n \"pie_home\" file"}"#).unwrap();
+        assert_eq!(display_args(&args), r#"{command = rg -n "pie_home" file}"#);
+    }
+
+    #[test]
+    fn display_args_joins_pairs_and_keeps_one_line() {
+        let args: Value =
+            serde_json::from_str(r#"{"content":"line1\nline2","path":"a.rs"}"#).unwrap();
+        assert_eq!(
+            display_args(&args),
+            r#"{content = line1\nline2, path = a.rs}"#
+        );
+
+        assert_eq!(display_args(&serde_json::json!({})), "{}");
+        assert_eq!(display_args(&serde_json::json!(null)), "null");
     }
 }
