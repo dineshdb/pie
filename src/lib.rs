@@ -322,7 +322,7 @@ async fn handle_cron(
                     "{:max_id$}  {}  {}  {}",
                     s.id,
                     status,
-                    s.cron,
+                    trigger,
                     s.description,
                     max_id = max_id
                 );
@@ -459,9 +459,11 @@ async fn run_interactive(
 }
 
 fn default_env_filter(default_level: &str) -> EnvFilter {
+    // rmcp logs every MCP handshake at INFO with full peer metadata —
+    // connection noise, only useful while debugging.
     let filter_str = match default_level {
-        "debug" => "warn,p1e=debug,pie=debug,p1e_sandbox=debug",
-        others => others,
+        "debug" => "warn,p1e=debug,pie=debug,p1e_sandbox=debug,rmcp=debug".to_string(),
+        others => format!("{others},rmcp=warn"),
     };
     EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter_str))
 }
@@ -511,6 +513,21 @@ fn read_piped_stdin() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rmcp_handshake_logs_are_capped_below_info() {
+        let filter = default_env_filter("info").to_string();
+        assert!(filter.contains("rmcp=warn"), "{filter}");
+
+        let filter = default_env_filter("warn").to_string();
+        assert!(filter.contains("rmcp=warn"), "{filter}");
+    }
+
+    #[test]
+    fn debug_level_unmutes_rmcp() {
+        let filter = default_env_filter("debug").to_string();
+        assert!(filter.contains("rmcp=debug"), "{filter}");
+    }
 
     fn registry_with(names: &[&str]) -> Registry {
         Registry {

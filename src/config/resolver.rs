@@ -1,5 +1,5 @@
 use super::loader::get_providers_data;
-use super::types::{PieConfig, ProviderBaseUrl, ProviderConfig, ProviderEndpoint};
+use super::types::{McpServerConfig, PieConfig, ProviderBaseUrl, ProviderConfig, ProviderEndpoint};
 use crate::Cli;
 use crate::error::{AppError, Result};
 use crate::utils::output::OutputFormat;
@@ -54,6 +54,7 @@ fn resolve_url(custom: Option<&String>, known: Option<&String>, fallback: &str) 
 pub struct ResolvedConfig {
     pub provider: ResolvedProvider,
     pub model_tiers: HashMap<String, ResolvedProvider>,
+    pub mcp: HashMap<String, McpServerConfig>,
     pub max_steps: u32,
     pub retry: super::types::RetryConfig,
     pub output_format: OutputFormat,
@@ -254,6 +255,7 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
         Ok(Self {
             provider: resolved_provider,
             model_tiers,
+            mcp: pie.mcp,
             max_steps: pie.agent.as_ref().and_then(|a| a.max_steps).unwrap_or(25),
             retry,
             output_format,
@@ -318,6 +320,7 @@ mod tests {
             provider: HashMap::new(),
             secrets: HashMap::new(),
             model: HashMap::new(),
+            mcp: HashMap::new(),
             agent: None,
             sandbox: None,
             output_format: None,

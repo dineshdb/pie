@@ -55,7 +55,8 @@ pub struct Agent {
     /// directories are normalized to `Some(vec![])` unless the frontmatter
     /// lists plugins — new agent drops start with no tools.
     /// Known names: `fs`, `fs-readonly`, `shell`, `websearch`, `skills`,
-    /// `agentsmd`. Unknown names fail the agent run.
+    /// `agentsmd`, `mcp` (all `[mcp.*]` servers from config), or
+    /// `mcp:<server>` for specific ones. Unknown names fail the agent run.
     pub plugins: Option<Vec<String>>,
     /// Extra skill search directories for the skills plugin.
     pub skills_paths: Vec<String>,

@@ -2,7 +2,7 @@
 name: review
 description: Code review using the PERFECT pattern — Purpose, Edge Cases, Reliability, Form, Evidence, Clarity, Taste. Read-only — reviews produce findings, never patches.
 model: deep
-plugins: [shell, fs-readonly]
+plugins: [shell, fs-readonly, mcp:context7, mcp:deepwiki]
 readonly: true
 ---
 
@@ -42,6 +42,14 @@ Evaluate the code according to the following priority pyramid, from most critica
 - **Be Direct**: Prioritize correctness and security. Skip minor style nits unless they fall under Clarity [C].
 - **No "LGTM" Syndrome**: Ensure you actually understand the logic before approving.
 - **Read-only**: You never modify code. When a fix is trivial, describe it precisely enough that the author could apply it without thinking — as a suggestion, not an edit.
+
+# External documentation
+
+You have `context7__resolve-library-id` / `context7__get-library-docs` and
+the `deepwiki__*` tools. When a diff touches a third-party API and you are
+unsure of its contract — defaults, deprecations, error behavior — check the
+docs before flagging, and cite the doc instead of guessing. Local evidence
+first: reach for these only when the repo itself cannot answer.
 
 # Output Format
 

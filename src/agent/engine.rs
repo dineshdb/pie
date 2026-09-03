@@ -1,5 +1,6 @@
 use crate::agent::AgentEvent;
 use crate::config::CONFIG;
+use crate::config::McpServerConfig;
 use crate::error::{AppError, Result};
 use crate::plugin::{
     HelperBinariesPlugin, ModePlugin, PermissionRequest, PersistencePlugin, UserCommandPlugin,
@@ -12,12 +13,13 @@ use agentsdk::core::Sandbox;
 use agentsdk::{Agent as SdkAgent, MemoryHistoryPlugin, Message};
 use agentsdk_plugin_fs::{FileSystemPlugin, ReadOnlyFileSystemPlugin};
 use agentsdk_plugin_jewels::JewelsPlugin;
+use agentsdk_plugin_mcp::McpPlugin;
 use agentsdk_plugin_shell::ShellPlugin;
 use agentsdk_plugin_skills::SkillsPlugin;
 use futures::future::BoxFuture;
 use p1e_sandbox::{Permission, SandboxConfig};
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -32,16 +34,29 @@ enum FsMode {
     Off,
 }
 
+/// Which configured `[mcp.*]` servers a run connects to.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+enum McpSelection {
+    #[default]
+    Off,
+    /// Every server configured under `[mcp.*]`.
+    All,
+    /// Only the named servers, in the listed order.
+    Only(Vec<String>),
+}
+
 /// The optional, selectable plugins. Defaults = the full set (markdown
 /// agents and agent-less runs); [`PluginSelection::none`] = YAML agents
-/// that opt in explicitly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// that opt in explicitly. MCP servers are never in the default set: they
+/// are remote connections and must be opted into per agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PluginSelection {
     fs: FsMode,
     shell: bool,
     websearch: bool,
     skills: bool,
     agentsmd: bool,
+    mcp: McpSelection,
 }
 
 impl Default for PluginSelection {
@@ -52,6 +67,7 @@ impl Default for PluginSelection {
             websearch: true,
             skills: true,
             agentsmd: true,
+            mcp: McpSelection::Off,
         }
     }
 }
@@ -64,6 +80,7 @@ impl PluginSelection {
             websearch: false,
             skills: false,
             agentsmd: false,
+            mcp: McpSelection::Off,
         }
     }
 }
@@ -173,6 +190,8 @@ impl PieAgent {
         };
 
         let mut sel = PluginSelection::none();
+        let mut mcp_all = false;
+        let mut mcp_servers = Vec::new();
         for name in names {
             match name.trim() {
                 "fs" => sel.fs = FsMode::Full,
@@ -181,18 +200,99 @@ impl PieAgent {
                 "websearch" => sel.websearch = true,
                 "skills" => sel.skills = true,
                 "agentsmd" => sel.agentsmd = true,
-                other => {
-                    return Err(AppError::Config(format!(
-                        "agent '{}' lists unknown plugin '{other}' (known: fs, fs-readonly, shell, websearch, skills, agentsmd)",
-                        agent.map_or("?", |a| a.name.as_str())
-                    )));
-                }
+                "mcp" => mcp_all = true,
+                other => match other.strip_prefix("mcp:") {
+                    Some(server) if !server.is_empty() => mcp_servers.push(server.to_string()),
+                    _ => {
+                        return Err(AppError::Config(format!(
+                            "agent '{}' lists unknown plugin '{other}' (known: fs, fs-readonly, shell, websearch, skills, agentsmd, mcp, mcp:<server>)",
+                            agent.map_or("?", |a| a.name.as_str())
+                        )));
+                    }
+                },
             }
         }
+        sel.mcp = if mcp_all {
+            McpSelection::All
+        } else if mcp_servers.is_empty() {
+            McpSelection::Off
+        } else {
+            McpSelection::Only(mcp_servers)
+        };
         if sel.fs == FsMode::Full && Self::wants_readonly(agent, sandbox) {
             sel.fs = FsMode::Readonly;
         }
         Ok(sel)
+    }
+
+    /// Pair a parsed MCP selection with the configured servers, sorted by
+    /// name for deterministic connection order. Fails loudly on `mcp:<server>`
+    /// names that have no `[mcp.*]` section and on any selection with nothing
+    /// configured.
+    fn select_mcp_servers<'a>(
+        configured: &'a HashMap<String, McpServerConfig>,
+        selection: &McpSelection,
+    ) -> Result<Vec<(String, &'a McpServerConfig)>> {
+        let selected: Vec<String> = match selection {
+            McpSelection::Off => return Ok(Vec::new()),
+            McpSelection::All => configured.keys().cloned().collect(),
+            McpSelection::Only(names) => names.clone(),
+        };
+
+        let mut unknown: Vec<&str> = selected
+            .iter()
+            .map(String::as_str)
+            .filter(|name| !configured.contains_key(*name))
+            .collect();
+        unknown.sort_unstable();
+        if !unknown.is_empty() {
+            let mut known: Vec<&str> = configured.keys().map(String::as_str).collect();
+            known.sort_unstable();
+            return Err(AppError::Config(format!(
+                "mcp server(s) not configured: {} (known: {})",
+                unknown.join(", "),
+                known.join(", ")
+            )));
+        }
+
+        let mut servers: Vec<(String, &McpServerConfig)> = selected
+            .into_iter()
+            .filter_map(|name| configured.get(&name).map(|cfg| (name, cfg)))
+            .collect();
+        servers.sort_by_key(|(name, _)| name.clone());
+        if servers.is_empty() {
+            return Err(AppError::Config(
+                "agent requests mcp but no [mcp.*] servers are configured".into(),
+            ));
+        }
+        Ok(servers)
+    }
+
+    /// Connect to the selected MCP servers. Any connection failure fails the
+    /// run: a silently missing server would surface later as confusing
+    /// tool-not-found errors.
+    async fn build_mcp_plugin(
+        configured: &HashMap<String, McpServerConfig>,
+        selection: &McpSelection,
+    ) -> Result<McpPlugin> {
+        let servers = Self::select_mcp_servers(configured, selection)?;
+
+        let mut plugin = McpPlugin::new();
+        for (name, server) in servers {
+            let headers: HashMap<String, String> = server
+                .headers
+                .iter()
+                .map(|(k, v)| (k.clone(), v.expose_secret().clone()))
+                .collect();
+            plugin
+                .add_remote_server(name.clone(), server.url.as_str(), headers)
+                .await
+                .map_err(|e| {
+                    AppError::Plugin(format!("mcp server '{name}' failed to connect: {e}"))
+                })?;
+            tracing::debug!(server = name, "mcp server connected");
+        }
+        Ok(plugin)
     }
 
     fn prepare_system_prompt(&self) -> Result<String> {
@@ -355,6 +455,13 @@ impl PieAgent {
             }
             if selection.websearch {
                 builder = builder.plugin(WebsearchPlugin::new());
+            }
+            if selection.mcp != McpSelection::Off {
+                let config = CONFIG
+                    .get()
+                    .ok_or_else(|| AppError::Config("global config not initialized".into()))?;
+                builder =
+                    builder.plugin(Self::build_mcp_plugin(&config.mcp, &selection.mcp).await?);
             }
 
             builder = builder
@@ -557,5 +664,97 @@ mod tests {
         .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("unknown plugin 'webserch'"), "{msg}");
+    }
+
+    #[test]
+    fn mcp_plugin_names_parse_to_selection() {
+        // bare `mcp` selects every configured server
+        let sel = PieAgent::selected_plugins(
+            Some(&tooled_agent(Some(vec!["mcp".into()]), false)),
+            &sandbox(&["."]),
+        )
+        .unwrap();
+        assert_eq!(sel.mcp, McpSelection::All);
+
+        // `mcp:<server>` selects just that server, alongside other plugins
+        let sel = PieAgent::selected_plugins(
+            Some(&tooled_agent(
+                Some(vec!["mcp:deepwiki".into(), "fs".into()]),
+                false,
+            )),
+            &sandbox(&["."]),
+        )
+        .unwrap();
+        assert_eq!(sel.mcp, McpSelection::Only(vec!["deepwiki".into()]));
+        assert_eq!(sel.fs, FsMode::Full);
+    }
+
+    #[test]
+    fn mcp_stays_off_unless_listed() {
+        assert_eq!(PluginSelection::default().mcp, McpSelection::Off);
+        assert_eq!(PluginSelection::none().mcp, McpSelection::Off);
+
+        let sel =
+            PieAgent::selected_plugins(Some(&tooled_agent(None, false)), &sandbox(&["."])).unwrap();
+        assert_eq!(sel.mcp, McpSelection::Off);
+    }
+
+    #[test]
+    fn mcp_with_empty_server_name_is_unknown_plugin() {
+        let err = PieAgent::selected_plugins(
+            Some(&tooled_agent(Some(vec!["mcp:".into()]), false)),
+            &sandbox(&["."]),
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("unknown plugin 'mcp:'"), "{msg}");
+    }
+
+    fn mcp_config() -> HashMap<String, McpServerConfig> {
+        let server = |host: &str| McpServerConfig {
+            url: format!("https://{host}/mcp").parse().unwrap(),
+            headers: HashMap::new(),
+        };
+        HashMap::from([
+            ("b".to_string(), server("b")),
+            ("a".to_string(), server("a")),
+        ])
+    }
+
+    #[test]
+    fn select_mcp_servers_all_sorted_by_name() {
+        let configured = mcp_config();
+        let servers = PieAgent::select_mcp_servers(&configured, &McpSelection::All).unwrap();
+        let names: Vec<&str> = servers.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn select_mcp_servers_only_filters() {
+        let configured = mcp_config();
+        let servers =
+            PieAgent::select_mcp_servers(&configured, &McpSelection::Only(vec!["b".into()]))
+                .unwrap();
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].0, "b");
+    }
+
+    #[test]
+    fn select_mcp_servers_unknown_name_fails_with_known_list() {
+        let configured = mcp_config();
+        let err =
+            PieAgent::select_mcp_servers(&configured, &McpSelection::Only(vec!["deepwiki".into()]))
+                .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("not configured: deepwiki"), "{msg}");
+        assert!(msg.contains("known: a, b"), "{msg}");
+    }
+
+    #[test]
+    fn select_mcp_servers_without_config_fails() {
+        let configured = HashMap::new();
+        let err = PieAgent::select_mcp_servers(&configured, &McpSelection::All).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("no [mcp.*] servers are configured"), "{msg}");
     }
 }

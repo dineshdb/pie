@@ -86,7 +86,8 @@ temperature: 0.3
 
 # Tools are opt-in for agents/ drops: without a `plugins` list the agent
 # has NO tools. Known names: fs, fs-readonly, shell, websearch, skills,
-# agentsmd — unknown names fail the run.
+# agentsmd, mcp (all configured servers) or mcp:<server> for specific
+# ones — unknown names fail the run.
 plugins: [fs-readonly, shell]
 
 skills_paths: ["~/src/my-skills"]   # extra skill directories (needs skills)
@@ -133,6 +134,34 @@ Pie searches for this file in:
 
 For a full list of configuration options, see
 [.pie/pie.toml.example](.pie/pie.toml.example).
+
+#### MCP servers
+
+HTTP-based [MCP](https://modelcontextprotocol.io/) servers are configured
+under `[mcp.<name>]`. Agents opt in with `plugins: [mcp]` (every server)
+or `plugins: ["mcp:<name>"]` (specific ones); their tools appear as
+`<name>__<tool>`.
+
+```toml
+[mcp.deepwiki]
+url = "https://mcp.deepwiki.com/mcp"
+
+[mcp.context7]
+url = "https://mcp.context7.com/mcp"
+
+[mcp.context7.headers]
+# a value matching a [secrets] key is replaced by that secret at load time
+CONTEXT7_API_KEY = "context7_key"
+
+# GitHub's remote MCP (needs a PAT in [secrets] as github_pat):
+# [mcp.github]
+# url = "https://api.githubcopilot.com/mcp/"
+# [mcp.github.headers]
+# Authorization = "github_pat"
+
+[secrets]
+context7_key = "..."
+```
 
 #### Example `pie.toml`
 

@@ -4,6 +4,7 @@ use p1e_sandbox::SandboxConfig;
 use redact::Secret;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use url::Url;
 
 #[derive(Debug, Clone, Default, Args)]
 pub struct ProviderEndpoint {
@@ -144,10 +145,52 @@ pub struct PieConfig {
     pub secrets: HashMap<String, Secret<String>>,
     #[serde(default)]
     pub model: HashMap<String, ModelTier>,
+    #[serde(default)]
+    pub mcp: HashMap<String, McpServerConfig>,
     pub agent: Option<GlobalAgentConfig>,
     pub sandbox: Option<SandboxConfig>,
     pub output_format: Option<String>,
     pub log_level: Option<String>,
+}
+
+/// An HTTP-based MCP server under `[mcp.<name>]`. Its tools show up to
+/// agents as `{name}__{tool}` once the agent lists `mcp` (or `mcp:<name>`)
+/// in its `plugins`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct McpServerConfig {
+    /// Streamable-HTTP MCP endpoint (e.g. `https://mcp.example.com/mcp`).
+    pub url: Url,
+    /// Headers sent with every request. A value that exactly matches a
+    /// `[secrets]` key is replaced by that secret's value at load time.
+    #[serde(default)]
+    pub headers: HashMap<String, Secret<String>>,
+}
+
+impl Serialize for McpServerConfig {
+    /// Header values are secrets by construction; only their names survive
+    /// serialization.
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut s = serializer.serialize_struct("McpServerConfig", 2)?;
+        s.serialize_field("url", self.url.as_str())?;
+        s.serialize_field("headers", &self.headers.keys().collect::<Vec<_>>())?;
+        s.end()
+    }
+}
+
+impl McpServerConfig {
+    /// Replace header values that exactly match a `[secrets]` key with the
+    /// secret's value; literal values pass through untouched.
+    pub fn resolve_secrets(&mut self, secrets: &HashMap<String, Secret<String>>) {
+        for header in self.headers.values_mut() {
+            if let Some(val) = secrets.get(header.expose_secret()) {
+                *header = val.clone();
+            }
+        }
+    }
 }
 
 /// A named model tier in `[model.<name>]` sections.
@@ -226,4 +269,71 @@ pub struct LaunchConfig {
     pub args: Vec<String>,
     pub env: HashMap<String, String>,
     pub aliases: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use figment::Figment;
+    use figment::providers::{Format, Toml};
+
+    fn parse(toml: &str) -> PieConfig {
+        Figment::new().merge(Toml::string(toml)).extract().unwrap()
+    }
+
+    #[test]
+    fn parse_mcp_server_config() {
+        let pie = parse(
+            r#"
+[mcp.deepwiki]
+url = "https://mcp.deepwiki.com/mcp"
+
+[mcp.context7]
+url = "https://mcp.context7.com/mcp"
+[mcp.context7.headers]
+CONTEXT7_API_KEY = "context7_key"
+"#,
+        );
+
+        assert_eq!(pie.mcp.len(), 2);
+        let deepwiki = &pie.mcp["deepwiki"];
+        assert_eq!(deepwiki.url.as_str(), "https://mcp.deepwiki.com/mcp");
+        assert!(deepwiki.headers.is_empty());
+
+        let context7 = &pie.mcp["context7"];
+        assert_eq!(
+            context7.headers["CONTEXT7_API_KEY"].expose_secret(),
+            "context7_key"
+        );
+    }
+
+    #[test]
+    fn mcp_section_is_optional() {
+        let pie = parse("log_level = \"info\"");
+        assert!(pie.mcp.is_empty());
+    }
+
+    #[test]
+    fn resolve_secrets_replaces_exact_matches_only() {
+        let mut server = McpServerConfig {
+            url: "https://mcp.example.com/mcp".parse().unwrap(),
+            headers: HashMap::from([
+                ("AUTH".to_string(), Secret::new("ctx_key".to_string())),
+                (
+                    "X-LITERAL".to_string(),
+                    Secret::new("Bearer literal".to_string()),
+                ),
+            ]),
+        };
+
+        let mut secrets = HashMap::new();
+        secrets.insert("ctx_key".to_string(), Secret::new("real-key".to_string()));
+        server.resolve_secrets(&secrets);
+
+        assert_eq!(server.headers["AUTH"].expose_secret(), "real-key");
+        assert_eq!(
+            server.headers["X-LITERAL"].expose_secret(),
+            "Bearer literal"
+        );
+    }
 }

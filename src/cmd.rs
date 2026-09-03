@@ -66,6 +66,12 @@ impl BuiltinCommand {
 }
 
 #[derive(Serialize)]
+struct McpServerStatus {
+    name: String,
+    url: String,
+}
+
+#[derive(Serialize)]
 struct StatusOutput<'a> {
     provider: &'a crate::config::ResolvedProvider,
     log_level: &'a str,
@@ -73,6 +79,20 @@ struct StatusOutput<'a> {
     max_steps: u32,
     skills: Vec<String>,
     agents: Vec<String>,
+    mcp_servers: Vec<McpServerStatus>,
+}
+
+fn mcp_server_status(config: &ResolvedConfig) -> Vec<McpServerStatus> {
+    let mut servers: Vec<_> = config
+        .mcp
+        .iter()
+        .map(|(name, server)| McpServerStatus {
+            name: name.clone(),
+            url: server.url.to_string(),
+        })
+        .collect();
+    servers.sort_by(|a, b| a.name.cmp(&b.name));
+    servers
 }
 
 pub fn handle_status(config: &ResolvedConfig, registry: &Arc<Registry>) {
@@ -84,6 +104,7 @@ pub fn handle_status(config: &ResolvedConfig, registry: &Arc<Registry>) {
             max_steps: config.max_steps,
             skills: registry.skills.iter().map(|s| s.name.clone()).collect(),
             agents: registry.agents.iter().map(|a| a.name.clone()).collect(),
+            mcp_servers: mcp_server_status(config),
         };
 
         if let Ok(json) = serde_json::to_string_pretty(&status) {
@@ -101,6 +122,14 @@ pub fn handle_status(config: &ResolvedConfig, registry: &Arc<Registry>) {
     println!("Log Level:   {}", config.log_level);
     println!("Output:      {:?}", config.output_format);
     println!("Max Steps:   {}", config.max_steps);
+
+    let mcp_servers = mcp_server_status(config);
+    if !mcp_servers.is_empty() {
+        println!("\n--- MCP ---");
+        for server in &mcp_servers {
+            println!(" - {}: {}", server.name, server.url);
+        }
+    }
 
     println!("\n--- Registry ---");
     println!("Skills: {}", registry.skills.len());

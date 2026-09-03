@@ -58,6 +58,10 @@ pub fn load_config() -> Result<PieConfig> {
         }
     }
 
+    for server in pie_config.mcp.values_mut() {
+        server.resolve_secrets(&pie_config.secrets);
+    }
+
     Ok(pie_config)
 }
 

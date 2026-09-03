@@ -1,6 +1,9 @@
 # pie.toml.example
 # Copy this to ~/.pie/pie.toml or ./.pie/pie.toml and customize
 
+# NOTE: top-level keys must stay ABOVE the first [table] header — anything
+# after one belongs to that table.
+
 # Default provider to use when none is specified via CLI (-p)
 default_provider = "local"
 
@@ -19,6 +22,13 @@ max_steps = 25
 model = "mlx-community/gemma-4-e4b-it-4bit"
 base_url = "http://localhost:1234/v1"
 api_key = "not-needed-for-local"
+
+[provider.citadel]
+# A local LLM gateway (here: Citadel, a celld worker at citadel.lvh.me/v1).
+# Keys live in the gateway's own config, so pie carries none — no [secrets]
+# wiring, no per-provider keys. Model ids are gateway-routed.
+model = "@z-ai/glm-5.3-flash"
+base_url = "http://citadel.lvh.me/v1"
 temperature = 0.7
 
 [provider.openai]
@@ -40,6 +50,12 @@ base_url = "https://api.z.ai/api/paas/v4/"
 anthropic_url = "https://api.z.ai/api/anthropic"
 api_key = "..."
 
+[provider.openrouter]
+# ":free" suffix = free tier (rate-limited); glm-5.3-flash has no free tier
+model = "z-ai/glm-5.2:free"
+base_url = "openrouter"
+api_key = "sk-or-..."
+
 # Model tiers — agents reference these by name in their frontmatter.
 # If an agent doesn't specify a tier, or the tier isn't defined,
 # it falls back to default_provider.
@@ -59,6 +75,33 @@ model = "gpt-4o"
 [model.broad]
 provider = "anthropic"
 model = "claude-opus-4-7"
+
+# MCP servers — HTTP (streamable) endpoints that expose extra tools.
+# Agents opt in per-run via frontmatter: plugins: [mcp] (every server here)
+# or plugins: ["mcp:deepwiki"] (specific servers). Tools appear as
+# `<name>__<tool>`. Connection failures fail the run loudly.
+#
+# The bundled review/search agents use deepwiki and context7.
+
+[mcp.deepwiki]
+url = "https://mcp.deepwiki.com/mcp"
+
+[mcp.context7]
+url = "https://mcp.context7.com/mcp"
+# Optional — raises rate limits. A value matching a [secrets] key is
+# replaced by that secret at load time.
+# [mcp.context7.headers]
+# CONTEXT7_API_KEY = "context7_key"
+
+# GitHub's remote MCP needs a PAT (create: https://github.com/settings/personal-access-tokens)
+# [mcp.github]
+# url = "https://api.githubcopilot.com/mcp/"
+# [mcp.github.headers]
+# Authorization = "github_pat"
+
+# [secrets]
+# context7_key = "..."
+# github_pat = "github_pat_..."
 
 [sandbox]
 # Native OS-level isolation (sandbox-exec on macOS, bubblewrap on Linux)
