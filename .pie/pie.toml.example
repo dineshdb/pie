@@ -141,3 +141,11 @@ allowed_domains = [
 ]
 
 denied_domains = []
+
+# Per-model token pricing in USD per million tokens, keyed by exact model id.
+# Enables the cost part of per-run usage stats (see `pie --json` and the
+# llm_usage table). `cached_input` defaults to `input` when omitted.
+[pricing."glm-5.1"]
+input = 0.6
+cached_input = 0.1
+output = 2.2

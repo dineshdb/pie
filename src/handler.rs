@@ -1,4 +1,4 @@
-use crate::agent::{AgentConfig, PieAgent};
+use crate::agent::{AgentConfig, PieAgent, RunOutcome};
 use crate::config::RetryConfig;
 use crate::instructions::Instructions;
 use crate::session::Session;
@@ -9,21 +9,23 @@ use std::sync::Arc;
 
 /// Print response to stdout and persist to session.
 fn output_response(
-    output: &str,
+    outcome: &RunOutcome,
     session_id: &str,
     format: &OutputFormat,
     model: &agentsdk::OpenAI,
 ) -> Result<()> {
+    let output = &outcome.text;
     if output.is_empty() {
         return Ok(());
     }
     if format.is_json() {
         let val = serde_json::from_str(output)
-            .unwrap_or_else(|_| serde_json::Value::String(output.to_string()));
+            .unwrap_or_else(|_| serde_json::Value::String(output.clone()));
         let json_resp = JsonResponse::new(
             val,
             Some(session_id.to_string()),
             Some(model.config.model.clone()),
+            Some(outcome.usage.report(outcome.cost_usd)),
         );
         println!("{}", serde_json::to_string(&json_resp)?);
     } else {
@@ -86,15 +88,14 @@ pub async fn handle_query(params: HandleParams) -> Result<()> {
 
     let session_id = agent.session.id.to_string();
 
-    let output = match &params.format {
+    let outcome: RunOutcome = match &params.format {
         OutputFormat::Json(spec) => {
             let schema = parse_schema(spec.as_deref())?;
-            let result = agent.run_json(&params.query.raw, schema).await?;
-            serde_json::to_string_pretty(&result)?
+            agent.run_json(&params.query.raw, schema).await?
         }
         _ => agent.run(&params.query.raw).await?,
     };
 
-    output_response(&output, &session_id, &params.format, &params.model)?;
+    output_response(&outcome, &session_id, &params.format, &params.model)?;
     Ok(())
 }

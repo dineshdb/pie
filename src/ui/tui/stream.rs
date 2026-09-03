@@ -110,6 +110,9 @@ pub async fn spawn_stream(
                         output,
                     });
                 }
+                AgentEvent::Usage { usage, cost_usd } => {
+                    let _ = event_tx_clone.send(StreamEvent::Usage(usage.summary(cost_usd)));
+                }
                 AgentEvent::PermissionRequest(_) => {}
             }
         }

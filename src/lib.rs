@@ -22,6 +22,7 @@ mod registry;
 mod session;
 mod tools;
 mod ui;
+mod usage;
 mod utils;
 
 use crate::agent::Agent;

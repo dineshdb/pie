@@ -26,14 +26,27 @@ tests:
     timeout: 60
 
   # ── JSON output format ───────────────────────────────────────
+  # NOTE: `--json` takes an optional schema, so the schema must be passed
+  # here — a bare `--json` would swallow the following query text.
   - name: json output format is valid
-    args: --json
+    args: --json {"type":"object"}
     input: "what is 2+2"
     contains:
       - '"response"'
       - '"session_id"'
     not_contains:
       - "```"
+    timeout: 30
+
+  # ── LLM usage accounting ─────────────────────────────────────
+  - name: json envelope carries llm usage stats
+    args: --json {"type":"object"}
+    input: "what is 2+2"
+    contains:
+      - '"usage"'
+      - '"total_tokens"'
+      - '"cache_rate"'
+      - '"requests"'
     timeout: 30
 
   - name: List files

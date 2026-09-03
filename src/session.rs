@@ -233,6 +233,38 @@ impl Session {
         self.add_entry(Role::Tool, content).await
     }
 
+    /// Persist one run's LLM usage for bookkeeping. `cost_usd` is `None`
+    /// when the model has no configured pricing.
+    pub async fn record_usage(
+        &self,
+        usage: &crate::usage::RunUsage,
+        model: &str,
+        agent: Option<&str>,
+        cost_usd: Option<f64>,
+    ) -> Result<()> {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let sid = self.id.to_string();
+        sqlx::query(
+            "INSERT INTO llm_usage (session_id, ts, model, agent, requests, prompt_tokens, \
+             completion_tokens, cached_tokens, reasoning_tokens, total_tokens, cost_usd) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&sid)
+        .bind(now_ms)
+        .bind(model)
+        .bind(agent)
+        .bind(i64::from(usage.requests))
+        .bind(usage.prompt_tokens)
+        .bind(usage.completion_tokens)
+        .bind(usage.cached_tokens)
+        .bind(usage.reasoning_tokens)
+        .bind(usage.total_tokens)
+        .bind(cost_usd)
+        .execute(&*self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn rebuild_cache(&mut self) -> Result<()> {
         let sid = self.id.to_string();
         let rows = sqlx::query_as::<_, HistoryEntry>(
@@ -301,6 +333,43 @@ mod tests {
         assert_eq!(entries[0].content(), "hello");
         assert_eq!(entries[1].role(), Role::Assistant);
         assert_eq!(entries[1].content(), "hi there");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn record_usage_persists_and_aggregates() -> anyhow::Result<()> {
+        use sqlx::Row as _;
+
+        let pool = pool().await?;
+        let session = Session::create(pool.clone()).await?;
+
+        let run = crate::usage::RunUsage {
+            requests: 2,
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            cached_tokens: 80,
+            reasoning_tokens: 20,
+        };
+        session
+            .record_usage(&run, "test-model", None, Some(0.01))
+            .await?;
+        session
+            .record_usage(&run, "test-model", Some("reviewer"), None)
+            .await?;
+
+        let row = sqlx::query(
+            "SELECT COUNT(*) AS rows, SUM(requests) AS requests, SUM(total_tokens) AS total, \
+             SUM(cached_tokens) AS cached, SUM(cost_usd) AS cost FROM llm_usage WHERE session_id = ?",
+        )
+        .bind(session.id.to_string())
+        .fetch_one(&*pool)
+        .await?;
+        assert_eq!(row.try_get::<i64, _>("rows")?, 2);
+        assert_eq!(row.try_get::<i64, _>("requests")?, 4);
+        assert_eq!(row.try_get::<i64, _>("total")?, 300);
+        assert_eq!(row.try_get::<i64, _>("cached")?, 160);
+        assert!((row.try_get::<f64, _>("cost")? - 0.01).abs() < 1e-9);
         Ok(())
     }
 }

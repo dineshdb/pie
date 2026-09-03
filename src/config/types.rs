@@ -147,10 +147,34 @@ pub struct PieConfig {
     pub model: HashMap<String, ModelTier>,
     #[serde(default)]
     pub mcp: HashMap<String, McpServerConfig>,
+    /// Per-model token pricing in USD per million tokens, keyed by the
+    /// exact model id: `[pricing."claude-sonnet-4"]`. A model without an
+    /// entry gets token stats but no cost.
+    #[serde(default)]
+    pub pricing: HashMap<String, ModelPricing>,
     pub agent: Option<GlobalAgentConfig>,
     pub sandbox: Option<SandboxConfig>,
     pub output_format: Option<String>,
     pub log_level: Option<String>,
+}
+
+/// Token pricing for a model, in USD per million tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ModelPricing {
+    /// Uncached prompt (input) tokens.
+    pub input: f64,
+    /// Prompt tokens served from the provider's prompt cache. Defaults to
+    /// `input` when unset (no discount assumed).
+    #[serde(default)]
+    pub cached_input: Option<f64>,
+    /// Completion (output) tokens.
+    pub output: f64,
+}
+
+impl ModelPricing {
+    pub fn cached_input(&self) -> f64 {
+        self.cached_input.unwrap_or(self.input)
+    }
 }
 
 /// An HTTP-based MCP server under `[mcp.<name>]`. Its tools show up to
@@ -311,6 +335,31 @@ CONTEXT7_API_KEY = "context7_key"
     fn mcp_section_is_optional() {
         let pie = parse("log_level = \"info\"");
         assert!(pie.mcp.is_empty());
+    }
+
+    #[test]
+    fn parse_pricing_defaults_cached_to_input_rate() {
+        let pie = parse(
+            r#"
+[pricing."some-model"]
+input = 1.5
+output = 6.0
+
+[pricing."other-model"]
+input = 1.0
+cached_input = 0.1
+output = 2.0
+"#,
+        );
+        assert_eq!(pie.pricing.len(), 2);
+        let some = &pie.pricing["some-model"];
+        assert!((some.input - 1.5).abs() < 1e-9);
+        assert!(some.cached_input.is_none());
+        assert!(
+            (some.cached_input() - 1.5).abs() < 1e-9,
+            "unset cached_input bills at input rate"
+        );
+        assert!((pie.pricing["other-model"].cached_input() - 0.1).abs() < 1e-9);
     }
 
     #[test]

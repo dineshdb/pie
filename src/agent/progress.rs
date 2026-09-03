@@ -6,6 +6,7 @@
 
 use crate::agent::AgentEvent;
 use crate::agent::stream::truncate_for_log;
+use crate::usage::RunUsage;
 use std::io::IsTerminal;
 use std::time::Instant;
 
@@ -67,6 +68,7 @@ async fn run(label: String, mut event_rx: tokio::sync::mpsc::UnboundedReceiver<A
     let mut phase_start = started;
     let mut activity: Option<String> = None;
     let mut line_open = false;
+    let mut usage: Option<(RunUsage, Option<f64>)> = None;
     eprintln!("· {label}");
 
     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
@@ -104,6 +106,10 @@ async fn run(label: String, mut event_rx: tokio::sync::mpsc::UnboundedReceiver<A
                         phase_start = Instant::now();
                         eprintln!("! {error}");
                     }
+                    AgentEvent::Usage {
+                        usage: u,
+                        cost_usd,
+                    } => usage = Some((u, cost_usd)),
                     AgentEvent::Delta(_) if activity.is_none() => {
                         activity = Some("writing".to_string());
                         phase_start = Instant::now();
@@ -113,7 +119,12 @@ async fn run(label: String, mut event_rx: tokio::sync::mpsc::UnboundedReceiver<A
                             &mut line_open,
                             &line_text(activity.as_deref(), phase_start.elapsed().as_secs(), width),
                         );
-                        eprintln!("· done in {}s", started.elapsed().as_secs());
+                        let summary = usage
+                            .filter(|(u, _)| u.requests > 0)
+                            .map_or_else(String::new, |(u, cost)| {
+                                format!(" · {}", u.summary(cost))
+                            });
+                        eprintln!("· done in {}s{summary}", started.elapsed().as_secs());
                         return;
                     }
                     _ => {}

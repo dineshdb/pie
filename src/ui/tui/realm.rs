@@ -20,6 +20,8 @@ pub enum StreamEvent {
         display: String,
         output: String,
     },
+    /// Pre-formatted per-run usage summary (tokens, cache rate, cost).
+    Usage(String),
     ModelList(Vec<String>),
     PermissionRequest,
 }

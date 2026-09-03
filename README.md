@@ -163,6 +163,38 @@ CONTEXT7_API_KEY = "context7_key"
 context7_key = "..."
 ```
 
+#### Usage & cost tracking
+
+Every interaction records its LLM usage — request count, prompt/completion
+tokens, cached tokens and reasoning tokens — and prints a summary line when
+the run finishes (non-interactive mode):
+
+```
+· done in 6s · 4.6k tokens · 98% cached · 1 request
+```
+
+`--json` output carries the same stats in a `usage` object (`cache_rate`
+is the cached fraction of prompt tokens; `cost_usd` is `null` without
+configured pricing).
+
+For cost accounting, configure per-model rates in USD per million tokens
+under `[pricing.<model-id>]` (exact model id match):
+
+```toml
+[pricing."glm-5.1"]
+input = 0.6        # uncached input tokens
+cached_input = 0.1 # cache hits; defaults to `input` when omitted
+output = 2.2       # output tokens
+```
+
+All runs are persisted to the `llm_usage` table in `~/.pie/pie.db` for
+bookkeeping, e.g. total spend per model:
+
+```bash
+sqlite3 ~/.pie/pie.db "SELECT model, SUM(total_tokens), SUM(cost_usd) \
+  FROM llm_usage GROUP BY model"
+```
+
 #### Example `pie.toml`
 
 ```toml

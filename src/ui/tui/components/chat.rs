@@ -60,6 +60,9 @@ pub struct ChatComponent {
     pub registry: Arc<Registry>,
     pub pending_permissions: PendingPermissions,
     permission_response_tx: Option<oneshot::Sender<bool>>,
+    /// Usage summary seen before the run finished; shown once the
+    /// response message is finalized so it lands below it.
+    pending_usage: Option<String>,
 }
 
 impl ChatComponent {
@@ -83,6 +86,7 @@ impl ChatComponent {
             registry,
             pending_permissions,
             permission_response_tx: None,
+            pending_usage: None,
         }
     }
 
@@ -139,6 +143,7 @@ impl ChatComponent {
     pub fn start_response(&mut self) {
         self.add_message(ChatMessage::response());
         self.response_idx = Some(self.messages.len() - 1);
+        self.pending_usage = None;
         self.render_plan.clear();
     }
 
@@ -160,6 +165,9 @@ impl ChatComponent {
             self.render_cache.invalidate(idx);
         }
         self.response_idx = None;
+        if let Some(summary) = self.pending_usage.take() {
+            self.add_message(ChatMessage::system(&summary));
+        }
         self.render_plan.clear();
     }
 
@@ -426,6 +434,10 @@ impl ChatComponent {
                     return Msg::ModeChanged(mode);
                 }
 
+                Msg::Redraw
+            }
+            StreamEvent::Usage(summary) => {
+                self.pending_usage = Some(summary.clone());
                 Msg::Redraw
             }
             StreamEvent::ModelList(models) => {

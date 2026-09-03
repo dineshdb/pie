@@ -1,3 +1,4 @@
+use crate::usage::UsageReport;
 use serde::{Deserialize, Serialize};
 
 /// Output format requested by the user.
@@ -24,6 +25,7 @@ pub struct JsonResponse {
     pub response: serde_json::Value,
     pub session_id: Option<String>,
     pub model_used: Option<String>,
+    pub usage: Option<UsageReport>,
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
@@ -32,11 +34,13 @@ impl JsonResponse {
         response: serde_json::Value,
         session_id: Option<String>,
         model_used: Option<String>,
+        usage: Option<UsageReport>,
     ) -> Self {
         Self {
             response,
             session_id,
             model_used,
+            usage,
             timestamp: chrono::Utc::now(),
         }
     }

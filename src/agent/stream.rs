@@ -1,5 +1,6 @@
 use crate::config::RetryConfig;
 use crate::plugin::PermissionRequest;
+use crate::usage::RunUsage;
 use agentsdk::core::agent::{CompletionAction, PostToolAction, PreToolAction};
 use agentsdk::core::retry::RetryAction;
 use agentsdk::error::AgentSdkError;
@@ -20,6 +21,13 @@ pub enum AgentEvent {
         name: String,
         display: String,
         output: String,
+    },
+    /// Emitted once per run, right before [`AgentEvent::Done`], with the
+    /// token totals the provider reported and their cost (`None` when the
+    /// model has no configured pricing or reported no usage).
+    Usage {
+        usage: RunUsage,
+        cost_usd: Option<f64>,
     },
     #[expect(dead_code)]
     PermissionRequest(PermissionRequest),

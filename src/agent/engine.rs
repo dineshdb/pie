@@ -9,6 +9,7 @@ use crate::plugin::{
 use crate::prompt::SystemPrompt;
 use crate::registry::Registry;
 use crate::session::Session;
+use crate::usage::RunUsage;
 use agentsdk::core::Sandbox;
 use agentsdk::{Agent as SdkAgent, MemoryHistoryPlugin, Message};
 use agentsdk_plugin_fs::{FileSystemPlugin, ReadOnlyFileSystemPlugin};
@@ -127,6 +128,16 @@ impl AgentConfig {
     pub fn is_debug() -> bool {
         CONFIG.get().is_some_and(|c| c.debug)
     }
+}
+
+/// One completed interaction: the final text plus the LLM usage it cost.
+#[derive(Debug, Clone)]
+pub struct RunOutcome {
+    pub text: String,
+    pub usage: RunUsage,
+    /// USD cost at the configured per-model pricing; `None` when the model
+    /// has no `[pricing.*]` entry or the provider reported no usage.
+    pub cost_usd: Option<f64>,
 }
 
 impl PieAgent {
@@ -322,7 +333,7 @@ impl PieAgent {
             ))
     }
 
-    pub fn run<'a>(&'a mut self, query_str: &'a str) -> BoxFuture<'a, Result<String>> {
+    pub fn run<'a>(&'a mut self, query_str: &'a str) -> BoxFuture<'a, Result<RunOutcome>> {
         Box::pin(async move {
             let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
             let label = self.config.agent_name.clone().unwrap_or_else(|| {
@@ -351,7 +362,7 @@ impl PieAgent {
         &'a mut self,
         query_str: &'a str,
         schema: serde_json::Value,
-    ) -> BoxFuture<'a, Result<serde_json::Value>> {
+    ) -> BoxFuture<'a, Result<RunOutcome>> {
         Box::pin(async move {
             let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
 
@@ -363,7 +374,7 @@ impl PieAgent {
                 query_str.to_string()
             };
 
-            let _ = self.stream(&query, event_tx).await?;
+            let outcome = self.stream(&query, event_tx).await?;
 
             let mut history = self.session.to_messages();
 
@@ -383,7 +394,15 @@ impl PieAgent {
                 .await
                 .map_err(|e| AppError::Api(Box::new(e)))?;
 
-            Ok(result)
+            let text = serde_json::to_string_pretty(&result)?;
+            // TODO: the final structured-output call above is a
+            // non-streaming request, so its usage never reaches the
+            // streamed Usage component — run_json undercounts by that call.
+            Ok(RunOutcome {
+                text,
+                usage: outcome.usage,
+                cost_usd: outcome.cost_usd,
+            })
         })
     }
 
@@ -391,7 +410,7 @@ impl PieAgent {
         &'a mut self,
         query_str: &'a str,
         event_tx: UnboundedSender<AgentEvent>,
-    ) -> BoxFuture<'a, Result<String>> {
+    ) -> BoxFuture<'a, Result<RunOutcome>> {
         Box::pin(async move {
             let t_build = std::time::Instant::now();
             let mut builder = self.build_sdk_agent()?;
@@ -527,7 +546,7 @@ impl PieAgent {
             self.session.add_user(&query).await?;
 
             let t_run = std::time::Instant::now();
-            let _output = agent.run().await?;
+            let output = agent.run().await?;
             tracing::debug!(
                 ms = t_run.elapsed().as_millis() as u64,
                 "timing: agent run done"
@@ -544,10 +563,51 @@ impl PieAgent {
                 })
                 .unwrap_or_default();
 
+            let (usage, cost_usd) = self.finalize_usage(&output).await;
+
+            let _ = event_tx.send(AgentEvent::Usage { usage, cost_usd });
             let _ = event_tx.send(AgentEvent::Done(final_text.clone()));
 
-            Ok(final_text)
+            Ok(RunOutcome {
+                text: final_text,
+                usage,
+                cost_usd,
+            })
         })
+    }
+
+    /// Read the run's cumulative usage from the agent world and persist it
+    /// for bookkeeping. One record per interaction, in one place:
+    /// single-shot, TUI and cron runs all funnel through `stream()`.
+    /// Providers that don't report usage leave nothing to record.
+    async fn finalize_usage(
+        &self,
+        output: &agentsdk::core::agent::AgentRunOutput,
+    ) -> (RunUsage, Option<f64>) {
+        let usage = output
+            .world
+            .get::<&agentsdk::Usage>(output.entity)
+            .as_ref()
+            .ok()
+            .map(|u| RunUsage::from(**u))
+            .unwrap_or_default();
+        let model = self.model.config.model.clone();
+        let cost_usd = Self::pricing_for(&model).map(|p| usage.cost_usd(&p));
+
+        if usage.requests > 0
+            && let Err(e) = self
+                .session
+                .record_usage(&usage, &model, self.config.agent_name.as_deref(), cost_usd)
+                .await
+        {
+            tracing::warn!("failed to record llm usage: {e}");
+        }
+        (usage, cost_usd)
+    }
+
+    /// Configured pricing for a model id (exact `[pricing.*]` match).
+    fn pricing_for(model: &str) -> Option<crate::config::ModelPricing> {
+        CONFIG.get().and_then(|c| c.pricing.get(model).copied())
     }
 }
 
