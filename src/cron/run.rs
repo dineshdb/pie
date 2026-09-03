@@ -1,10 +1,11 @@
+use crate::cron::condition::{self, ConditionContext};
 use crate::cron::executor::prompt_exec;
 use crate::cron::models::CronRun;
-use crate::cron::schedule::load_all_schedules;
+use crate::cron::schedule::{Schedule, load_all_schedules};
 use crate::db::DbPool;
 use crate::registry::Registry;
 use crate::session::{HistoryContent, HistoryEntry, Session};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use croner::Cron;
 use std::collections::HashSet;
 use std::fmt::Write as FmtWrite;
@@ -48,6 +49,59 @@ fn save_log(schedule_id: &str, run_id: &str, content: &str) {
     }
 }
 
+/// Why a schedule is or is not firing this tick.
+enum Due {
+    Yes,
+    /// A legitimate "not now" — the normal case, logged at debug.
+    No(String),
+    /// The schedule is malformed. Never fires, and is worth an error.
+    Invalid(String),
+}
+
+/// Decide whether a schedule should fire.
+///
+/// Two independent gates: `cron` answers "is it time yet", `when` answers "is
+/// the world in the state that makes this worth doing". A schedule may set
+/// either or both, and both must pass. A `when` that cannot be evaluated is
+/// never treated as satisfied — a condition that silently fired every tick
+/// would be the failure that went unnoticed longest.
+fn is_due(sched: &Schedule, last_started: Option<DateTime<Utc>>, now: DateTime<Utc>) -> Due {
+    if !sched.has_trigger() {
+        return Due::Invalid("has neither 'cron' nor 'when' and can never fire".to_string());
+    }
+
+    // First run fires immediately regardless of cron timing.
+    if let Some(cron_expr) = &sched.cron
+        && let Some(reference) = last_started
+    {
+        let cron = match Cron::from_str(cron_expr) {
+            Ok(cron) => cron,
+            Err(e) => return Due::Invalid(format!("bad cron '{cron_expr}': {e}")),
+        };
+        let next = match cron.find_next_occurrence(&reference, false) {
+            Ok(dt) => dt,
+            Err(e) => return Due::Invalid(format!("bad cron '{cron_expr}': {e}")),
+        };
+        if now < next {
+            return Due::No(format!("not until {}", next.format("%Y-%m-%d %H:%M:%S")));
+        }
+    }
+
+    if let Some(expr) = &sched.when {
+        let ctx = ConditionContext {
+            now,
+            last_run: last_started,
+        };
+        match condition::evaluate(expr, &ctx) {
+            Ok(true) => {}
+            Ok(false) => return Due::No(format!("when is false: {expr}")),
+            Err(e) => return Due::Invalid(format!("when '{expr}' — {e}")),
+        }
+    }
+
+    Due::Yes
+}
+
 pub async fn run_due_jobs(pool: Arc<DbPool>, registry: Arc<Registry>) -> anyhow::Result<()> {
     // Clean up stale runs before checking for due jobs
     CronRun::cleanup_stale(&pool).await?;
@@ -59,28 +113,21 @@ pub async fn run_due_jobs(pool: Arc<DbPool>, registry: Arc<Registry>) -> anyhow:
             continue;
         }
 
+        let now = Utc::now();
         let last_run = CronRun::last_run_for_schedule(&pool, &sched.id).await?;
+        let last_started = last_run
+            .as_ref()
+            .and_then(|run| DateTime::from_timestamp_millis(run.started_at));
 
-        // First run: fire immediately regardless of cron timing
-        if let Some(ref run) = last_run {
-            let cron = Cron::from_str(&sched.cron)?;
-            let now = Utc::now();
-            let reference = chrono::DateTime::from_timestamp_millis(run.started_at).unwrap_or(now);
-
-            let next_occurrence = match cron.find_next_occurrence(&reference, false) {
-                Ok(dt) => dt,
-                Err(e) => {
-                    tracing::error!("schedule '{}': bad cron '{}': {e}", sched.id, sched.cron);
-                    continue;
-                }
-            };
-
-            if now < next_occurrence {
-                tracing::debug!(
-                    "schedule '{}' not due until {}",
-                    sched.id,
-                    next_occurrence.format("%Y-%m-%d %H:%M:%S")
-                );
+        match is_due(sched, last_started, now) {
+            Due::Yes => {}
+            Due::No(why) => {
+                tracing::debug!("schedule '{}' not due: {why}", sched.id);
+                continue;
+            }
+            Due::Invalid(why) => {
+                // One broken schedule must not abort the whole pass.
+                tracing::error!("schedule '{}': {why}", sched.id);
                 continue;
             }
         }

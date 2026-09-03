@@ -46,12 +46,13 @@ impl AgentPlugin for PersistencePlugin {
 
         for call in calls {
             let tc = ToolCall {
-                call_id: call.id.clone(),
+                call_id: call.id.clone().unwrap_or_default(),
                 tool_name: call.function.name.clone(),
                 params: serde_json::from_str(&call.function.arguments).unwrap_or(Value::Null),
                 output: None,
             };
-            self.pending_tool_calls.insert(call.id.clone(), tc);
+            self.pending_tool_calls
+                .insert(call.id.clone().unwrap_or_default(), tc);
         }
     }
 

@@ -116,7 +116,7 @@ impl AgentPlugin for UserCommandPlugin {
                         content: None,
                         name: None,
                         tool_calls: Some(vec![ToolCall {
-                            id: call_id.clone(),
+                            id: Some(call_id.clone()),
                             r#type: ToolCallType::Function,
                             function: ToolFunction {
                                 name: "command__load".into(),

@@ -6,7 +6,10 @@ use std::path::PathBuf;
 #[derive(Debug, Clone)]
 pub struct Schedule {
     pub id: String,
-    pub cron: String,
+    /// When it is time. `None` means the schedule is driven purely by `when`.
+    pub cron: Option<String>,
+    /// CEL precondition. `None` means "no precondition".
+    pub when: Option<String>,
     pub description: String,
     pub enabled: bool,
     pub prompt: String,
@@ -15,14 +18,35 @@ pub struct Schedule {
     pub grants: Vec<Permission>,
 }
 
+impl Schedule {
+    /// A schedule with neither trigger can never fire, and is far more likely
+    /// to be a mistake than an intent.
+    pub fn has_trigger(&self) -> bool {
+        self.cron.is_some() || self.when.is_some()
+    }
+}
+
+/// Schedules are enabled unless they say otherwise.
+///
+/// This defaulted to `false`, which meant a file that never mentioned
+/// `enabled` silently did nothing — indistinguishable from a broken cron
+/// expression or a daemon that was not running. Opting out is the rarer
+/// intent and is the one worth spelling.
+const fn enabled_default() -> bool {
+    true
+}
+
 #[derive(Debug, Deserialize)]
 struct ScheduleFrontmatter {
-    cron: String,
+    #[serde(default)]
+    cron: Option<String>,
+    #[serde(default)]
+    when: Option<String>,
     #[serde(default)]
     description: String,
     #[serde(default)]
     id: String,
-    #[serde(default)]
+    #[serde(default = "enabled_default")]
     enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sandbox: Option<SandboxConfig>,
@@ -94,6 +118,7 @@ pub fn load_all_schedules() -> Vec<Schedule> {
                     *entry = Schedule {
                         id,
                         cron: meta.cron,
+                        when: meta.when,
                         description: meta.description,
                         enabled: meta.enabled,
                         prompt: body,
@@ -107,6 +132,7 @@ pub fn load_all_schedules() -> Vec<Schedule> {
             schedules.push(Schedule {
                 id,
                 cron: meta.cron,
+                when: meta.when,
                 description: meta.description,
                 enabled: meta.enabled,
                 prompt: body,

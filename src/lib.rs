@@ -120,6 +120,14 @@ enum CronCommand {
     Runs { id: Option<String> },
     /// Execute due schedules (one-shot)
     Run,
+    /// Evaluate a `when` CEL expression against the current state
+    ///
+    /// `last_run` is treated as never, so `since`/`never_run` read as they
+    /// would on a schedule's first firing.
+    Test {
+        /// The CEL expression, e.g. 'exists("~/src/x") && `never_run`'
+        expr: String,
+    },
 }
 
 impl Cli {
@@ -304,6 +312,12 @@ async fn handle_cron(
             let max_id = schedules.iter().map(|s| s.id.len()).max().unwrap_or(4);
             for s in &schedules {
                 let status = if s.enabled { "enabled " } else { "disabled" };
+                let trigger = match (&s.cron, &s.when) {
+                    (Some(cron), Some(when)) => format!("{cron} when {when}"),
+                    (Some(cron), None) => cron.clone(),
+                    (None, Some(when)) => format!("when {when}"),
+                    (None, None) => "(no trigger — never fires)".to_string(),
+                };
                 tracing::info!(
                     "{:max_id$}  {}  {}  {}",
                     s.id,
@@ -314,6 +328,27 @@ async fn handle_cron(
                 );
             }
             Ok(())
+        }
+        CronCommand::Test { expr } => {
+            let ctx = cron::ConditionContext {
+                now: chrono::Utc::now(),
+                last_run: None,
+            };
+            match cron::evaluate(&expr, &ctx) {
+                Ok(true) => {
+                    println!("true — a schedule with this `when` would fire");
+                    Ok(())
+                }
+                Ok(false) => {
+                    println!("false — not due");
+                    std::process::exit(1)
+                }
+                Err(e) => {
+                    println!("error: {e}");
+                    println!("a `when` that cannot be evaluated never fires");
+                    std::process::exit(2)
+                }
+            }
         }
         CronCommand::Runs { id } => {
             let rows = match &id {

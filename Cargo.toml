@@ -27,6 +27,7 @@ agentsdk-plugin-shell = { path = "../agentsdk/crates/agentsdk-plugin-shell" }
 anyhow = "1"
 arboard = "3"
 async-trait = "0.1"
+cel = "0.14"
 chrono = { version = "0.4.44", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 croner = "3"
