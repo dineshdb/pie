@@ -54,3 +54,14 @@ tests:
     contains:
       - "Cargo.toml"
     timeout: 60
+
+  # ── Authenticated MCP server (citadel mem) ───────────────────
+  # mem sits behind Citadel's bearer auth: [mcp.mem] api_key resolves
+  # through [secrets] and rides the initialize request as
+  # `Authorization: Bearer`. A failure here usually means the server
+  # answered 401 and the best-effort default dropped it.
+  - name: authenticated mcp server serves tool calls
+    input: "Use the mem__search tool to search long-term memory for 'citadel'. Reply with only FOUND if the tool returns results, EMPTY otherwise."
+    contains:
+      - "FOUND"
+    timeout: 120

@@ -184,6 +184,11 @@ impl ModelPricing {
 pub struct McpServerConfig {
     /// Streamable-HTTP MCP endpoint (e.g. `https://mcp.example.com/mcp`).
     pub url: Url,
+    /// Bearer token for servers that require one. A value that exactly
+    /// matches a `[secrets]` key is replaced by that secret's value at load
+    /// time, then sent as `Authorization: Bearer <value>`.
+    #[serde(default)]
+    pub api_key: Option<Secret<String>>,
     /// Headers sent with every request. A value that exactly matches a
     /// `[secrets]` key is replaced by that secret's value at load time.
     #[serde(default)]
@@ -191,8 +196,8 @@ pub struct McpServerConfig {
 }
 
 impl Serialize for McpServerConfig {
-    /// Header values are secrets by construction; only their names survive
-    /// serialization.
+    /// Header and api-key values are secrets by construction; only header
+    /// names survive serialization.
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -205,15 +210,45 @@ impl Serialize for McpServerConfig {
     }
 }
 
+/// Header carrying the bearer token from `api_key`.
+const AUTHORIZATION_HEADER: &str = "AUTHORIZATION";
+
 impl McpServerConfig {
-    /// Replace header values that exactly match a `[secrets]` key with the
-    /// secret's value; literal values pass through untouched.
+    /// Replace header and api-key values that exactly match a `[secrets]`
+    /// key with the secret's value; literal values pass through untouched.
     pub fn resolve_secrets(&mut self, secrets: &HashMap<String, Secret<String>>) {
+        if let Some(key) = &mut self.api_key
+            && let Some(val) = secrets.get(key.expose_secret())
+        {
+            *key = val.clone();
+        }
         for header in self.headers.values_mut() {
             if let Some(val) = secrets.get(header.expose_secret()) {
                 *header = val.clone();
             }
         }
+    }
+
+    /// Header map for the MCP transport: the configured `headers`, plus
+    /// `api_key` as `Authorization: Bearer <value>` unless a header already
+    /// sets it (whatever its casing) — an explicit header wins.
+    pub fn http_headers(&self) -> HashMap<String, String> {
+        let mut headers: HashMap<String, String> = self
+            .headers
+            .iter()
+            .map(|(k, v)| (k.clone(), v.expose_secret().clone()))
+            .collect();
+        if let Some(key) = &self.api_key
+            && !headers
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case(AUTHORIZATION_HEADER))
+        {
+            headers.insert(
+                AUTHORIZATION_HEADER.to_string(),
+                format!("Bearer {}", key.expose_secret()),
+            );
+        }
+        headers
     }
 }
 
@@ -330,6 +365,22 @@ CONTEXT7_API_KEY = "context7_key"
     }
 
     #[test]
+    fn parse_mcp_api_key() {
+        let pie = parse(
+            r#"
+[mcp.mem]
+url = "https://mcp.example.com/mcp"
+api_key = "MEM_KEY"
+"#,
+        );
+        assert_eq!(
+            pie.mcp["mem"].api_key.as_ref().unwrap().expose_secret(),
+            "MEM_KEY",
+            "api_key is optional but parsed when present"
+        );
+    }
+
+    #[test]
     fn mcp_section_is_optional() {
         let pie = parse("log_level = \"info\"");
         assert!(pie.mcp.is_empty());
@@ -364,6 +415,7 @@ output = 2.0
     fn resolve_secrets_replaces_exact_matches_only() {
         let mut server = McpServerConfig {
             url: "https://mcp.example.com/mcp".parse().unwrap(),
+            api_key: Some(Secret::new("mem_key".to_string())),
             headers: HashMap::from([
                 ("AUTH".to_string(), Secret::new("ctx_key".to_string())),
                 (
@@ -375,12 +427,67 @@ output = 2.0
 
         let mut secrets = HashMap::new();
         secrets.insert("ctx_key".to_string(), Secret::new("real-key".to_string()));
+        secrets.insert("mem_key".to_string(), Secret::new("real-mem".to_string()));
         server.resolve_secrets(&secrets);
 
+        assert_eq!(
+            server.api_key.unwrap().expose_secret(),
+            "real-mem",
+            "api_key resolves through [secrets] too"
+        );
         assert_eq!(server.headers["AUTH"].expose_secret(), "real-key");
         assert_eq!(
             server.headers["X-LITERAL"].expose_secret(),
             "Bearer literal"
         );
+    }
+
+    #[test]
+    fn http_headers_composes_bearer_from_api_key() {
+        let mut server = McpServerConfig {
+            url: "https://mcp.example.com/mcp".parse().unwrap(),
+            api_key: Some(Secret::new("real-mem".to_string())),
+            headers: HashMap::new(),
+        };
+        server.resolve_secrets(&HashMap::new());
+
+        let headers = server.http_headers();
+        assert_eq!(
+            headers["AUTHORIZATION"].as_str(),
+            "Bearer real-mem",
+            "api_key becomes an Authorization bearer header"
+        );
+    }
+
+    #[test]
+    fn explicit_authorization_header_wins_over_api_key() {
+        let server = McpServerConfig {
+            url: "https://mcp.example.com/mcp".parse().unwrap(),
+            api_key: Some(Secret::new("ignored".to_string())),
+            headers: HashMap::from([(
+                "authorization".to_string(),
+                Secret::new("Bearer custom".to_string()),
+            )]),
+        };
+
+        let headers = server.http_headers();
+        assert_eq!(headers.len(), 1, "no duplicate auth header is sent");
+        assert_eq!(headers["authorization"], "Bearer custom");
+    }
+
+    #[test]
+    fn server_without_api_key_sends_only_configured_headers() {
+        let server = McpServerConfig {
+            url: "https://mcp.example.com/mcp".parse().unwrap(),
+            api_key: None,
+            headers: HashMap::from([(
+                "CONTEXT7_API_KEY".to_string(),
+                Secret::new("ctx".to_string()),
+            )]),
+        };
+
+        let headers = server.http_headers();
+        assert_eq!(headers["CONTEXT7_API_KEY"], "ctx");
+        assert_eq!(headers.len(), 1);
     }
 }

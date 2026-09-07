@@ -349,11 +349,7 @@ impl PieAgent {
 
         let mut plugin = McpPlugin::new();
         for (name, server) in servers {
-            let headers: HashMap<String, String> = server
-                .headers
-                .iter()
-                .map(|(k, v)| (k.clone(), v.expose_secret().clone()))
-                .collect();
+            let headers = server.http_headers();
             match plugin
                 .add_remote_server(name.clone(), server.url.as_str(), headers)
                 .await
@@ -875,6 +871,7 @@ mod tests {
     fn mcp_config() -> HashMap<String, McpServerConfig> {
         let server = |host: &str| McpServerConfig {
             url: format!("https://{host}/mcp").parse().unwrap(),
+            api_key: None,
             headers: HashMap::new(),
         };
         HashMap::from([
@@ -932,6 +929,7 @@ mod tests {
     fn dead_mcp_config() -> HashMap<String, McpServerConfig> {
         let server = McpServerConfig {
             url: "http://127.0.0.1:1/mcp".parse().unwrap(),
+            api_key: None,
             headers: HashMap::new(),
         };
         HashMap::from([("dead".to_string(), server)])
