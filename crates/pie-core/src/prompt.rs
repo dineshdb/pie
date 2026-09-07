@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../.pie/SYSTEM.md");
+const SYSTEM_PROMPT_TEMPLATE: &str = include_str!("../../../.pie/SYSTEM.md");
 
 static TEMPLATE_ENV: OnceLock<Environment<'static>> = OnceLock::new();
 

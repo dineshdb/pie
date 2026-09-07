@@ -1,4 +1,4 @@
-use crate::plugin::AgentMode;
+use pie_core::plugin::AgentMode;
 use std::future::Future;
 use tuirealm::application::Application;
 use tuirealm::event::{Event, KeyEvent};
@@ -19,6 +19,8 @@ pub enum StreamEvent {
         name: String,
         display: String,
         output: String,
+        /// The call errored — `output` is the reason.
+        failed: bool,
     },
     /// Pre-formatted per-run usage summary (tokens, cache rate, cost).
     Usage(String),

@@ -20,7 +20,9 @@ pub async fn create_persistent_pool() -> Result<DbPool> {
     Ok(pool)
 }
 
-#[cfg(test)]
+/// In-memory pool for tests. Gated behind `test-util` so downstream
+/// crates' tests can use it without shipping test code in release builds.
+#[cfg(any(test, feature = "test-util"))]
 pub async fn create_test_pool() -> Result<DbPool> {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)

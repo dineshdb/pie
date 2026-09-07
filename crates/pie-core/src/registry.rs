@@ -17,17 +17,6 @@ pub enum CompletionKind {
     Agent,
 }
 
-impl CompletionKind {
-    pub fn color(self) -> tuirealm::ratatui::style::Color {
-        use tuirealm::ratatui::style::Color;
-        match self {
-            Self::Builtin => Color::Yellow,
-            Self::Skill => Color::Cyan,
-            Self::Agent => Color::Green,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct CompletionItem {
     pub label: String,

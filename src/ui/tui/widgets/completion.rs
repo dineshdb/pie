@@ -1,10 +1,20 @@
-use crate::registry::{CompletionItem, Registry};
+use pie_core::registry::{CompletionItem, CompletionKind, Registry};
 use std::sync::Arc;
 use tuirealm::ratatui::buffer::Buffer;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::{Color, Modifier, Style};
 use tuirealm::ratatui::text::{Line, Span};
 use tuirealm::ratatui::widgets::{Block, Borders, Paragraph, Widget};
+
+/// Completion-kind → color, mapped here in the frontend: pie-core stays
+/// frontend-agnostic.
+fn kind_color(kind: CompletionKind) -> Color {
+    match kind {
+        CompletionKind::Builtin => Color::Yellow,
+        CompletionKind::Skill => Color::Cyan,
+        CompletionKind::Agent => Color::Green,
+    }
+}
 
 pub struct CompletionPopup<'a> {
     pub candidates: &'a [CompletionItem],
@@ -241,7 +251,7 @@ fn completion_line(
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
-            .fg(item.kind.color())
+            .fg(kind_color(item.kind))
             .add_modifier(Modifier::BOLD)
     };
 
@@ -292,7 +302,7 @@ fn truncate_str(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::CompletionKind;
+    use pie_core::registry::CompletionKind;
 
     fn test_registry(items: Vec<(&str, &str, CompletionKind)>) -> Arc<Registry> {
         Arc::new(Registry {
@@ -501,8 +511,8 @@ mod tests {
 
     #[test]
     fn completion_kind_colors() {
-        assert_eq!(CompletionKind::Builtin.color(), Color::Yellow);
-        assert_eq!(CompletionKind::Skill.color(), Color::Cyan);
-        assert_eq!(CompletionKind::Agent.color(), Color::Green);
+        assert_eq!(kind_color(CompletionKind::Builtin), Color::Yellow);
+        assert_eq!(kind_color(CompletionKind::Skill), Color::Cyan);
+        assert_eq!(kind_color(CompletionKind::Agent), Color::Green);
     }
 }

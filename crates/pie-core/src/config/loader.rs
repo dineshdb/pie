@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 /// The embedded `.pie/` directory compiled into the binary.
-pub static EMBEDDED_PIE_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/.pie");
+pub static EMBEDDED_PIE_DIR: Dir<'static> = include_dir!("$PIE_REPO_DIR/.pie");
 
 pub fn pie_home() -> PathBuf {
     dirs::home_dir().unwrap_or_default().join(".pie")

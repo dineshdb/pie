@@ -1,4 +1,4 @@
-use crate::session::Role;
+use pie_core::session::Role;
 use tuirealm::ratatui::style::{Color, Style};
 use tuirealm::ratatui::text::Line;
 

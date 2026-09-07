@@ -8,34 +8,22 @@
     )
 )]
 
-mod agent;
-mod cmd;
-mod config;
-mod cron;
-mod db;
-pub mod error;
-mod handler;
-mod instructions;
-mod plugin;
-mod prompt;
-mod registry;
-mod session;
-mod tools;
 mod ui;
-mod usage;
-mod utils;
 
-use crate::agent::Agent;
-use crate::config::{PieConfig, ResolvedConfig, build_sandbox, load_config};
-use crate::error::Result;
-use crate::instructions::Instructions;
-use crate::registry::Registry;
-use crate::utils::output::OutputFormat;
-use crate::{db::DbPool, session::Session};
 use anyhow::Context;
 use clap::Parser;
 use core::option::Option::Some;
 use p1e_sandbox::SandboxConfig;
+use pie_core::agent::Agent;
+use pie_core::config::{PieConfig, ResolvedConfig, build_sandbox, load_config};
+use pie_core::db::DbPool;
+use pie_core::error::Result;
+use pie_core::handler;
+use pie_core::instructions::Instructions;
+use pie_core::registry::Registry;
+use pie_core::session::Session;
+use pie_core::utils::output::OutputFormat;
+use pie_core::{cmd, config, cron, db};
 use std::io::{self, IsTerminal, Read};
 use std::sync::Arc;
 use tracing::trace;
@@ -50,22 +38,7 @@ struct Cli {
     command: Option<Commands>,
 
     #[command(flatten)]
-    provider_config: config::ProviderConfig,
-
-    #[arg(short, long, global = true)]
-    debug: bool,
-
-    /// Output response in JSON format. Provide a valid JSON schema (inline or file path).
-    #[arg(long, global = true)]
-    json: Option<String>,
-
-    /// Output response in Markdown format
-    #[arg(long, global = true)]
-    md: bool,
-
-    /// Config provider name (from ~/.pie/pie.toml or .pie/pie.toml)
-    #[arg(short, long, global = true)]
-    provider: Option<String>,
+    overrides: config::CliOverrides,
 
     /// Query to process
     query: Vec<String>,
@@ -79,6 +52,12 @@ struct Cli {
 enum Commands {
     /// Show current configuration and system status
     Status,
+    /// Show LLM usage and cost per model (bookkeeping)
+    Usage {
+        /// Only include runs from the last N days (0 = all time)
+        #[arg(long)]
+        days: Option<u32>,
+    },
     /// Run the cron daemon (continuous mode)
     Daemon {
         /// Check interval in seconds (default: 60)
@@ -99,7 +78,7 @@ enum Commands {
     /// Manage cron jobs
     Cron {
         #[command(subcommand)]
-        command: CronCommand,
+        command: cmd::CronCommand,
     },
     /// Execute a script from a skill directly (no LLM)
     #[command(name = "x")]
@@ -111,33 +90,13 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         script: Vec<String>,
     },
-}
-
-#[derive(clap::Subcommand, Clone)]
-enum CronCommand {
-    /// List schedules loaded from files
-    List,
-    /// Show recent run history (optionally for a specific schedule)
-    Runs { id: Option<String> },
-    /// Execute due schedules (one-shot)
-    Run,
-    /// Evaluate a `when` CEL expression against the current state
-    ///
-    /// `last_run` is treated as never, so `since`/`never_run` read as they
-    /// would on a schedule's first firing.
-    Test {
-        /// The CEL expression, e.g. 'exists("~/src/x") && `never_run`'
-        expr: String,
-    },
+    /// Serve the Agent Client Protocol (ACP) over stdio, for editor clients
+    Acp,
 }
 
 impl Cli {
     pub fn output_format(&self) -> OutputFormat {
-        match (self.json.is_some(), self.md) {
-            (true, _) => OutputFormat::Json(self.json.clone().filter(|s| !s.is_empty())),
-            (false, true) => OutputFormat::Markdown,
-            _ => OutputFormat::Default,
-        }
+        self.overrides.output_format()
     }
 }
 
@@ -171,7 +130,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     let t = std::time::Instant::now();
     let pie_config = load_config()?;
-    let config: ResolvedConfig = (cli.clone(), pie_config.clone()).try_into()?;
+    let config: ResolvedConfig = (cli.overrides.clone(), pie_config.clone()).try_into()?;
     timing.push(("config_resolve", t.elapsed()));
 
     config::CONFIG
@@ -207,7 +166,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     let has_query = !cli.query.is_empty() || !io::stdin().is_terminal();
     if format.is_explicit() || has_query {
-        init_stderr_subscriber(cli.debug, &config.log_level);
+        init_stderr_subscriber(cli.overrides.debug, &config.log_level);
         for (phase, dur) in &timing {
             tracing::debug!(phase, ms = dur.as_millis() as u64, "timing: startup phase");
         }
@@ -217,10 +176,6 @@ pub async fn run() -> anyhow::Result<()> {
         .await
     } else {
         init_file_subscriber(&session.id.to_string(), &config.log_level)?;
-        let max_steps = agent
-            .as_ref()
-            .and_then(|a| a.max_steps)
-            .unwrap_or(config.max_steps);
         run_interactive(
             session,
             &pie_config,
@@ -228,7 +183,6 @@ pub async fn run() -> anyhow::Result<()> {
             agent,
             model,
             provider,
-            max_steps,
             sandbox,
         )
         .await
@@ -275,6 +229,7 @@ async fn handle_command(
             cmd::handle_status(config, registry);
             Ok(())
         }
+        Commands::Usage { days } => cmd::handle_usage(config, pool, days).await,
         Commands::Skills => {
             cmd::handle_skills(config, registry);
             Ok(())
@@ -283,8 +238,9 @@ async fn handle_command(
             all_args,
             no_sandbox,
         } => cmd::handle_launch(config, &all_args, no_sandbox),
-        Commands::Cron { command } => handle_cron(command, pool, registry.clone()).await,
+        Commands::Cron { command } => cmd::handle_cron(command, pool, registry.clone()).await,
         Commands::Exec { skill, script } => cmd::handle_exec(config, registry, skill, &script),
+        Commands::Acp => pie_acp::serve_stdio(pool, registry.clone(), config).await,
         Commands::Daemon { interval } => {
             if !config.debug {
                 tracing::info!(
@@ -294,101 +250,6 @@ async fn handle_command(
             }
             cron::run_daemon(pool, registry.clone(), interval).await
         }
-    }
-}
-
-async fn handle_cron(
-    command: CronCommand,
-    pool: Arc<DbPool>,
-    registry: Arc<Registry>,
-) -> anyhow::Result<()> {
-    match command {
-        CronCommand::List => {
-            let schedules = cron::load_all_schedules();
-            if schedules.is_empty() {
-                tracing::info!("no schedules found");
-                return Ok(());
-            }
-
-            let max_id = schedules.iter().map(|s| s.id.len()).max().unwrap_or(4);
-            for s in &schedules {
-                let status = if s.enabled { "enabled " } else { "disabled" };
-                let trigger = match (&s.cron, &s.when) {
-                    (Some(cron), Some(when)) => format!("{cron} when {when}"),
-                    (Some(cron), None) => cron.clone(),
-                    (None, Some(when)) => format!("when {when}"),
-                    (None, None) => "(no trigger — never fires)".to_string(),
-                };
-                tracing::info!(
-                    "{:max_id$}  {}  {}  {}",
-                    s.id,
-                    status,
-                    trigger,
-                    s.description,
-                    max_id = max_id
-                );
-            }
-            Ok(())
-        }
-        CronCommand::Test { expr } => {
-            let ctx = cron::ConditionContext {
-                now: chrono::Utc::now(),
-                last_run: None,
-            };
-            match cron::evaluate(&expr, &ctx) {
-                Ok(true) => {
-                    println!("true — a schedule with this `when` would fire");
-                    Ok(())
-                }
-                Ok(false) => {
-                    println!("false — not due");
-                    std::process::exit(1)
-                }
-                Err(e) => {
-                    println!("error: {e}");
-                    println!("a `when` that cannot be evaluated never fires");
-                    std::process::exit(2)
-                }
-            }
-        }
-        CronCommand::Runs { id } => {
-            let rows = match &id {
-                Some(schedule_id) => cron::CronRun::recent_for_schedule(&pool, schedule_id).await?,
-                None => cron::CronRun::recent_all(&pool).await?,
-            };
-
-            if rows.is_empty() {
-                let label = id.as_deref().unwrap_or("any");
-                tracing::info!("no runs for schedule '{label}'");
-                return Ok(());
-            }
-
-            let schedules = cron::load_all_schedules();
-            for r in &rows {
-                let started = chrono::DateTime::from_timestamp_millis(r.started_at)
-                    .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
-                    .unwrap_or_default();
-                let dur_ms = r.finished_at.map_or(0, |f| f - r.started_at);
-                let code = r.exit_code.map_or("-".to_string(), |c| c.to_string());
-                let desc = schedules
-                    .iter()
-                    .find(|s| s.id == r.cron_id)
-                    .and_then(|s| (!s.description.is_empty()).then_some(&s.description))
-                    .unwrap_or(&r.cron_id);
-
-                tracing::info!(
-                    "{}  {}  {}  {}ms  {}  {}",
-                    desc,
-                    started,
-                    r.status,
-                    dur_ms,
-                    code,
-                    r.notes
-                );
-            }
-            Ok(())
-        }
-        CronCommand::Run => cron::run_due_jobs(pool, registry).await,
     }
 }
 
@@ -425,10 +286,6 @@ async fn run_single_shot(
         session,
         format,
         sandbox_settings,
-        max_steps: agent
-            .as_ref()
-            .and_then(|a| a.max_steps)
-            .unwrap_or(config.max_steps),
         retry: config.retry.clone(),
         registry,
         agent_name: agent.map(|a| a.name),
@@ -443,7 +300,6 @@ async fn run_interactive(
     agent: Option<Agent>,
     model: agentsdk::OpenAI,
     provider: config::ResolvedProvider,
-    max_steps: u32,
     sandbox_settings: Arc<SandboxConfig>,
 ) -> anyhow::Result<()> {
     ui::tui::run_tui(
@@ -451,7 +307,6 @@ async fn run_interactive(
         provider,
         session,
         sandbox_settings,
-        max_steps,
         pie_config.clone(),
         registry,
         agent.map(|a| a.name),
@@ -514,6 +369,9 @@ fn read_piped_stdin() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the fixtures below need it, so it lives here rather than at the
+    // top, where it would read as an unused import in a non-test build.
+    use pie_core::agent::OutputMode;
 
     #[test]
     fn rmcp_handshake_logs_are_capped_below_info() {
@@ -537,7 +395,7 @@ mod tests {
                 .map(|n| Agent {
                     name: (*n).to_string(),
                     description: String::new(),
-                    output_mode: Default::default(),
+                    output_mode: OutputMode::default(),
                     model: None,
                     temperature: None,
                     content: String::new(),
@@ -559,11 +417,7 @@ mod tests {
     fn cli_with_query(query: &str) -> Cli {
         Cli {
             command: None,
-            provider_config: Default::default(),
-            debug: false,
-            json: None,
-            md: false,
-            provider: None,
+            overrides: config::CliOverrides::default(),
             query: query.split_whitespace().map(ToString::to_string).collect(),
             resume: false,
         }
@@ -638,26 +492,5 @@ mod tests {
 
         let resolved = resolve_agent_provider(None, &default, &tiers);
         assert_eq!(resolved.model, "gpt");
-    }
-
-    #[tokio::test]
-    async fn resolve_session_creates_new_when_not_resuming() {
-        let pool = Arc::new(db::create_test_pool().await.unwrap());
-        let session = resolve_session(pool, false).await.unwrap();
-        assert!(session.history_entries().is_empty());
-    }
-
-    #[tokio::test]
-    async fn resolve_session_restores_when_resuming() {
-        let pool = Arc::new(db::create_test_pool().await.unwrap());
-        let mut original = Session::create(pool.clone()).await.unwrap();
-        original.add_user("hello").await.unwrap();
-        original.add_assistant("world").await.unwrap();
-        drop(original);
-
-        let session = resolve_session(pool, true).await.unwrap();
-        let entries = session.history_entries();
-        assert_eq!(entries.len(), 2, "restored session should have history");
-        assert_eq!(entries[0].content(), "hello");
     }
 }

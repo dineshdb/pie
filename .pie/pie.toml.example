@@ -13,10 +13,6 @@ output_format = "default"
 # Logging level: "debug", "info", "warn", "error"
 log_level = "info"
 
-[agent]
-# Maximum number of tool-call iterations per query
-max_steps = 25
-
 [provider.local]
 # Local model via MLX, Ollama, or LM Studio
 model = "mlx-community/gemma-4-e4b-it-4bit"
@@ -77,9 +73,11 @@ provider = "anthropic"
 model = "claude-opus-4-7"
 
 # MCP servers — HTTP (streamable) endpoints that expose extra tools.
-# Agents opt in per-run via frontmatter: plugins: [mcp] (every server here)
+# Default runs connect to every server here best-effort (a down server is
+# skipped with a warning, not fatal). Agents with an explicit `plugins:`
+# list get exactly what they name, fail-loud: plugins: [mcp] (every server)
 # or plugins: ["mcp:deepwiki"] (specific servers). Tools appear as
-# `<name>__<tool>`. Connection failures fail the run loudly.
+# `<name>__<tool>`.
 #
 # The bundled review/search agents use deepwiki and context7.
 

@@ -8,8 +8,6 @@
 //!
 //! Each frame: drain all events, merge them, then render once.
 
-use crate::config::{PieConfig, ResolvedProvider, get_providers_data};
-use crate::session::{Role, Session};
 use crate::ui::tui::command::{Command, CommandAction};
 use crate::ui::tui::components::chat::{ActiveDialog, ChatComponent, ModelSelectorState};
 use crate::ui::tui::components::input::InputComponent;
@@ -20,6 +18,8 @@ use crate::ui::tui::widgets::status_bar::StatusBar;
 use anyhow::{Context, Result};
 use arboard::Clipboard;
 use p1e_sandbox::SandboxConfig;
+use pie_core::config::{PieConfig, ResolvedProvider, get_providers_data};
+use pie_core::session::{Role, Session};
 use std::io::stdout;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -260,8 +260,8 @@ fn handle_submit(
 }
 
 fn handle_mode_command(args: Option<&str>, app: &mut App, input: &mut InputComponent) {
-    use crate::plugin::AgentMode;
-    use crate::plugin::modes::load_mode_file;
+    use pie_core::plugin::AgentMode;
+    use pie_core::plugin::modes::load_mode_file;
 
     let Some(mode_name) = args.filter(|a| !a.is_empty()) else {
         let modes = AgentMode::all()
@@ -403,7 +403,7 @@ fn execute_shell_direct(
                 } else {
                     format!("{stdout}\n\nError:\n{stderr}")
                 };
-                jewels::redact(&crate::utils::anonymize_path(&combined)).into_owned()
+                jewels::redact(&pie_core::utils::anonymize_path(&combined)).into_owned()
             }
             Err(e) => format!("Failed to execute command: {e}"),
         };
@@ -422,9 +422,8 @@ pub async fn run_tui(
     provider: ResolvedProvider,
     session: Session,
     sandbox_settings: Arc<SandboxConfig>,
-    max_steps: u32,
     pie_config: PieConfig,
-    registry: Arc<crate::registry::Registry>,
+    registry: Arc<pie_core::registry::Registry>,
     agent_name: Option<String>,
 ) -> Result<()> {
     let (mut terminal, mut app, mut input, tx) = setup_tui(
@@ -432,7 +431,6 @@ pub async fn run_tui(
         model,
         provider,
         sandbox_settings,
-        max_steps,
         &pie_config,
         registry,
         agent_name,
@@ -512,9 +510,8 @@ fn setup_tui(
     model: agentsdk::OpenAI,
     provider: ResolvedProvider,
     sandbox_settings: Arc<SandboxConfig>,
-    max_steps: u32,
     pie_config: &PieConfig,
-    registry: Arc<crate::registry::Registry>,
+    registry: Arc<pie_core::registry::Registry>,
     agent_name: Option<String>,
 ) -> Result<(
     Terminal,
@@ -553,7 +550,6 @@ fn setup_tui(
         provider,
         session,
         sandbox_settings,
-        max_steps,
         pie_config.provider.clone(),
         registry.clone(),
         pending_permissions.clone(),

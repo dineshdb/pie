@@ -1,9 +1,9 @@
-use crate::agent::{AgentConfig, AgentEvent, PieAgent};
-use crate::plugin::PermissionRequest;
-use crate::session::{Session, SessionId};
 use crate::ui::tui::components::input::InputComponent;
 use crate::ui::tui::realm::StreamEvent;
 use p1e_sandbox::SandboxConfig;
+use pie_core::agent::{AgentConfig, AgentEvent, PieAgent};
+use pie_core::plugin::PermissionRequest;
+use pie_core::session::{Session, SessionId};
 use std::sync::Arc;
 use std::sync::Mutex;
 use tokio::sync::mpsc::{self, UnboundedSender};
@@ -15,9 +15,8 @@ pub struct StreamContext {
     pub model: agentsdk::OpenAI,
     pub sandbox: Arc<SandboxConfig>,
     pub session_id: SessionId,
-    pub pool: Arc<crate::db::DbPool>,
-    pub max_steps: u32,
-    pub registry: Arc<crate::registry::Registry>,
+    pub pool: Arc<pie_core::db::DbPool>,
+    pub registry: Arc<pie_core::registry::Registry>,
     pub pending_permissions: PendingPermissions,
     pub agent_name: Option<String>,
 }
@@ -29,7 +28,6 @@ impl From<&InputComponent> for StreamContext {
             sandbox: input.sandbox_settings.clone(),
             session_id: input.session_id.clone(),
             pool: input.session_pool.clone(),
-            max_steps: input.max_steps,
             registry: input.registry.clone(),
             pending_permissions: input.pending_permissions.clone(),
             agent_name: input.agent_name.clone(),
@@ -53,7 +51,6 @@ pub async fn spawn_stream(
     };
 
     let config = AgentConfig {
-        max_steps: ctx.max_steps,
         agent_name: ctx.agent_name.clone(),
         ..Default::default()
     };
@@ -103,11 +100,14 @@ pub async fn spawn_stream(
                     name,
                     display,
                     output,
+                    failed,
+                    ..
                 } => {
                     let _ = event_tx_clone.send(StreamEvent::ToolCall {
                         name,
                         display,
                         output,
+                        failed,
                     });
                 }
                 AgentEvent::Usage { usage, cost_usd } => {

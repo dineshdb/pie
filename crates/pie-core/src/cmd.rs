@@ -1,4 +1,5 @@
 use crate::config::{LaunchConfig, ResolvedConfig};
+use crate::db::DbPool;
 use crate::registry::Registry;
 use crate::utils::output::OutputFormat;
 use p1e_sandbox::Permission;
@@ -76,7 +77,6 @@ struct StatusOutput<'a> {
     provider: &'a crate::config::ResolvedProvider,
     log_level: &'a str,
     output_format: OutputFormat,
-    max_steps: u32,
     skills: Vec<String>,
     agents: Vec<String>,
     mcp_servers: Vec<McpServerStatus>,
@@ -101,7 +101,6 @@ pub fn handle_status(config: &ResolvedConfig, registry: &Arc<Registry>) {
             provider: &config.provider,
             log_level: &config.log_level,
             output_format: config.output_format.clone(),
-            max_steps: config.max_steps,
             skills: registry.skills.iter().map(|s| s.name.clone()).collect(),
             agents: registry.agents.iter().map(|a| a.name.clone()).collect(),
             mcp_servers: mcp_server_status(config),
@@ -121,7 +120,6 @@ pub fn handle_status(config: &ResolvedConfig, registry: &Arc<Registry>) {
     }
     println!("Log Level:   {}", config.log_level);
     println!("Output:      {:?}", config.output_format);
-    println!("Max Steps:   {}", config.max_steps);
 
     let mcp_servers = mcp_server_status(config);
     if !mcp_servers.is_empty() {
@@ -140,6 +138,43 @@ pub fn handle_status(config: &ResolvedConfig, registry: &Arc<Registry>) {
     for agent in &registry.agents {
         println!(" - {}", agent.name);
     }
+}
+
+#[derive(Serialize)]
+struct UsageOutput<'a> {
+    /// Time window in days; 0 means all time.
+    days: u32,
+    models: &'a [crate::usage::ModelUsage],
+    total: crate::usage::UsageReport,
+}
+
+/// `pie usage`: LLM spend per model over a window. `--json` (empty value,
+/// e.g. `pie usage --json=`) switches to machine-readable output.
+pub async fn handle_usage(
+    config: &ResolvedConfig,
+    pool: Arc<DbPool>,
+    days: Option<u32>,
+) -> anyhow::Result<()> {
+    let days = days.unwrap_or(30);
+    let since_ms = if days == 0 {
+        0
+    } else {
+        chrono::Utc::now().timestamp_millis() - i64::from(days) * 86_400_000
+    };
+    let rows = crate::usage::by_model(&pool, since_ms).await?;
+
+    if config.output_format.is_json() {
+        let out = UsageOutput {
+            days,
+            models: &rows,
+            total: crate::usage::totals(&rows),
+        };
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
+    print!("{}", crate::usage::render_report(&rows, days));
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -499,6 +534,112 @@ fn build_launch_process(
     let mut c = std::process::Command::new(command);
     c.args(args);
     c
+}
+
+/// The cron CLI surface: subcommands of `pie cron`.
+#[derive(clap::Subcommand, Clone, Debug)]
+pub enum CronCommand {
+    /// List schedules loaded from files
+    List,
+    /// Show recent run history (optionally for a specific schedule)
+    Runs { id: Option<String> },
+    /// Execute due schedules (one-shot)
+    Run,
+    /// Evaluate a `when` CEL expression against the current state
+    ///
+    /// `last_run` is treated as never, so `since`/`never_run` read as they
+    /// would on a schedule's first firing.
+    Test {
+        /// The CEL expression, e.g. 'exists("~/src/x") && `never_run`'
+        expr: String,
+    },
+}
+
+#[allow(clippy::too_many_lines)]
+pub async fn handle_cron(
+    command: CronCommand,
+    pool: Arc<DbPool>,
+    registry: Arc<Registry>,
+) -> anyhow::Result<()> {
+    match command {
+        CronCommand::List => {
+            let schedules = crate::cron::load_all_schedules();
+            if schedules.is_empty() {
+                println!("no schedules found");
+                return Ok(());
+            }
+
+            let width = schedules.iter().map(|s| s.id.len()).max().unwrap_or(4);
+            for s in &schedules {
+                let status = if s.enabled { "enabled " } else { "disabled" };
+                let trigger = match (&s.cron, &s.when) {
+                    (Some(cron), Some(when)) => format!("{cron} when {when}"),
+                    (Some(cron), None) => cron.clone(),
+                    (None, Some(when)) => format!("when {when}"),
+                    (None, None) => "(no trigger — never fires)".to_string(),
+                };
+                let id = format!("{:width$}", s.id);
+                println!("{id}  {status}  {trigger}  {}", s.description);
+            }
+            Ok(())
+        }
+        CronCommand::Test { expr } => {
+            let ctx = crate::cron::ConditionContext {
+                now: chrono::Utc::now(),
+                last_run: None,
+            };
+            match crate::cron::evaluate(&expr, &ctx) {
+                Ok(true) => {
+                    println!("true — a schedule with this `when` would fire");
+                    Ok(())
+                }
+                Ok(false) => {
+                    println!("false — not due");
+                    std::process::exit(1)
+                }
+                Err(e) => {
+                    println!("error: {e}");
+                    println!("a `when` that cannot be evaluated never fires");
+                    std::process::exit(2)
+                }
+            }
+        }
+        CronCommand::Runs { id } => {
+            let rows = match &id {
+                Some(schedule_id) => {
+                    crate::cron::CronRun::recent_for_schedule(&pool, schedule_id).await?
+                }
+                None => crate::cron::CronRun::recent_all(&pool).await?,
+            };
+
+            if rows.is_empty() {
+                let label = id.as_deref().unwrap_or("any");
+                println!("no runs for schedule '{label}'");
+                return Ok(());
+            }
+
+            let schedules = crate::cron::load_all_schedules();
+            for r in &rows {
+                let started = chrono::DateTime::from_timestamp_millis(r.started_at)
+                    .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
+                    .unwrap_or_default();
+                let dur_ms = r.finished_at.map_or(0, |f| f - r.started_at);
+                let code = r.exit_code.map_or("-".to_string(), |c| c.to_string());
+                let desc = schedules
+                    .iter()
+                    .find(|s| s.id == r.cron_id)
+                    .and_then(|s| (!s.description.is_empty()).then_some(&s.description))
+                    .unwrap_or(&r.cron_id);
+
+                println!(
+                    "{}  {}  {}  {}ms  {}  {}",
+                    desc, started, r.status, dur_ms, code, r.notes
+                );
+            }
+            Ok(())
+        }
+        CronCommand::Run => crate::cron::run_due_jobs(pool, registry).await,
+    }
 }
 
 #[cfg(test)]

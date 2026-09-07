@@ -241,8 +241,6 @@ impl PieConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct GlobalAgentConfig {
     #[serde(default)]
-    pub max_steps: Option<u32>,
-    #[serde(default)]
     pub retry: RetryConfig,
 }
 

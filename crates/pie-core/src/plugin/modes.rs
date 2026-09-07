@@ -12,8 +12,20 @@ use strum::{Display, EnumString};
 
 const MODE_MARKER_PREFIX: &str = "[mode:";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Display, EnumString)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Display,
+    EnumString,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[strum(serialize_all = "snake_case", ascii_case_insensitive)]
+#[serde(rename_all = "snake_case")]
 pub enum AgentMode {
     Plan,
     #[default]
@@ -67,14 +79,39 @@ impl AgentMode {
         format!("{}.md", self.short_name())
     }
 
-    fn is_tool_blocked(self, name: &str) -> bool {
+    /// Whether this mode refuses `name`. Callers that fix the mode for a
+    /// whole run use it to leave blocked tools out of the advertised list.
+    pub fn is_tool_blocked(self, name: &str) -> bool {
         match self {
-            Self::Plan | Self::Debug => matches!(name, "Write" | "Edit"),
+            // Plan only observes. An allowlist, not a blocklist: a tool that
+            // pie does not know about — a new plugin, anything an MCP server
+            // offers — could write, so it waits until the user leaves plan.
+            Self::Plan => !READ_ONLY_TOOLS.contains(&name),
+            Self::Debug => matches!(name, "Write" | "Edit"),
             Self::Review | Self::Architect => matches!(name, "Write" | "Edit" | "Bash"),
             Self::Build | Self::Test => false,
         }
     }
 }
+
+/// Tools that only look: the ones plan mode allows. `switch_mode` is on the
+/// list because a mode you cannot leave is a trap, not a mode — everything
+/// else here reads files, searches, or loads instructions.
+///
+/// Deliberately absent: `Bash` (a shell can write), `RunSkillScript` (runs a
+/// script), `Write`/`Edit`, and every `<server>__<tool>` an MCP server
+/// contributes — pie cannot tell a docs lookup from a deployment.
+const READ_ONLY_TOOLS: [&str; 9] = [
+    "Read",
+    "Ls",
+    "Glob",
+    "WebSearch",
+    "FindSkills",
+    "LoadSkills",
+    "LoadSkillReference",
+    "command__load",
+    "switch_mode",
+];
 
 #[derive(Debug, Deserialize)]
 struct ModeFrontmatter {
@@ -140,20 +177,35 @@ fn split_frontmatter(raw: &str) -> (String, String) {
 
 pub struct ModePlugin {
     pub mode: AgentMode,
+    /// Whether the agent may retune its own mode. Frontends that own a mode
+    /// selector (ACP) turn this off: the agent switching itself would desync
+    /// their UI, and a read-only mode the agent can leave is not read-only.
+    switching: bool,
 }
 
 impl Default for ModePlugin {
     fn default() -> Self {
         Self {
             mode: AgentMode::Build,
+            switching: true,
         }
     }
 }
 
 impl ModePlugin {
-    #[allow(dead_code)]
     pub fn new(mode: AgentMode) -> Self {
-        Self { mode }
+        Self {
+            mode,
+            switching: true,
+        }
+    }
+
+    /// Drop the `switch_mode` tool: the mode is the caller's to set, for the
+    /// whole run. History markers stop moving it too, so the mode the caller
+    /// passed is the mode that runs.
+    pub fn without_switching(mut self) -> Self {
+        self.switching = false;
+        self
     }
 
     #[allow(dead_code)]
@@ -191,6 +243,9 @@ impl AgentPlugin for ModePlugin {
     }
 
     async fn on_iteration_start(&mut self, ctx: &mut PluginContext, iteration: usize) {
+        if !self.switching {
+            return; // the caller's choice outranks whatever the history says
+        }
         if iteration == 0
             && let Some(history) = ctx.get::<agentsdk::core::history::History>()
             && let Some(mode) = detect_mode_from_history(&history.0)
@@ -204,11 +259,20 @@ impl AgentPlugin for ModePlugin {
         _ctx: &mut PluginContext,
     ) -> Option<Cow<'static, str>> {
         let mode_file = load_mode_file(self.mode)?;
+        let fixed = if self.switching {
+            ""
+        } else {
+            "\n\nThe user sets this mode in their editor and only they can change \
+             it — you have no switch_mode tool, and the tools this mode forbids \
+             are not available to you at all. If the work needs one, say which \
+             and why, and let them decide."
+        };
         Some(Cow::Owned(format!(
-            "# Mode: {}\n\n{}\n\n## Tool Restrictions\n{}",
+            "# Mode: {}\n\n{}\n\n## Tool Restrictions\n{}{}",
             self.mode.short_name(),
             mode_file.body,
             mode_file.tool_restrictions,
+            fixed,
         )))
     }
 
@@ -233,6 +297,9 @@ impl AgentPlugin for ModePlugin {
 
     fn tools(&self) -> Vec<agentsdk::core::tools::ToolDefinition> {
         use agentsdk::core::tools::ToolDefinition;
+        if !self.switching {
+            return Vec::new();
+        }
         vec![ToolDefinition {
             name: "switch_mode".into(),
             description: "Switch the agent's operating mode. Available modes: \
@@ -249,6 +316,15 @@ impl AgentPlugin for ModePlugin {
         _ctx: &mut PluginContext,
         call: &agentsdk::core::plugin::PluginToolCall,
     ) -> Result<Value, String> {
+        if !self.switching {
+            // The tool is not advertised, but a replayed history can still
+            // carry a call for it.
+            return Err(format!(
+                "The mode is set by the user's editor and is currently {}. \
+                 Ask them to switch it; you cannot.",
+                self.mode.short_name()
+            ));
+        }
         let input: SwitchModeInput = serde_json::from_value(call.arguments.clone())
             .map_err(|e| format!("Invalid input: {e}"))?;
         let new_mode: AgentMode = input
@@ -307,11 +383,59 @@ mod tests {
         assert!(!AgentMode::Plan.is_tool_blocked("Read"));
         assert!(!AgentMode::Plan.is_tool_blocked("Glob"));
 
+        // Plan denies by default: a script runner and anything an MCP server
+        // contributes stay out, but the way back to another mode is open.
+        assert!(AgentMode::Plan.is_tool_blocked("RunSkillScript"));
+        assert!(AgentMode::Plan.is_tool_blocked("context7__query-docs"));
+        assert!(AgentMode::Plan.is_tool_blocked("SomeToolAddedNextYear"));
+        assert!(!AgentMode::Plan.is_tool_blocked("switch_mode"));
+        assert!(!AgentMode::Plan.is_tool_blocked("LoadSkills"));
+
         assert!(!AgentMode::Build.is_tool_blocked("Write"));
         assert!(!AgentMode::Build.is_tool_blocked("Bash"));
 
         assert!(AgentMode::Debug.is_tool_blocked("Write"));
         assert!(!AgentMode::Debug.is_tool_blocked("Bash"));
+    }
+
+    #[test]
+    fn a_fixed_mode_offers_no_way_for_the_agent_to_change_it() {
+        use agentsdk::core::plugin::AgentPlugin;
+
+        let free = ModePlugin::new(AgentMode::Plan);
+        assert_eq!(
+            free.tools().len(),
+            1,
+            "without a client owning the mode, switch_mode stays available"
+        );
+
+        let fixed = ModePlugin::new(AgentMode::Plan).without_switching();
+        assert!(
+            fixed.tools().is_empty(),
+            "a mode the agent cannot change must not advertise switch_mode"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fixed_mode_refuses_a_replayed_switch_call() {
+        use agentsdk::core::plugin::{AgentPlugin, PluginToolCall};
+
+        let mut world = agentsdk::hecs::World::new();
+        let entity = world.spawn(());
+        let mut ctx = PluginContext::new(world, entity);
+        let mut fixed = ModePlugin::new(AgentMode::Plan).without_switching();
+
+        let call = PluginToolCall {
+            id: "1".into(),
+            name: "switch_mode".into(),
+            arguments: serde_json::json!({"mode": "build"}),
+        };
+        let err = fixed
+            .run_tool(&mut ctx, &call)
+            .await
+            .expect_err("the model cannot switch a mode the caller fixed");
+        assert!(err.contains("plan"), "{err}");
+        assert_eq!(fixed.mode, AgentMode::Plan, "the mode must not move");
     }
 
     #[test]

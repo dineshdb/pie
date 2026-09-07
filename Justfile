@@ -6,7 +6,7 @@ prepare:
     set -euo pipefail
     DB_PATH=target/sqlx_prepare.db
     rm -f "$DB_PATH"
-    for file in src/db/migrations/*.sql; do
+    for file in crates/pie-core/src/db/migrations/*.sql; do
         echo "Applying migration: $file"
         sqlite3 "$DB_PATH" < "$file"
     done

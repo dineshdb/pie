@@ -60,7 +60,8 @@ pub struct Agent {
     pub plugins: Option<Vec<String>>,
     /// Extra skill search directories for the skills plugin.
     pub skills_paths: Vec<String>,
-    /// Override the configured max steps for this agent.
+    /// Cap this agent's tool-loop iterations. Unset runs unbounded — an
+    /// agent that sets it opts into a hard stop.
     pub max_steps: Option<u32>,
 }
 

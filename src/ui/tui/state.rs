@@ -1,4 +1,4 @@
-use crate::session::Role;
+use pie_core::session::Role;
 
 /// Why this message exists — controls rendering order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -2,14 +2,14 @@
 //!
 //! Owns the message list, render cache, scroll state, and streaming response tracking.
 
-use crate::plugin::AgentMode;
-use crate::registry::Registry;
 use crate::ui::tui::realm::{Msg, StreamEvent};
 use crate::ui::tui::state::ChatMessage;
 use crate::ui::tui::stream::PendingPermissions;
 use crate::ui::tui::widgets::chat::{self, ChatState, ChatView};
 use crate::ui::tui::widgets::render_cache::MessageRenderCache;
 use crate::ui::tui::widgets::tool_display::ToolCallResult;
+use pie_core::plugin::AgentMode;
+use pie_core::registry::Registry;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 use tuirealm::command::{Cmd, CmdResult};
@@ -122,7 +122,7 @@ impl ChatComponent {
             .iter_mut()
             .enumerate()
             .rev()
-            .find(|(_, m)| m.role == crate::session::Role::User)
+            .find(|(_, m)| m.role == pie_core::session::Role::User)
         {
             msg.content = content;
             self.render_cache.invalidate(idx);
@@ -415,8 +415,9 @@ impl ChatComponent {
                 name,
                 display,
                 output,
+                failed,
             } => {
-                let tool = ToolCallResult::new(name, output);
+                let tool = ToolCallResult::new(name, output, *failed);
                 let result_line = tool.to_string();
                 let content = if result_line.is_empty() {
                     display.clone()
@@ -677,7 +678,7 @@ impl ChatComponent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::Role;
+    use pie_core::session::Role;
 
     fn test_registry() -> Arc<Registry> {
         Arc::new(Registry {

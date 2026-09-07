@@ -1,9 +1,20 @@
-use crate::registry::CompletionItem;
+use pie_core::registry::{CompletionItem, CompletionKind};
 use tuirealm::ratatui::buffer::Buffer;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::{Color, Modifier, Style};
 use tuirealm::ratatui::text::{Line, Span};
 use tuirealm::ratatui::widgets::{Paragraph, Widget};
+
+/// Completion-kind → color, mapped in the frontend: pie-core stays
+/// frontend-agnostic.
+fn kind_color(kind: CompletionKind) -> Color {
+    use tuirealm::ratatui::style::Color;
+    match kind {
+        CompletionKind::Builtin => Color::Yellow,
+        CompletionKind::Skill => Color::Cyan,
+        CompletionKind::Agent => Color::Green,
+    }
+}
 
 pub struct InputView<'a> {
     pub text_lines: &'a [String],
@@ -96,7 +107,7 @@ fn highlight_line(text: &str, completions: &[CompletionItem]) -> Vec<Span<'stati
             spans.push(Span::styled(
                 token.to_string(),
                 Style::default()
-                    .fg(item.kind.color())
+                    .fg(kind_color(item.kind))
                     .add_modifier(Modifier::BOLD),
             ));
             last = word_end;
@@ -124,7 +135,7 @@ pub fn cursor_position(area: Rect, cursor_row: usize, cursor_col: usize) -> (u16
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::CompletionKind;
+    use pie_core::registry::CompletionKind;
     use tuirealm::ratatui::Terminal;
     use tuirealm::ratatui::backend::TestBackend;
 

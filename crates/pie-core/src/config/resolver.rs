@@ -1,6 +1,6 @@
 use super::loader::get_providers_data;
 use super::types::{McpServerConfig, PieConfig, ProviderBaseUrl, ProviderConfig, ProviderEndpoint};
-use crate::Cli;
+
 use crate::error::{AppError, Result};
 use crate::utils::output::OutputFormat;
 use agentsdk::{ModelConfig, OpenAI};
@@ -56,7 +56,6 @@ pub struct ResolvedConfig {
     pub model_tiers: HashMap<String, ResolvedProvider>,
     pub mcp: HashMap<String, McpServerConfig>,
     pub pricing: HashMap<String, super::types::ModelPricing>,
-    pub max_steps: u32,
     pub retry: super::types::RetryConfig,
     pub output_format: OutputFormat,
     pub log_level: String,
@@ -170,10 +169,45 @@ impl ResolvedProvider {
     }
 }
 
-impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
+/// The CLI flags the config resolver consumes. The application crate
+/// flattens this into its `Cli` parser — core must not depend on the CLI's
+/// subcommands (`pie acp` lives in another crate), only on these knobs.
+#[derive(Debug, Default, Clone, clap::Args)]
+#[command(flatten_help = true)]
+pub struct CliOverrides {
+    #[command(flatten)]
+    pub provider_config: ProviderConfig,
+
+    #[arg(short, long, global = true)]
+    pub debug: bool,
+
+    /// Output response in JSON format. Provide a valid JSON schema (inline or file path).
+    #[arg(long, global = true)]
+    pub json: Option<String>,
+
+    /// Output response in Markdown format
+    #[arg(long, global = true)]
+    pub md: bool,
+
+    /// Config provider name (from ~/.pie/pie.toml or .pie/pie.toml)
+    #[arg(short, long, global = true)]
+    pub provider: Option<String>,
+}
+
+impl CliOverrides {
+    pub fn output_format(&self) -> OutputFormat {
+        match (self.json.is_some(), self.md) {
+            (true, _) => OutputFormat::Json(self.json.clone().filter(|s| !s.is_empty())),
+            (false, true) => OutputFormat::Markdown,
+            _ => OutputFormat::Default,
+        }
+    }
+}
+
+impl TryFrom<(CliOverrides, PieConfig)> for ResolvedConfig {
     type Error = AppError;
 
-    fn try_from((mut cli, pie): (Cli, PieConfig)) -> Result<Self, Self::Error> {
+    fn try_from((mut cli, pie): (CliOverrides, PieConfig)) -> Result<Self, Self::Error> {
         let providers_data = get_providers_data()?;
 
         let mut smart_provider_name = None;
@@ -258,7 +292,6 @@ impl TryFrom<(Cli, PieConfig)> for ResolvedConfig {
             model_tiers,
             mcp: pie.mcp,
             pricing: pie.pricing,
-            max_steps: pie.agent.as_ref().and_then(|a| a.max_steps).unwrap_or(25),
             retry,
             output_format,
             log_level,
@@ -313,7 +346,13 @@ pub fn build_sandbox(pie_config: &PieConfig) -> Arc<SandboxConfig> {
 mod tests {
     use super::*;
     use crate::config::types::{ModelTier, ProviderEndpoint};
-    use clap::Parser;
+
+    fn overrides_from(args: &[&str]) -> CliOverrides {
+        use clap::{Args as _, FromArgMatches};
+        let cmd = CliOverrides::augment_args(clap::Command::new("pie"));
+        let matches = cmd.get_matches_from(args);
+        CliOverrides::from_arg_matches(&matches).unwrap()
+    }
 
     #[test]
     fn test_resolve_config_smart_model_selection() {
@@ -355,13 +394,13 @@ mod tests {
         );
 
         // Case 1: No -p, no -m -> should use default_provider (openai)
-        let cli = Cli::parse_from(["pie"]);
+        let cli = overrides_from(&["pie"]);
         let config = ResolvedConfig::try_from((cli, pie.clone())).unwrap();
         assert_eq!(config.provider.name, "openai");
         assert_eq!(config.provider.model, "gpt-4o");
 
         // Case 2: No -p, -m matches a provider name
-        let cli = Cli::parse_from(["pie", "-m", "codestral"]);
+        let cli = overrides_from(&["pie", "-m", "codestral"]);
         let config = ResolvedConfig::try_from((cli, pie.clone())).unwrap();
         assert_eq!(config.provider.name, "codestral");
         assert_eq!(config.provider.model, "codestral-latest");
@@ -374,7 +413,7 @@ mod tests {
                 model: Some("gpt-4o-mini".to_string()),
             },
         );
-        let cli = Cli::parse_from(["pie", "-m", "fast"]);
+        let cli = overrides_from(&["pie", "-m", "fast"]);
         let config = ResolvedConfig::try_from((cli, pie.clone())).unwrap();
         assert_eq!(config.provider.name, "openai");
         assert_eq!(config.provider.model, "gpt-4o-mini");
@@ -387,13 +426,13 @@ mod tests {
                 model: None,
             },
         );
-        let cli = Cli::parse_from(["pie", "-m", "slow"]);
+        let cli = overrides_from(&["pie", "-m", "slow"]);
         let config = ResolvedConfig::try_from((cli, pie.clone())).unwrap();
         assert_eq!(config.provider.name, "openai");
         assert_eq!(config.provider.model, "gpt-4o"); // Uses provider's default
 
         // Case 5: -p explicitly set, -m matches another provider name -> should NOT switch provider
-        let cli = Cli::parse_from(["pie", "-p", "openai", "-m", "codestral"]);
+        let cli = overrides_from(&["pie", "-p", "openai", "-m", "codestral"]);
         let config = ResolvedConfig::try_from((cli, pie.clone())).unwrap();
         assert_eq!(config.provider.name, "openai");
         assert_eq!(config.provider.model, "codestral");

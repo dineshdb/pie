@@ -64,7 +64,6 @@ pub struct HandleParams {
     pub session: Session,
     pub format: OutputFormat,
     pub sandbox_settings: Arc<SandboxConfig>,
-    pub max_steps: u32,
     pub retry: RetryConfig,
     pub registry: Arc<crate::registry::Registry>,
     pub agent_name: Option<String>,
@@ -72,7 +71,6 @@ pub struct HandleParams {
 
 pub async fn handle_query(params: HandleParams) -> Result<()> {
     let config = AgentConfig {
-        max_steps: params.max_steps,
         retry: params.retry,
         agent_name: params.agent_name,
         ..AgentConfig::default()

@@ -76,7 +76,6 @@ pub async fn prompt_exec(
         sandbox,
         session.clone(),
         AgentConfig {
-            max_steps: config.max_steps,
             retry: config.retry.clone(),
             grants,
             ..AgentConfig::default()

@@ -3,10 +3,6 @@
 //! Not mounted in the tuirealm App — accessed directly from the main loop.
 //! Only `ChatComponent` is the active tuirealm component.
 
-use crate::config::{ProviderConfig, ResolvedProvider, pie_home};
-use crate::plugin::AgentMode;
-use crate::registry::Registry;
-use crate::session::{Session, SessionId};
 use crate::ui::tui::realm::{Msg, StreamEvent};
 use crate::ui::tui::stream::{PendingPermissions, StreamContext, spawn_stream};
 use crate::ui::tui::widgets::completion::{
@@ -15,6 +11,10 @@ use crate::ui::tui::widgets::completion::{
 use crate::ui::tui::widgets::history::InputHistory;
 use crate::ui::tui::widgets::input::{InputView, cursor_position};
 use p1e_sandbox::SandboxConfig;
+use pie_core::config::{ProviderConfig, ResolvedProvider, pie_home};
+use pie_core::plugin::AgentMode;
+use pie_core::registry::Registry;
+use pie_core::session::{Session, SessionId};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -42,9 +42,8 @@ pub struct InputComponent {
     pub provider: ResolvedProvider,
     pub available_providers: HashMap<String, ProviderConfig>,
     pub session_id: SessionId,
-    pub session_pool: Arc<crate::db::DbPool>,
+    pub session_pool: Arc<pie_core::db::DbPool>,
     pub sandbox_settings: Arc<SandboxConfig>,
-    pub max_steps: u32,
     pub stream_abort: Option<mpsc::UnboundedSender<()>>,
     last_query: Option<String>,
     pub registry: Arc<Registry>,
@@ -62,7 +61,6 @@ impl InputComponent {
         provider: ResolvedProvider,
         session: &Session,
         sandbox_settings: Arc<SandboxConfig>,
-        max_steps: u32,
         available_providers: HashMap<String, ProviderConfig>,
         registry: Arc<Registry>,
         pending_permissions: PendingPermissions,
@@ -98,7 +96,6 @@ impl InputComponent {
             session_id,
             session_pool,
             sandbox_settings,
-            max_steps,
             stream_abort: None,
             last_query: None,
             registry,

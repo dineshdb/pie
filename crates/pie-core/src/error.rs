@@ -23,7 +23,9 @@ pub enum AppError {
     #[error("Database error: {0}")]
     Db(#[from] sqlx::Error),
 
-    #[error("API error: {0}")]
+    // The SDK error renders its own "API error:" prefix; adding another
+    // here doubled it in every client-visible message.
+    #[error("{0}")]
     Api(Box<agentsdk::error::AgentSdkError>),
 
     #[error("Config parse error: {0}")]

@@ -1,0 +1,59 @@
+[package]
+name = "pie-core"
+version = "0.3.0"
+edition = "2024"
+description = "The pie agent library: engine, plugins, config, sessions — no frontend"
+license = "MIT"
+repository = "https://github.com/dineshdb/pie"
+
+[dependencies]
+agentsdk = { path = "../../../agentsdk" }
+agentsdk-plugin-skills = { path = "../../../agentsdk/crates/agentsdk-plugin-skills" }
+agentsdk-plugin-fs = { path = "../../../agentsdk/crates/agentsdk-plugin-fs" }
+agentsdk-plugin-agentsmd = { path = "../../../agentsdk/crates/agentsdk-plugin-agentsmd" }
+agentsdk-plugin-jewels = { path = "../../../agentsdk/crates/agentsdk-plugin-jewels" }
+agentsdk-plugin-mcp = { path = "../../../agentsdk/crates/agentsdk-plugin-mcp" }
+agentsdk-plugin-shell = { path = "../../../agentsdk/crates/agentsdk-plugin-shell" }
+anyhow = "1"
+async-trait = "0.1"
+cel = "0.14"
+chrono = { version = "0.4.44", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+croner = "3"
+dirs.workspace = true
+figment = { version = "0.10", features = ["toml"] }
+futures = "0.3"
+include_dir = "0.7"
+minijinja = { version = "2", features = ["json"] }
+p1e-sandbox = { path = "../p1e-sandbox", version = "0.2.0" }
+sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "migrate"] }
+itertools = "0.14"
+termion = "4"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync"] }
+tracing.workspace = true
+uuid = { version = "1", features = ["v7", "serde"] }
+hostname = "0.4.2"
+lexiclean = "0.0.1"
+redact = { version = "0.1.11", features = ["serde"] }
+url = { version = "2.5.8", features = ["serde"] }
+thiserror = "2.0.18"
+derive_more = { version = "2.1.1", features = ["display", "from"] }
+schemars = "1"
+serde.workspace = true
+serde_json.workspace = true
+jewels.workspace = true
+serde_yaml = "0.9"
+shell-words = "1.1"
+strum = { version = "0.28", features = ["derive"] }
+
+[lints]
+workspace = true
+
+[features]
+test-util = []
+
+[dev-dependencies]
+tempfile = "3"
+# Real reqwest decode errors can't be fabricated — the retry-policy tests
+# stand up a raw socket that lies about Content-Length and hangs up mid-body.
+tokio = { version = "1", features = ["net"] }

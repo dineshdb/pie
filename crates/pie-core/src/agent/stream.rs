@@ -17,10 +17,17 @@ pub enum AgentEvent {
     Done(String),
     Error(String),
     UserMessage(String),
+    /// A tool call. Emitted twice per call: once before execution
+    /// (`display` carries `name(args)`, `output` empty) and once after
+    /// (`display` empty, `output` the result text, `failed` whether it
+    /// errored). `id` pairs the two halves — consumers building call →
+    /// result views (TUI, ACP) key on it.
     ToolCall {
+        id: String,
         name: String,
         display: String,
         output: String,
+        failed: bool,
     },
     /// Emitted once per run, right before [`AgentEvent::Done`], with the
     /// token totals the provider reported and their cost (`None` when the
@@ -29,7 +36,6 @@ pub enum AgentEvent {
         usage: RunUsage,
         cost_usd: Option<f64>,
     },
-    #[expect(dead_code)]
     PermissionRequest(PermissionRequest),
 }
 
@@ -203,9 +209,11 @@ impl AgentPlugin for StreamPlugin {
             },
         );
         let _ = self.event_tx.send(AgentEvent::ToolCall {
+            id: id.to_string(),
             name: name.to_string(),
             display: format!("{name}{}", display_args(arguments)),
             output: String::new(),
+            failed: false,
         });
 
         PreToolAction::Proceed(None)
@@ -219,7 +227,7 @@ impl AgentPlugin for StreamPlugin {
         result: &Result<Value, String>,
     ) -> PostToolAction {
         if let Some(tool_start) = self.tool_starts.remove(id) {
-            tracing::info!(
+            tracing::debug!(
                 tool = name,
                 ms = tool_start.start.elapsed().as_millis() as u64,
                 ok = result.is_ok(),
@@ -246,17 +254,21 @@ impl AgentPlugin for StreamPlugin {
             }
             Err(error) => {
                 tracing::debug!(tool = name, error = %error, "tool error");
-                let _ = self
-                    .event_tx
-                    .send(AgentEvent::Error(format!("Tool {name} failed: {error}")));
+                // No AgentEvent::Error here: the ToolCall event below
+                // already carries the failure (`failed` + the reason), and
+                // Error means the run itself is ending. Emitting both made
+                // every frontend show the failure twice — and the TUI treat
+                // a recoverable tool failure as a dead stream.
                 (format!("Error: {error}"), None)
             }
         };
 
         let _ = self.event_tx.send(AgentEvent::ToolCall {
+            id: id.to_string(),
             name: name.to_string(),
             display: String::new(),
             output,
+            failed: result.is_err(),
         });
 
         PostToolAction::Proceed(clamped_value)
@@ -270,7 +282,26 @@ impl AgentPlugin for StreamPlugin {
         self.api_error_count += 1;
 
         let Some(status) = error.status_code() else {
-            return RetryAction::GiveUp;
+            // A dropped/truncated stream carries no HTTP status. Nothing was
+            // committed to history, so re-issuing the request is safe — a
+            // gateway blip shouldn't kill the whole turn.
+            if !error.is_transport() {
+                return RetryAction::GiveUp;
+            }
+            if self.api_error_count > self.retry.api_error.max_errors {
+                let _ = self.event_tx.send(AgentEvent::Error(
+                    "Too many API errors, aborting".to_string(),
+                ));
+                return RetryAction::GiveUp;
+            }
+            tracing::warn!(
+                count = self.api_error_count,
+                error = %error,
+                "connection to the model provider failed mid-response, retrying"
+            );
+            return RetryAction::RetryAfter(std::time::Duration::from_secs(
+                self.retry.api_error.retry_delay_secs,
+            ));
         };
 
         if status == 429 {
@@ -340,5 +371,77 @@ mod tests {
 
         assert_eq!(display_args(&serde_json::json!({})), "{}");
         assert_eq!(display_args(&serde_json::json!(null)), "null");
+    }
+
+    /// Mints a real transport error by hanging up mid-body: reqwest decode
+    /// errors have no public constructor, so the only honest way to get one
+    /// is an actual truncated response. (`ApiError::Builder` — an SSE parse
+    /// failure — must NOT be treated as transport, so a hand-built error
+    /// wouldn't do either.)
+    async fn transport_error_from_truncated_stream() -> crate::error::Result<AgentSdkError> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        tokio::spawn(async move {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = [0u8; 4096];
+            let _ = tokio::io::AsyncReadExt::read(&mut sock, &mut buf).await;
+            let body = "data: {\"id\":\"c\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[]}\n\n";
+            let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 600\r\nconnection: close\r\n\r\n";
+            use tokio::io::AsyncWriteExt as _;
+            let _ = sock.write_all(head.as_bytes()).await;
+            let _ = sock.write_all(body.as_bytes()).await;
+            let _ = sock.shutdown().await;
+        });
+
+        let model = agentsdk::OpenAI::new(agentsdk::ModelConfig {
+            base_url: format!("http://{addr}"),
+            api_key: "test".into(),
+            model: "test".into(),
+        });
+        let options = agentsdk::AgentOptions::default();
+        let mut stream = model
+            .stream(&options, &[agentsdk::core::messages::user("Hi")])
+            .await?;
+        while let Some(chunk) = futures::StreamExt::next(&mut stream).await {
+            match chunk {
+                Ok(_) => continue,
+                Err(e) => {
+                    assert!(e.is_transport(), "fixture must mint a transport error");
+                    return Ok(e);
+                }
+            }
+        }
+        Err(crate::error::AppError::Config(
+            "truncated body must produce an error".into(),
+        ))
+    }
+
+    // A dropped stream retried within the api_error budget, then give up —
+    // previously any status-less error (every mid-stream drop) killed the
+    // turn on the first failure.
+    #[tokio::test]
+    async fn transport_errors_retry_within_budget_then_give_up() -> crate::error::Result<()> {
+        let error = transport_error_from_truncated_stream().await?;
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut plugin = StreamPlugin::new(tx, RetryConfig::default());
+
+        let mut world = agentsdk::hecs::World::new();
+        let entity = world.spawn(());
+        let mut ctx = PluginContext::new(world, entity);
+
+        for count in 1..=plugin.retry.api_error.max_errors {
+            plugin.api_error_count = count - 1;
+            let action = plugin.on_api_error(&mut ctx, &error).await;
+            assert!(
+                matches!(action, RetryAction::RetryAfter(_)),
+                "drop {count} must be retryable, got {action:?}"
+            );
+        }
+        let action = plugin.on_api_error(&mut ctx, &error).await;
+        assert_eq!(action, RetryAction::GiveUp);
+        Ok(())
     }
 }

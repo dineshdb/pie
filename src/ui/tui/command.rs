@@ -1,5 +1,5 @@
-use crate::cmd::BuiltinCommand;
 use crate::ui::tui::state::ChatMessage;
+use pie_core::cmd::BuiltinCommand;
 use std::str::FromStr;
 
 /// Parsed command intent from user input.
@@ -16,7 +16,7 @@ pub enum Command {
 
 impl Command {
     /// Parse raw input text into a [`Command`].
-    pub fn parse(input: &str, registry: &crate::registry::Registry) -> Self {
+    pub fn parse(input: &str, registry: &pie_core::registry::Registry) -> Self {
         let trimmed = input.trim();
         if let Some(after_bang) = trimmed.strip_prefix('!')
             && !after_bang.is_empty()
@@ -55,7 +55,7 @@ impl Command {
     }
 
     /// Map a parsed command into the action the app should take.
-    pub fn dispatch(self, registry: &crate::registry::Registry) -> CommandAction {
+    pub fn dispatch(self, registry: &pie_core::registry::Registry) -> CommandAction {
         match self {
             Self::Builtin(builtin, args) => match builtin {
                 BuiltinCommand::Help => CommandAction::Help,
@@ -88,7 +88,7 @@ pub enum CommandAction {
 }
 
 /// Build the full list of agents and skills.
-fn build_skills_list(registry: &crate::registry::Registry) -> String {
+fn build_skills_list(registry: &pie_core::registry::Registry) -> String {
     let mut parts = Vec::new();
 
     if !registry.agents.is_empty() {

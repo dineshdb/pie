@@ -67,6 +67,43 @@ pie explore                      # opens the TUI running as that agent
 | `?`                | Show help                            |
 | `Ctrl+C`           | Abort stream / quit                  |
 
+## Editor integration (ACP)
+
+`pie acp` serves the [Agent Client Protocol](https://agentclientprotocol.com)
+over stdio, so any ACP client (Zed, and other editors with ACP support) can
+use pie as its coding agent.
+
+```json
+// Zed: ~/.config/zed/settings.json
+{
+  "agent_servers": {
+    "pie": {
+      "type": "custom",
+      "command": "pie",
+      "args": ["acp"]
+    }
+  }
+}
+```
+
+What the client gets:
+
+- **Sessions** — `session/new` creates a persistent pie session; `session/load`
+  resumes one and replays the history. Session ids are pie session ids, so
+  `pie -r` on the same directory picks up where the editor left off.
+- **Workspace trust** — the `cwd` (and `additionalDirectories`) the client
+  sends is granted read+write in the sandbox for that session, and commands
+  run with the session directory as their working directory. `~/.ssh`,
+  `.env` and the other `deny_*` rules still apply on top.
+- **Modes** — pie's plan/build/debug/test/review/architect modes appear as
+  the session's mode selector; `session/set_mode` switches between them.
+- **Approval before anything changes** — Write, Edit and Bash each wait for a
+  `session/request_permission` answer (allow once / always for that tool this
+  session / reject). Shell is gated too: the sandbox draws the boundary, but
+  inside a writable workspace `printf 'x' > f` is an edit like any other, and
+  a client that approves edits should not be walked around. Reads (Read, Ls,
+  Glob, Grep) never ask.
+
 ## Custom agents (markdown)
 
 Agents are markdown files: frontmatter for configuration, body is the
@@ -80,7 +117,7 @@ selects it.
 name: reviewer            # default: file name
 description: Read-only code reviewer
 model: deep               # a model tier from pie.toml, or a literal model id
-max_steps: 50             # override the iteration limit
+max_steps: 50             # cap the tool-call iterations (unset: unbounded)
 output_mode: md           # md | json | interactive
 temperature: 0.3
 
@@ -138,9 +175,12 @@ For a full list of configuration options, see
 #### MCP servers
 
 HTTP-based [MCP](https://modelcontextprotocol.io/) servers are configured
-under `[mcp.<name>]`. Agents opt in with `plugins: [mcp]` (every server)
-or `plugins: ["mcp:<name>"]` (specific ones); their tools appear as
-`<name>__<tool>`.
+under `[mcp.<name>]`. Default runs (and legacy `commands/` agents) connect
+to every configured server best-effort — a server that is down costs a
+warning in the session log, never the run. An agent with an explicit
+`plugins:` list gets exactly what it names: `plugins: [mcp]` (every server,
+fail-loud) or `plugins: ["mcp:<name>"]` (specific ones, fail-loud). Their
+tools appear as `<name>__<tool>`.
 
 ```toml
 [mcp.deepwiki]
@@ -188,7 +228,24 @@ output = 2.2       # output tokens
 ```
 
 All runs are persisted to the `llm_usage` table in `~/.pie/pie.db` for
-bookkeeping, e.g. total spend per model:
+bookkeeping. `pie usage` aggregates spend per model (defaults to the last
+30 days; `--days 0` is all time, `--json=` emits machine-readable output):
+
+```bash
+pie usage
+pie usage --days 7
+```
+
+```
+LLM usage, last 30 days
+
+model                req  prompt  compl   total  cached  cache  cost
+@z-ai/glm-5.3-flash   18  126.8k   3.2k  130.0k  114.6k    90%     —
+────────────────────────────────────────────────────────────────────
+total                 18  126.8k   3.2k  130.0k  114.6k    90%     —
+```
+
+Raw queries work too:
 
 ```bash
 sqlite3 ~/.pie/pie.db "SELECT model, SUM(total_tokens), SUM(cost_usd) \
@@ -210,9 +267,6 @@ model = "glm-5.1"
 base_url = "https://api.z.ai/api/paas/v4/"
 anthropic_url = "https://api.z.ai/api/anthropic"
 api_key = "..."
-```
-[agent]
-max_steps = 25 # Max tool-call iterations per query
 ```
 
 To use a specific provider from your config:

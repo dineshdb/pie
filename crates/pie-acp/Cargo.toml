@@ -1,0 +1,25 @@
+[package]
+name = "pie-acp"
+version = "0.3.0"
+edition = "2024"
+description = "Agent Client Protocol (ACP) frontend for the pie agent"
+license = "MIT"
+repository = "https://github.com/dineshdb/pie"
+
+[dependencies]
+pie-core = { path = "../pie-core", version = "0.3.0" }
+agent-client-protocol = "2.1.0"
+anyhow = "1"
+tokio = { version = "1", features = ["io-util", "macros", "rt-multi-thread", "sync"] }
+tracing.workspace = true
+
+[dev-dependencies]
+pie-core = { path = "../pie-core", version = "0.3.0", features = ["test-util"] }
+futures = "0.3"
+tokio-util = { version = "0.7", features = ["compat"] }
+redact = { version = "0.1.11", features = ["serde"] }
+serde_json.workspace = true
+tempfile = "3"
+
+[lints]
+workspace = true

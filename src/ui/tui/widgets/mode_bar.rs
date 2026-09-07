@@ -1,4 +1,4 @@
-use crate::plugin::AgentMode;
+use pie_core::plugin::AgentMode;
 use tuirealm::ratatui::buffer::Buffer;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::{Color, Modifier, Style};

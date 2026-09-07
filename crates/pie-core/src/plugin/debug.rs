@@ -230,7 +230,7 @@ impl AgentPlugin for DebugPlugin {
     }
 
     async fn on_completion(&mut self, _ctx: &mut PluginContext, text: &str) -> CompletionAction {
-        tracing::info!(length = text.len(), "Completion received");
+        tracing::debug!(length = text.len(), "Completion received");
 
         let content = format!("```markdown\n{text}\n```");
         self.append_debug("Response", &content);

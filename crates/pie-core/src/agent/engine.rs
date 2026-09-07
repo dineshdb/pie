@@ -3,8 +3,8 @@ use crate::config::CONFIG;
 use crate::config::McpServerConfig;
 use crate::error::{AppError, Result};
 use crate::plugin::{
-    HelperBinariesPlugin, ModePlugin, PermissionRequest, PersistencePlugin, UserCommandPlugin,
-    WebsearchPlugin,
+    AgentMode, GateAsk, HelperBinariesPlugin, ModePlugin, PermissionRequest, PersistencePlugin,
+    ToolGatePlugin, ToolGrants, UserCommandPlugin, WebsearchPlugin,
 };
 use crate::prompt::SystemPrompt;
 use crate::registry::Registry;
@@ -40,16 +40,24 @@ enum FsMode {
 enum McpSelection {
     #[default]
     Off,
-    /// Every server configured under `[mcp.*]`.
+    /// Default runs: every server configured under `[mcp.*]`, connected
+    /// best-effort — a server that is down costs a warning in the session
+    /// log, never the run. Configuring a server is opt-out (drop the
+    /// section), not opt-in.
+    Available,
+    /// Explicit `plugins: [mcp]`: every configured server, and any
+    /// connection failure fails the run loudly.
     All,
-    /// Only the named servers, in the listed order.
+    /// Explicit `plugins: ["mcp:<name>"]`: only the named servers, as
+    /// strict as [`McpSelection::All`].
     Only(Vec<String>),
 }
 
 /// The optional, selectable plugins. Defaults = the full set (markdown
-/// agents and agent-less runs); [`PluginSelection::none`] = YAML agents
-/// that opt in explicitly. MCP servers are never in the default set: they
-/// are remote connections and must be opted into per agent.
+/// agents and agent-less runs), including best-effort connections to every
+/// configured `[mcp.*]` server; [`PluginSelection::none`] = agents that
+/// opt in explicitly. Agents name `mcp`/`mcp:<server>` for the strict,
+/// fail-loud contract.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PluginSelection {
     fs: FsMode,
@@ -68,7 +76,7 @@ impl Default for PluginSelection {
             websearch: true,
             skills: true,
             agentsmd: true,
-            mcp: McpSelection::Off,
+            mcp: McpSelection::Available,
         }
     }
 }
@@ -94,20 +102,41 @@ pub struct PieAgent {
     pub session: Session,
     pub config: AgentConfig,
     permission_tx: Option<UnboundedSender<PermissionRequest>>,
+    /// Approval channel for the gated tools + the "always allow" memory
+    /// shared with the approver (one set per ACP session, so a grant
+    /// outlives one turn).
+    tool_gate: Option<ToolGate>,
 }
+
+/// The channel pair [`PieAgent`] keeps when an out-of-band approver gates
+/// the machine-changing tools (see [`crate::plugin::ToolGatePlugin`]).
+type ToolGate = (UnboundedSender<GateAsk>, ToolGrants);
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentConfig {
     pub agent_name: Option<String>,
     #[allow(dead_code)]
     pub history_limit: u32,
-    pub max_steps: u32,
     pub depth: u32,
     #[allow(dead_code)]
     pub max_retries: u32,
     pub retry: crate::config::RetryConfig,
     #[serde(default)]
     pub grants: HashSet<Permission>,
+    /// Operating mode the run starts in. `None` = build (the default).
+    /// A remote client (ACP) seeds this from `session/set_mode`.
+    #[serde(default)]
+    pub mode: Option<AgentMode>,
+    /// May the agent change its own mode mid-run? Frontends that own a mode
+    /// selector (ACP) say no: they get no `switch_mode` tool, and because the
+    /// mode is then fixed for the whole run, the tools it forbids are left
+    /// out of the advertised list instead of failing when called.
+    #[serde(default = "default_true")]
+    pub mode_switching: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for AgentConfig {
@@ -115,11 +144,12 @@ impl Default for AgentConfig {
         Self {
             agent_name: None,
             history_limit: 10,
-            max_steps: 200,
             depth: 0,
             max_retries: 3,
             retry: crate::config::RetryConfig::default(),
             grants: HashSet::new(),
+            mode: None,
+            mode_switching: true,
         }
     }
 }
@@ -155,11 +185,20 @@ impl PieAgent {
             session,
             config,
             permission_tx: None,
+            tool_gate: None,
         }
     }
 
     pub fn with_permission_channel(mut self, tx: UnboundedSender<PermissionRequest>) -> Self {
         self.permission_tx = Some(tx);
+        self
+    }
+
+    /// Route Write/Edit/Bash tool calls through an out-of-band approver (an
+    /// ACP client today; a TUI dialog could be next). The approver answers
+    /// `true`/`false`; `grants` is the shared "always allow" memory.
+    pub fn with_tool_gate(mut self, gate: ToolGate) -> Self {
+        self.tool_gate = Some(gate);
         self
     }
 
@@ -185,6 +224,17 @@ impl PieAgent {
     fn find_agent_definition(&self) -> Option<&Agent> {
         let name = self.config.agent_name.as_deref()?;
         self.registry.agents.iter().find(|a| a.name == name)
+    }
+
+    /// Tool-loop iteration cap for this run. Only an agent's frontmatter
+    /// `max_steps` sets one — every mode defaults to unbounded, the cancel
+    /// paths being the real limit. The SDK caps a `None` at its own default,
+    /// so "unlimited" has to be spelled out.
+    fn step_limit(&self) -> usize {
+        let Some(steps) = self.find_agent_definition().and_then(|a| a.max_steps) else {
+            return usize::MAX;
+        };
+        steps as usize
     }
 
     /// Resolve which optional plugins this run gets. `plugins: None` on the
@@ -238,15 +288,16 @@ impl PieAgent {
 
     /// Pair a parsed MCP selection with the configured servers, sorted by
     /// name for deterministic connection order. Fails loudly on `mcp:<server>`
-    /// names that have no `[mcp.*]` section and on any selection with nothing
-    /// configured.
+    /// names that have no `[mcp.*]` section and on an explicit selection
+    /// with nothing configured; the default [`McpSelection::Available`]
+    /// with nothing configured simply means no MCP tools.
     fn select_mcp_servers<'a>(
         configured: &'a HashMap<String, McpServerConfig>,
         selection: &McpSelection,
     ) -> Result<Vec<(String, &'a McpServerConfig)>> {
         let selected: Vec<String> = match selection {
             McpSelection::Off => return Ok(Vec::new()),
-            McpSelection::All => configured.keys().cloned().collect(),
+            McpSelection::Available | McpSelection::All => configured.keys().cloned().collect(),
             McpSelection::Only(names) => names.clone(),
         };
 
@@ -272,21 +323,29 @@ impl PieAgent {
             .collect();
         servers.sort_by_key(|(name, _)| name.clone());
         if servers.is_empty() {
-            return Err(AppError::Config(
-                "agent requests mcp but no [mcp.*] servers are configured".into(),
-            ));
+            return match selection {
+                McpSelection::Available => Ok(servers),
+                _ => Err(AppError::Config(
+                    "agent requests mcp but no [mcp.*] servers are configured".into(),
+                )),
+            };
         }
         Ok(servers)
     }
 
-    /// Connect to the selected MCP servers. Any connection failure fails the
-    /// run: a silently missing server would surface later as confusing
-    /// tool-not-found errors.
+    /// Connect to the selected MCP servers. An explicit request (`plugins:
+    /// [mcp]`, `mcp:<name>`) fails the run when a server is down: a
+    /// silently missing server would surface later as confusing
+    /// tool-not-found errors. The implicit default set
+    /// ([`McpSelection::Available`]) is best-effort instead — the run never
+    /// asked for a particular server, so one being down costs a warning,
+    /// not the run.
     async fn build_mcp_plugin(
         configured: &HashMap<String, McpServerConfig>,
         selection: &McpSelection,
     ) -> Result<McpPlugin> {
         let servers = Self::select_mcp_servers(configured, selection)?;
+        let strict = !matches!(selection, McpSelection::Available);
 
         let mut plugin = McpPlugin::new();
         for (name, server) in servers {
@@ -295,13 +354,20 @@ impl PieAgent {
                 .iter()
                 .map(|(k, v)| (k.clone(), v.expose_secret().clone()))
                 .collect();
-            plugin
+            match plugin
                 .add_remote_server(name.clone(), server.url.as_str(), headers)
                 .await
-                .map_err(|e| {
-                    AppError::Plugin(format!("mcp server '{name}' failed to connect: {e}"))
-                })?;
-            tracing::debug!(server = name, "mcp server connected");
+            {
+                Ok(()) => tracing::debug!(server = name, "mcp server connected"),
+                Err(e) if strict => {
+                    return Err(AppError::Plugin(format!(
+                        "mcp server '{name}' failed to connect: {e}"
+                    )));
+                }
+                Err(e) => {
+                    tracing::warn!(server = name, error = %e, "mcp server unavailable, continuing without it");
+                }
+            }
         }
         Ok(plugin)
     }
@@ -327,7 +393,7 @@ impl PieAgent {
             .component(Sandbox::new(sandbox))
             .options(
                 agentsdk::AgentOptions::builder()
-                    .max_iterations(self.config.max_steps as usize)
+                    .max_iterations(self.step_limit())
                     .build()
                     .map_err(|e| AppError::Config(e.to_string()))?,
             ))
@@ -383,10 +449,8 @@ impl PieAgent {
                 "Based on the execution and gathered information, please output the final result strictly as JSON matching the requested schema."
             ));
 
-            let options = agentsdk::AgentOptions::builder()
-                .max_iterations(self.config.max_steps as usize)
-                .build()
-                .map_err(|e| AppError::Config(e.to_string()))?;
+            // The structured-output call is a single request; it never loops.
+            let options = agentsdk::AgentOptions::default();
 
             let result = self
                 .model
@@ -436,6 +500,16 @@ impl PieAgent {
 
             let selection = Self::selected_plugins(self.find_agent_definition(), &self.sandbox)?;
             let grants = self.resolve_grants();
+            let mode = self.config.mode.unwrap_or_default();
+
+            if !self.config.mode_switching {
+                // The mode is fixed for this run, so what it forbids can never
+                // run — hide those tools rather than let the model spend a
+                // round trip discovering they are refused. (With switching on,
+                // the model may switch and then legitimately use them, so the
+                // list has to stay complete and `ModePlugin` refuses per call.)
+                builder = builder.tool_filter(move |name| !mode.is_tool_blocked(name));
+            }
 
             // StreamPlugin must be FIRST: on_tool_post_execute is
             // first-decisive-wins, and JewelsPlugin returns Proceed(Some(..))
@@ -447,15 +521,26 @@ impl PieAgent {
                 .plugin(stream_plugin)
                 .plugin(history_plugin.clone())
                 .plugin(JewelsPlugin::new())
-                .plugin(ModePlugin::default())
+                .plugin({
+                    let modes = ModePlugin::new(mode);
+                    if self.config.mode_switching {
+                        modes
+                    } else {
+                        modes.without_switching()
+                    }
+                })
                 .plugin(crate::plugin::EmbeddedSystemPromptPlugin::new(
-                    include_str!("../../.pie/SYSTEM.md"),
+                    include_str!("../../../../.pie/SYSTEM.md"),
                 ))
                 .plugin(crate::plugin::PermissionsPlugin::new(
                     self.registry.clone(),
                     grants,
                     self.permission_tx.clone(),
                 ));
+
+            if let Some((gate_tx, grants)) = &self.tool_gate {
+                builder = builder.plugin(ToolGatePlugin::new(gate_tx.clone(), Arc::clone(grants)));
+            }
 
             if selection.agentsmd {
                 builder = builder.plugin(crate::plugin::build_agentsmd_plugin()?);
@@ -759,12 +844,20 @@ mod tests {
     }
 
     #[test]
-    fn mcp_stays_off_unless_listed() {
-        assert_eq!(PluginSelection::default().mcp, McpSelection::Off);
+    fn default_set_connects_to_available_mcp() {
+        // Default runs and legacy agents get every configured server,
+        // best-effort; an agent with an explicit (possibly empty) plugin
+        // list gets exactly what it names.
+        assert_eq!(PluginSelection::default().mcp, McpSelection::Available);
         assert_eq!(PluginSelection::none().mcp, McpSelection::Off);
 
         let sel =
             PieAgent::selected_plugins(Some(&tooled_agent(None, false)), &sandbox(&["."])).unwrap();
+        assert_eq!(sel.mcp, McpSelection::Available);
+
+        let sel =
+            PieAgent::selected_plugins(Some(&tooled_agent(Some(vec![]), false)), &sandbox(&["."]))
+                .unwrap();
         assert_eq!(sel.mcp, McpSelection::Off);
     }
 
@@ -825,5 +918,60 @@ mod tests {
         let err = PieAgent::select_mcp_servers(&configured, &McpSelection::All).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("no [mcp.*] servers are configured"), "{msg}");
+    }
+
+    #[test]
+    fn select_mcp_servers_available_without_config_is_no_tools() {
+        let configured = HashMap::new();
+        let servers = PieAgent::select_mcp_servers(&configured, &McpSelection::Available).unwrap();
+        assert!(servers.is_empty());
+    }
+
+    /// A loopback port nothing listens on: the connect fails fast, no
+    /// network leaves the machine.
+    fn dead_mcp_config() -> HashMap<String, McpServerConfig> {
+        let server = McpServerConfig {
+            url: "http://127.0.0.1:1/mcp".parse().unwrap(),
+            headers: HashMap::new(),
+        };
+        HashMap::from([("dead".to_string(), server)])
+    }
+
+    fn block_on<T>(fut: impl Future<Output = T>) -> T {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(fut)
+    }
+
+    #[test]
+    fn explicit_mcp_connection_failure_fails_the_run() {
+        let configured = dead_mcp_config();
+        let result = block_on(PieAgent::build_mcp_plugin(&configured, &McpSelection::All));
+        let Err(err) = result else {
+            panic!("a dead server must fail an explicit request");
+        };
+        assert!(
+            err.to_string()
+                .contains("mcp server 'dead' failed to connect"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn default_mcp_connection_failure_is_best_effort() {
+        let configured = dead_mcp_config();
+        // The run asked for no server in particular: a dead one is skipped
+        // (with a warning in the session log) instead of failing the run.
+        let plugin = block_on(PieAgent::build_mcp_plugin(
+            &configured,
+            &McpSelection::Available,
+        ))
+        .unwrap();
+        assert!(
+            agentsdk::AgentPlugin::tools(&plugin).is_empty(),
+            "skipped server must advertise no tools"
+        );
     }
 }

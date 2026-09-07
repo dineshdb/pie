@@ -1,0 +1,5 @@
+# Repo-root anchor for compile-time embeds from crates other than the root
+# (include_dir!("$PIE_REPO_DIR/.pie") in pie-core). `relative = true` resolves
+# against the directory holding this config file.
+[env]
+PIE_REPO_DIR = { value = ".", relative = true }

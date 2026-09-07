@@ -89,6 +89,21 @@ async fn run(label: String, mut event_rx: tokio::sync::mpsc::UnboundedReceiver<A
                             &line_text(activity.as_deref(), 0, width),
                         );
                     }
+                    // Result half of a failed call: the failure gets its own
+                    // line (the run itself continues — tool errors are
+                    // handed back to the model, not fatal).
+                    AgentEvent::ToolCall {
+                        name, output, failed: true, ..
+                    } => {
+                        close_line(
+                            &mut line_open,
+                            &line_text(activity.as_deref(), phase_start.elapsed().as_secs(), width),
+                        );
+                        let reason = output.strip_prefix("Error: ").unwrap_or(&output);
+                        eprintln!("! Tool {name} failed: {reason}");
+                        activity = None;
+                        phase_start = Instant::now();
+                    }
                     AgentEvent::ToolCall { .. } => {
                         close_line(
                             &mut line_open,
