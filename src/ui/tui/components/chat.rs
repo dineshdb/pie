@@ -116,6 +116,27 @@ impl ChatComponent {
         self.render_plan.clear();
     }
 
+    /// Append a tool call's result to its pending header message, keyed by
+    /// the id set when [`ChatMessage::tool_call`] was added. A no-op result
+    /// line (e.g. `load_skills`) leaves the header as its own line.
+    fn append_tool_result(&mut self, id: &str, result_line: &str) {
+        if result_line.is_empty() {
+            return;
+        }
+        let Some((idx, msg)) = self
+            .messages
+            .iter_mut()
+            .enumerate()
+            .rev()
+            .find(|(_, m)| m.tool_id.as_deref() == Some(id))
+        else {
+            return;
+        };
+        msg.content = format!("{} → {result_line}", msg.content);
+        self.render_cache.invalidate(idx);
+        self.render_plan.clear();
+    }
+
     pub fn update_last_user_message(&mut self, content: String) {
         if let Some((idx, msg)) = self
             .messages
@@ -412,22 +433,22 @@ impl ChatComponent {
                 }
             }
             StreamEvent::ToolCall {
+                id,
                 name,
                 display,
                 output,
                 failed,
             } => {
+                if output.is_empty() {
+                    self.add_message(ChatMessage::tool_call(id, display));
+                    return Msg::Redraw;
+                }
+
                 let tool = ToolCallResult::new(name, output, *failed);
                 let result_line = tool.to_string();
-                let content = if result_line.is_empty() {
-                    display.clone()
-                } else {
-                    format!("{display} → {result_line}")
-                };
-                self.add_message(ChatMessage::tool(&content));
+                self.append_tool_result(id, &result_line);
 
                 if name == "switch_mode"
-                    && !output.is_empty()
                     && let Ok(val) = serde_json::from_str::<serde_json::Value>(output)
                     && let Some(mode_str) = val.get("mode").and_then(serde_json::Value::as_str)
                     && let Ok(mode) = mode_str.parse::<AgentMode>()
@@ -439,6 +460,10 @@ impl ChatComponent {
             }
             StreamEvent::Usage(summary) => {
                 self.pending_usage = Some(summary.clone());
+                Msg::Redraw
+            }
+            StreamEvent::TurnUsage(summary) => {
+                self.add_message(ChatMessage::system(summary));
                 Msg::Redraw
             }
             StreamEvent::ModelList(models) => {
@@ -776,5 +801,110 @@ mod tests {
         assert_eq!(chat.messages[2].role, Role::Assistant);
         assert!(chat.messages[2].is_response());
         assert_eq!(chat.response_idx, Some(2));
+    }
+
+    /// A tool call's pre- and post-execution halves must land as one
+    /// message, not two — two meant a blank line between the call header
+    /// and its result (the header rendered alone, then an empty call line
+    /// plus the result on its own line).
+    #[tokio::test]
+    async fn tool_call_pre_and_post_execution_merge_into_one_message() {
+        let mut chat = ChatComponent::new(
+            vec![],
+            "test-model".to_string(),
+            test_registry(),
+            test_pending(),
+        );
+
+        chat.handle_user_event(&StreamEvent::ToolCall {
+            id: "call-1".to_string(),
+            name: "Read".to_string(),
+            display: "Read{path = a.rs}".to_string(),
+            output: String::new(),
+            failed: false,
+        });
+        assert_eq!(chat.messages.len(), 1);
+        assert_eq!(chat.messages[0].content, "Read{path = a.rs}");
+
+        chat.handle_user_event(&StreamEvent::ToolCall {
+            id: "call-1".to_string(),
+            name: "Read".to_string(),
+            display: String::new(),
+            output: "hello".to_string(),
+            failed: false,
+        });
+        assert_eq!(
+            chat.messages.len(),
+            1,
+            "completion must merge into the pending message, not add a new one"
+        );
+        assert_eq!(chat.messages[0].content, "Read{path = a.rs} → hello");
+    }
+
+    /// Two tool calls in flight at once (a parallel batch) must merge by
+    /// id, not by "most recently added" — otherwise call B's result would
+    /// land on call A's header.
+    #[tokio::test]
+    async fn concurrent_tool_calls_merge_by_id_not_by_order() {
+        let mut chat = ChatComponent::new(
+            vec![],
+            "test-model".to_string(),
+            test_registry(),
+            test_pending(),
+        );
+
+        chat.handle_user_event(&StreamEvent::ToolCall {
+            id: "a".to_string(),
+            name: "Bash".to_string(),
+            display: "Bash{command = one}".to_string(),
+            output: String::new(),
+            failed: false,
+        });
+        chat.handle_user_event(&StreamEvent::ToolCall {
+            id: "b".to_string(),
+            name: "Bash".to_string(),
+            display: "Bash{command = two}".to_string(),
+            output: String::new(),
+            failed: false,
+        });
+        // b finishes first
+        chat.handle_user_event(&StreamEvent::ToolCall {
+            id: "b".to_string(),
+            name: "Bash".to_string(),
+            display: String::new(),
+            output: r#"{"code":0,"stdout":"two-out","stderr":""}"#.to_string(),
+            failed: false,
+        });
+        chat.handle_user_event(&StreamEvent::ToolCall {
+            id: "a".to_string(),
+            name: "Bash".to_string(),
+            display: String::new(),
+            output: r#"{"code":0,"stdout":"one-out","stderr":""}"#.to_string(),
+            failed: false,
+        });
+
+        assert_eq!(chat.messages.len(), 2);
+        assert!(
+            chat.messages[0].content.contains("one")
+                && chat.messages[0].content.contains("one-out")
+        );
+        assert!(
+            chat.messages[1].content.contains("two")
+                && chat.messages[1].content.contains("two-out")
+        );
+    }
+
+    #[tokio::test]
+    async fn turn_usage_event_adds_a_system_message() {
+        let mut chat = ChatComponent::new(
+            vec![],
+            "test-model".to_string(),
+            test_registry(),
+            test_pending(),
+        );
+        chat.handle_user_event(&StreamEvent::TurnUsage("1.2k tokens · $0.0006".to_string()));
+        assert_eq!(chat.messages.len(), 1);
+        assert_eq!(chat.messages[0].role, Role::System);
+        assert_eq!(chat.messages[0].content, "1.2k tokens · $0.0006");
     }
 }

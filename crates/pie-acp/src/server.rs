@@ -507,6 +507,7 @@ fn forward_event(cx: &ConnectionTo<Client>, session_id: &SessionId, event: Agent
         )),
         AgentEvent::UserMessage(_)
         | AgentEvent::Usage { .. }
+        | AgentEvent::TurnUsage { .. }
         | AgentEvent::Done(_)
         // Skill-permission prompts (frontmatter `permissions:`) have no ACP
         // counterpart yet; without a prompt channel they are denied, which

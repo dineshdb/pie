@@ -16,6 +16,9 @@ pub enum StreamEvent {
     Error(String),
     UserMessage(String),
     ToolCall {
+        /// Pairs a call's pre-execution announcement with its completion —
+        /// tool calls in a batch can be in flight concurrently.
+        id: String,
         name: String,
         display: String,
         output: String,
@@ -24,6 +27,8 @@ pub enum StreamEvent {
     },
     /// Pre-formatted per-run usage summary (tokens, cache rate, cost).
     Usage(String),
+    /// Pre-formatted per-turn usage summary — one LLM request's tokens and cost.
+    TurnUsage(String),
     ModelList(Vec<String>),
     PermissionRequest,
 }

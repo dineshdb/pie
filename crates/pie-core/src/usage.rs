@@ -6,11 +6,16 @@
 //! [`crate::session::Session::record_usage`] for bookkeeping, and
 //! [`by_model`] aggregates that table for the `pie usage` report.
 
-use crate::config::ModelPricing;
+use crate::config::{CONFIG, ModelPricing};
 use crate::db::DbPool;
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
 use sqlx::Row as _;
+
+/// Configured pricing for a model id (exact `[pricing.*]` match).
+pub(crate) fn pricing_for(model: &str) -> Option<ModelPricing> {
+    CONFIG.get().and_then(|c| c.pricing.get(model).copied())
+}
 
 /// Token usage accumulated over one agent run (one interaction).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

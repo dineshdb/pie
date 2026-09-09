@@ -14,6 +14,9 @@ pub struct ChatMessage {
     pub role: Role,
     pub content: String,
     pub kind: MessageKind,
+    /// Set only on a pending tool-call message — pairs it with the
+    /// completion event that fills in its result line.
+    pub tool_id: Option<String>,
 }
 
 impl ChatMessage {
@@ -22,6 +25,7 @@ impl ChatMessage {
             role: Role::User,
             content: content.to_string(),
             kind: MessageKind::Normal,
+            tool_id: None,
         }
     }
 
@@ -30,6 +34,7 @@ impl ChatMessage {
             role: Role::Assistant,
             content: content.to_string(),
             kind: MessageKind::Normal,
+            tool_id: None,
         }
     }
 
@@ -39,6 +44,7 @@ impl ChatMessage {
             role: Role::Assistant,
             content: String::new(),
             kind: MessageKind::Response,
+            tool_id: None,
         }
     }
 
@@ -47,6 +53,7 @@ impl ChatMessage {
             role: Role::System,
             content: content.to_string(),
             kind: MessageKind::Normal,
+            tool_id: None,
         }
     }
 
@@ -55,6 +62,18 @@ impl ChatMessage {
             role: Role::Tool,
             content: content.to_string(),
             kind: MessageKind::Normal,
+            tool_id: None,
+        }
+    }
+
+    /// A tool call before its result is known — `id` pairs it with the
+    /// completion event that appends the result line to `content`.
+    pub fn tool_call(id: &str, content: &str) -> Self {
+        Self {
+            role: Role::Tool,
+            content: content.to_string(),
+            kind: MessageKind::Normal,
+            tool_id: Some(id.to_string()),
         }
     }
 
@@ -78,6 +97,7 @@ impl From<Role> for ChatMessage {
             role,
             content: String::new(),
             kind: MessageKind::Normal,
+            tool_id: None,
         }
     }
 }

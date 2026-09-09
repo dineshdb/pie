@@ -692,8 +692,11 @@ impl PieAgent {
             // first-decisive-wins, and JewelsPlugin returns Proceed(Some(..))
             // whenever redaction changes a result — anything registered after
             // it (the output clamp, debug result logging) would be preempted.
-            let stream_plugin =
-                crate::agent::StreamPlugin::new(event_tx.clone(), self.config.retry.clone());
+            let stream_plugin = crate::agent::StreamPlugin::new(
+                event_tx.clone(),
+                self.config.retry.clone(),
+                self.model.config.model.clone(),
+            );
             builder = builder.plugin(stream_plugin).plugin(history_plugin.clone());
             builder = self.register_plugins(builder, &selection, &cwd).await?;
             builder = match selection.fs {
@@ -788,7 +791,7 @@ impl PieAgent {
             .map(|u| RunUsage::from(**u))
             .unwrap_or_default();
         let model = self.model.config.model.clone();
-        let cost_usd = Self::pricing_for(&model).map(|p| usage.cost_usd(&p));
+        let cost_usd = crate::usage::pricing_for(&model).map(|p| usage.cost_usd(&p));
 
         if usage.requests > 0
             && let Err(e) = self
@@ -799,11 +802,6 @@ impl PieAgent {
             tracing::warn!("failed to record llm usage: {e}");
         }
         (usage, cost_usd)
-    }
-
-    /// Configured pricing for a model id (exact `[pricing.*]` match).
-    fn pricing_for(model: &str) -> Option<crate::config::ModelPricing> {
-        CONFIG.get().and_then(|c| c.pricing.get(model).copied())
     }
 }
 

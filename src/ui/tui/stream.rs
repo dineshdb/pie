@@ -97,13 +97,14 @@ pub async fn spawn_stream(
                     let _ = event_tx_clone.send(StreamEvent::UserMessage(m));
                 }
                 AgentEvent::ToolCall {
+                    id,
                     name,
                     display,
                     output,
                     failed,
-                    ..
                 } => {
                     let _ = event_tx_clone.send(StreamEvent::ToolCall {
+                        id,
                         name,
                         display,
                         output,
@@ -112,6 +113,9 @@ pub async fn spawn_stream(
                 }
                 AgentEvent::Usage { usage, cost_usd } => {
                     let _ = event_tx_clone.send(StreamEvent::Usage(usage.summary(cost_usd)));
+                }
+                AgentEvent::TurnUsage { usage, cost_usd } => {
+                    let _ = event_tx_clone.send(StreamEvent::TurnUsage(usage.summary(cost_usd)));
                 }
                 AgentEvent::PermissionRequest(_) => {}
             }

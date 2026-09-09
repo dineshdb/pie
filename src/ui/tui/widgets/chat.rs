@@ -347,9 +347,11 @@ pub fn build_render_plan(
         });
         total_height += height;
 
-        // Blank separator: only before user messages
+        // Blank separator before the next user message or the next tool
+        // call block — keeps each turn's trace visually distinct instead of
+        // running straight into whatever comes after it.
         if let Some(next) = messages.get(render_pos + 1)
-            && next.role == Role::User
+            && matches!(next.role, Role::User | Role::Tool)
         {
             items.push(ChatRenderItem {
                 kind: ChatRenderKind::EmptyLine,
@@ -437,6 +439,35 @@ mod tests {
         assert!(
             !content.contains("line 0"),
             "auto_scroll should not show earliest messages"
+        );
+    }
+
+    #[test]
+    fn blank_separator_precedes_each_tool_call_block() {
+        let messages = vec![
+            ChatMessage::user("do two things"),
+            ChatMessage::tool("Bash{command = one} → exit 0"),
+            ChatMessage::tool("Bash{command = two} → exit 0"),
+        ];
+        let mut cache = MessageRenderCache::new();
+        let (plan, _) = build_render_plan(&messages, &mut cache, 80);
+
+        // Message 1 (index 1, the first tool call) then an EmptyLine, then
+        // message 2 (index 2, the second tool call) — the blank now sits
+        // between the two call blocks instead of nowhere.
+        let kinds: Vec<ChatRenderKind> = plan.iter().map(|i| i.kind).collect();
+        let first_tool = kinds
+            .iter()
+            .position(|k| *k == ChatRenderKind::Message(1))
+            .unwrap();
+        let second_tool = kinds
+            .iter()
+            .position(|k| *k == ChatRenderKind::Message(2))
+            .unwrap();
+        assert_eq!(
+            &kinds[first_tool + 1..second_tool],
+            &[ChatRenderKind::EmptyLine],
+            "expected exactly one blank line between the two tool call blocks: {kinds:?}"
         );
     }
 

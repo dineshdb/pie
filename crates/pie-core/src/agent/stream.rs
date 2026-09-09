@@ -36,6 +36,13 @@ pub enum AgentEvent {
         usage: RunUsage,
         cost_usd: Option<f64>,
     },
+    /// Emitted after each iteration of the tool-calling loop that reported
+    /// usage — the token cost of that one LLM request, finer-grained than
+    /// the run-total [`AgentEvent::Usage`].
+    TurnUsage {
+        usage: RunUsage,
+        cost_usd: Option<f64>,
+    },
     PermissionRequest(PermissionRequest),
 }
 
@@ -50,6 +57,11 @@ pub struct StreamPlugin {
     iter_start: Option<Instant>,
     /// Empty-final-completions rejected so far (bounded retry).
     empty_rejects: u32,
+    /// Model id, for per-turn pricing lookups.
+    model: String,
+    /// Cumulative usage as of the last iteration — diffed against the
+    /// current total to get each turn's own token cost.
+    last_usage: agentsdk::Usage,
 }
 
 /// A pending tool call being timed.
@@ -60,7 +72,7 @@ struct ToolStart {
 }
 
 impl StreamPlugin {
-    pub fn new(event_tx: UnboundedSender<AgentEvent>, retry: RetryConfig) -> Self {
+    pub fn new(event_tx: UnboundedSender<AgentEvent>, retry: RetryConfig, model: String) -> Self {
         Self {
             event_tx,
             api_error_count: 0,
@@ -69,6 +81,8 @@ impl StreamPlugin {
             tool_starts: HashMap::new(),
             iter_start: None,
             empty_rejects: 0,
+            model,
+            last_usage: agentsdk::Usage::default(),
         }
     }
 }
@@ -160,7 +174,7 @@ impl AgentPlugin for StreamPlugin {
 
     async fn on_iteration_end(
         &mut self,
-        _ctx: &mut PluginContext,
+        ctx: &mut PluginContext,
         iteration: usize,
         had_tool_calls: bool,
     ) {
@@ -171,6 +185,27 @@ impl AgentPlugin for StreamPlugin {
                 ms = crate::utils::ms_of(start.elapsed()),
                 "timing: iteration end"
             );
+        }
+
+        let Some(current) = ctx.get::<agentsdk::Usage>().map(|u| *u) else {
+            return;
+        };
+        let delta = agentsdk::Usage {
+            requests: current.requests.saturating_sub(self.last_usage.requests),
+            prompt_tokens: current.prompt_tokens - self.last_usage.prompt_tokens,
+            completion_tokens: current.completion_tokens - self.last_usage.completion_tokens,
+            total_tokens: current.total_tokens - self.last_usage.total_tokens,
+            cached_tokens: current.cached_tokens - self.last_usage.cached_tokens,
+            reasoning_tokens: current.reasoning_tokens - self.last_usage.reasoning_tokens,
+        };
+        self.last_usage = current;
+
+        if delta.requests > 0 {
+            let usage = RunUsage::from(delta);
+            let cost_usd = crate::usage::pricing_for(&self.model).map(|p| usage.cost_usd(&p));
+            let _ = self
+                .event_tx
+                .send(AgentEvent::TurnUsage { usage, cost_usd });
         }
     }
 
@@ -339,6 +374,61 @@ impl AgentPlugin for StreamPlugin {
 mod tests {
     use super::*;
 
+    /// `on_iteration_end` must emit each turn's own tokens (a delta off the
+    /// cumulative `Usage` component), not the running total — the run-total
+    /// is already covered by `AgentEvent::Usage` at the end of the run.
+    #[tokio::test]
+    async fn on_iteration_end_emits_turn_usage_delta() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut plugin = StreamPlugin::new(tx, RetryConfig::default(), "test-model".to_string());
+
+        let mut world = agentsdk::hecs::World::new();
+        let entity = world.spawn(());
+        let mut ctx = PluginContext::new(world, entity);
+
+        ctx.insert(agentsdk::Usage {
+            requests: 1,
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+            cached_tokens: 0,
+            reasoning_tokens: 0,
+        });
+        plugin.on_iteration_end(&mut ctx, 0, false).await;
+
+        match rx.try_recv().expect("first iteration must emit TurnUsage") {
+            AgentEvent::TurnUsage { usage, .. } => {
+                assert_eq!(usage.requests, 1);
+                assert_eq!(usage.prompt_tokens, 100);
+                assert_eq!(usage.total_tokens, 150);
+            }
+            other => panic!("expected TurnUsage, got {other:?}"),
+        }
+
+        // Cumulative usage grows on the second iteration — the emitted
+        // delta must be just that request's own tokens.
+        ctx.insert(agentsdk::Usage {
+            requests: 2,
+            prompt_tokens: 300,
+            completion_tokens: 80,
+            total_tokens: 380,
+            cached_tokens: 20,
+            reasoning_tokens: 0,
+        });
+        plugin.on_iteration_end(&mut ctx, 1, false).await;
+
+        match rx.try_recv().expect("second iteration must emit TurnUsage") {
+            AgentEvent::TurnUsage { usage, .. } => {
+                assert_eq!(usage.requests, 1);
+                assert_eq!(usage.prompt_tokens, 200);
+                assert_eq!(usage.completion_tokens, 30);
+                assert_eq!(usage.total_tokens, 230);
+                assert_eq!(usage.cached_tokens, 20);
+            }
+            other => panic!("expected TurnUsage, got {other:?}"),
+        }
+    }
+
     #[test]
     fn small_outputs_pass_through_unchanged() {
         assert_eq!(clamp_tool_output("hello"), None);
@@ -426,7 +516,7 @@ mod tests {
         let error = transport_error_from_truncated_stream().await?;
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut plugin = StreamPlugin::new(tx, RetryConfig::default());
+        let mut plugin = StreamPlugin::new(tx, RetryConfig::default(), "test-model".to_string());
 
         let mut world = agentsdk::hecs::World::new();
         let entity = world.spawn(());

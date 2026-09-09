@@ -174,9 +174,16 @@ impl fmt::Display for ToolCallResult<'_> {
                 } else {
                     stdout.as_str()
                 };
-                write!(f, "exit {exit_code}")?;
+                // Exit 0 is the expected case and adds no information —
+                // only a non-zero exit code is worth calling out.
+                if *exit_code != 0 {
+                    write!(f, "exit {exit_code}")?;
+                    if !output.is_empty() {
+                        write!(f, " │ ")?;
+                    }
+                }
                 if !output.is_empty() {
-                    write!(f, " │ {}", one_line(output, PREVIEW_LIMIT))?;
+                    write!(f, "{}", one_line(output, PREVIEW_LIMIT))?;
                 }
                 Ok(())
             }
@@ -242,8 +249,19 @@ mod tests {
         );
         assert_eq!(
             ToolCallResult::new("Bash", "plain text", false).to_string(),
-            "exit 0 │ plain text"
+            "plain text"
         );
+    }
+
+    #[test]
+    fn bash_exit_0_is_silent_noise() {
+        // A successful command is the expected case — "exit 0" says
+        // nothing a reader needs, so only its output (if any) shows.
+        let out = r#"{"cmd":"ls","code":0,"stdout":"a.rs","stderr":""}"#;
+        assert_eq!(ToolCallResult::new("Bash", out, false).to_string(), "a.rs");
+
+        let silent = r#"{"cmd":"true","code":0,"stdout":"","stderr":""}"#;
+        assert_eq!(ToolCallResult::new("Bash", silent, false).to_string(), "");
     }
 
     #[test]
