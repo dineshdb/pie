@@ -61,11 +61,13 @@ dependencies = [
 [[package]]
 name = "agentsdk"
 version = "0.11.0"
+source = "git+https://github.com/dineshdb/agentsdk?branch=main#882149cb79f479b87ee5cb50a01bde8bb697c539"
 dependencies = [
  "agentsdk-macros",
  "async-stream",
  "async-trait",
  "derive_builder",
+ "dirs 5.0.1",
  "futures",
  "glob",
  "hecs",
@@ -82,6 +84,7 @@ dependencies = [
 [[package]]
 name = "agentsdk-macros"
 version = "0.9.0"
+source = "git+https://github.com/dineshdb/agentsdk?branch=main#882149cb79f479b87ee5cb50a01bde8bb697c539"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -91,6 +94,7 @@ dependencies = [
 [[package]]
 name = "agentsdk-plugin-agentsmd"
 version = "0.1.0"
+source = "git+https://github.com/dineshdb/agentsdk?branch=main#882149cb79f479b87ee5cb50a01bde8bb697c539"
 dependencies = [
  "agentsdk",
  "async-trait",
@@ -103,6 +107,7 @@ dependencies = [
 [[package]]
 name = "agentsdk-plugin-fs"
 version = "0.1.0"
+source = "git+https://github.com/dineshdb/agentsdk?branch=main#882149cb79f479b87ee5cb50a01bde8bb697c539"
 dependencies = [
  "agentsdk",
  "async-trait",
@@ -118,6 +123,7 @@ dependencies = [
 [[package]]
 name = "agentsdk-plugin-jewels"
 version = "0.1.0"
+source = "git+https://github.com/dineshdb/agentsdk?branch=main#882149cb79f479b87ee5cb50a01bde8bb697c539"
 dependencies = [
  "agentsdk",
  "async-trait",
@@ -129,6 +135,7 @@ dependencies = [
 [[package]]
 name = "agentsdk-plugin-mcp"
 version = "0.1.0"
+source = "git+https://github.com/dineshdb/agentsdk?branch=main#882149cb79f479b87ee5cb50a01bde8bb697c539"
 dependencies = [
  "agentsdk",
  "async-trait",
@@ -143,6 +150,7 @@ dependencies = [
 [[package]]
 name = "agentsdk-plugin-shell"
 version = "0.1.0"
+source = "git+https://github.com/dineshdb/agentsdk?branch=main#882149cb79f479b87ee5cb50a01bde8bb697c539"
 dependencies = [
  "agentsdk",
  "async-trait",
@@ -154,6 +162,7 @@ dependencies = [
 [[package]]
 name = "agentsdk-plugin-skills"
 version = "0.1.0"
+source = "git+https://github.com/dineshdb/agentsdk?branch=main#882149cb79f479b87ee5cb50a01bde8bb697c539"
 dependencies = [
  "agentsdk",
  "async-trait",
@@ -1882,6 +1891,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
+name = "httpdate"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1904,6 +1919,7 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
@@ -2198,6 +2214,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 [[package]]
 name = "jewels"
 version = "0.1.0"
+source = "git+https://github.com/dineshdb/agentsdk?branch=main#882149cb79f479b87ee5cb50a01bde8bb697c539"
 dependencies = [
  "anyhow",
  "clap",
@@ -2632,6 +2649,7 @@ checksum = "6aa2c4e539b869820a2b82e1aef6ff40aa85e65decdd5185e83fb4b1249cd00f"
 [[package]]
 name = "o3gen"
 version = "0.8.0"
+source = "git+https://github.com/dineshdb/agentsdk?branch=main#882149cb79f479b87ee5cb50a01bde8bb697c539"
 dependencies = [
  "heck",
  "http",
@@ -2648,6 +2666,7 @@ dependencies = [
 [[package]]
 name = "o3gen-openai"
 version = "0.4.0"
+source = "git+https://github.com/dineshdb/agentsdk?branch=main#882149cb79f479b87ee5cb50a01bde8bb697c539"
 dependencies = [
  "derive_builder",
  "derive_more",
@@ -2780,14 +2799,17 @@ dependencies = [
  "anyhow",
  "arboard",
  "clap",
+ "dirs 6.0.0",
  "jewels",
  "p1e-sandbox",
+ "pie-a2a",
  "pie-acp",
  "pie-core",
  "pulldown-cmark",
  "redact",
  "serde_json",
  "tachyonfx",
+ "tempfile",
  "termion",
  "tokio",
  "tracing",
@@ -2795,6 +2817,7 @@ dependencies = [
  "tui-textarea-2",
  "tuirealm",
  "unicode-width",
+ "uuid",
 ]
 
 [[package]]
@@ -2852,6 +2875,30 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+
+[[package]]
+name = "pie-a2a"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "chrono",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "pie-core",
+ "redact",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
 
 [[package]]
 name = "pie-acp"

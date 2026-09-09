@@ -61,21 +61,54 @@ enum McpSelection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PluginSelection {
     fs: FsMode,
-    shell: bool,
-    websearch: bool,
-    skills: bool,
-    agentsmd: bool,
+    flags: PluginFlags,
     mcp: McpSelection,
+}
+
+/// Bitflags-style on/off set for the toggleable plugins (`fs` and `mcp`
+/// carry state beyond a bool, so they live on [`PluginSelection`] itself).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct PluginFlags(u8);
+
+impl PluginFlags {
+    const SHELL: Self = Self(1 << 0);
+    const WEBSEARCH: Self = Self(1 << 1);
+    const SKILLS: Self = Self(1 << 2);
+    const AGENTSMD: Self = Self(1 << 3);
+
+    const fn set(self, flag: Self, on: bool) -> Self {
+        if on {
+            Self(self.0 | flag.0)
+        } else {
+            Self(self.0 & !flag.0)
+        }
+    }
+
+    const fn get(self, flag: Self) -> bool {
+        self.0 & flag.0 != 0
+    }
+
+    /// Every toggleable plugin on.
+    const fn all() -> Self {
+        Self(Self::SHELL.0 | Self::WEBSEARCH.0 | Self::SKILLS.0 | Self::AGENTSMD.0)
+    }
+}
+
+impl std::ops::Index<PluginFlags> for PluginSelection {
+    type Output = bool;
+
+    fn index(&self, flag: PluginFlags) -> &bool {
+        // Read-only accessor over the bitfield: the returned `&bool` is
+        // from a const-evaluated match, not a field of self.
+        if self.flags.get(flag) { &true } else { &false }
+    }
 }
 
 impl Default for PluginSelection {
     fn default() -> Self {
         Self {
             fs: FsMode::Full,
-            shell: true,
-            websearch: true,
-            skills: true,
-            agentsmd: true,
+            flags: PluginFlags::all(),
             mcp: McpSelection::Available,
         }
     }
@@ -85,10 +118,7 @@ impl PluginSelection {
     fn none() -> Self {
         Self {
             fs: FsMode::Off,
-            shell: false,
-            websearch: false,
-            skills: false,
-            agentsmd: false,
+            flags: PluginFlags::default(),
             mcp: McpSelection::Off,
         }
     }
@@ -133,6 +163,11 @@ pub struct AgentConfig {
     /// out of the advertised list instead of failing when called.
     #[serde(default = "default_true")]
     pub mode_switching: bool,
+    /// The directory this run happens in: sandbox entries, fs/shell tool
+    /// paths, repo discovery, and the `<pwd>` prompt block all key off it.
+    /// `None` = the process working directory (the CLI frontends).
+    #[serde(default)]
+    pub cwd: Option<std::path::PathBuf>,
 }
 
 fn default_true() -> bool {
@@ -150,6 +185,7 @@ impl Default for AgentConfig {
             grants: HashSet::new(),
             mode: None,
             mode_switching: true,
+            cwd: None,
         }
     }
 }
@@ -226,6 +262,17 @@ impl PieAgent {
         self.registry.agents.iter().find(|a| a.name == name)
     }
 
+    /// The directory this run happens in. Everything cwd-shaped keys off
+    /// this — never `std::env::current_dir()` mid-run, so one process can
+    /// serve concurrent runs in different directories.
+    fn run_cwd(&self) -> Result<std::path::PathBuf> {
+        match &self.config.cwd {
+            Some(cwd) => Ok(cwd.clone()),
+            None => std::env::current_dir()
+                .map_err(|e| AppError::Config(format!("cannot determine working directory: {e}"))),
+        }
+    }
+
     /// Tool-loop iteration cap for this run. Only an agent's frontmatter
     /// `max_steps` sets one — every mode defaults to unbounded, the cancel
     /// paths being the real limit. The SDK caps a `None` at its own default,
@@ -257,10 +304,10 @@ impl PieAgent {
             match name.trim() {
                 "fs" => sel.fs = FsMode::Full,
                 "fs-readonly" => sel.fs = FsMode::Readonly,
-                "shell" => sel.shell = true,
-                "websearch" => sel.websearch = true,
-                "skills" => sel.skills = true,
-                "agentsmd" => sel.agentsmd = true,
+                "shell" => sel.flags = sel.flags.set(PluginFlags::SHELL, true),
+                "websearch" => sel.flags = sel.flags.set(PluginFlags::WEBSEARCH, true),
+                "skills" => sel.flags = sel.flags.set(PluginFlags::SKILLS, true),
+                "agentsmd" => sel.flags = sel.flags.set(PluginFlags::AGENTSMD, true),
                 "mcp" => mcp_all = true,
                 other => match other.strip_prefix("mcp:") {
                     Some(server) if !server.is_empty() => mcp_servers.push(server.to_string()),
@@ -340,11 +387,53 @@ impl PieAgent {
     /// ([`McpSelection::Available`]) is best-effort instead — the run never
     /// asked for a particular server, so one being down costs a warning,
     /// not the run.
+    /// Subagent runs (depth > 0) never connect a server marked
+    /// `main_agent_only`: the pie toolset spawning agents that could spawn
+    /// more through the same door recurses without end. Returns the
+    /// filtered server map and the selection to apply to it — `Only`
+    /// entries naming a filtered server are dropped with a warning
+    /// instead of failing the run.
+    fn filter_for_depth(
+        configured: &HashMap<String, McpServerConfig>,
+        selection: &McpSelection,
+        depth: u32,
+    ) -> (HashMap<String, McpServerConfig>, McpSelection) {
+        if depth == 0 {
+            return (configured.clone(), selection.clone());
+        }
+        let filtered: HashMap<String, McpServerConfig> = configured
+            .iter()
+            .filter(|(_, server)| !server.main_agent_only)
+            .map(|(name, server)| (name.clone(), server.clone()))
+            .collect();
+        let selection = match selection {
+            McpSelection::Only(names) => {
+                let (kept, dropped): (Vec<String>, Vec<String>) =
+                    names.iter().cloned().partition(|name| {
+                        !configured
+                            .get(name)
+                            .is_some_and(|server| server.main_agent_only)
+                    });
+                if !dropped.is_empty() {
+                    tracing::warn!(
+                        servers = ?dropped,
+                        "main-agent-only mcp servers are unavailable to nested runs"
+                    );
+                }
+                McpSelection::Only(kept)
+            }
+            other => other.clone(),
+        };
+        (filtered, selection)
+    }
+
     async fn build_mcp_plugin(
         configured: &HashMap<String, McpServerConfig>,
         selection: &McpSelection,
+        depth: u32,
     ) -> Result<McpPlugin> {
-        let servers = Self::select_mcp_servers(configured, selection)?;
+        let (configured, selection) = Self::filter_for_depth(configured, selection, depth);
+        let servers = Self::select_mcp_servers(&configured, &selection)?;
         let strict = !matches!(selection, McpSelection::Available);
 
         let mut plugin = McpPlugin::new();
@@ -368,25 +457,27 @@ impl PieAgent {
         Ok(plugin)
     }
 
-    fn prepare_system_prompt(&self) -> Result<String> {
+    fn prepare_system_prompt(&self, cwd: &std::path::Path) -> Result<String> {
         let sp = SystemPrompt::new(&self.registry.skills, &self.registry.agents)
-            .with_agent(self.config.agent_name.as_deref());
+            .with_agent(self.config.agent_name.as_deref())
+            .with_cwd(cwd.to_path_buf());
 
         Ok(sp.render()?)
     }
 
-    fn build_sdk_agent(&self) -> Result<agentsdk::AgentBuilder> {
+    fn build_sdk_agent(&self, cwd: &std::path::Path) -> Result<agentsdk::AgentBuilder> {
         let mut bin_dirs = vec![crate::config::pie_home().join("bin")];
-        if let Some(git_root) = crate::utils::git_repo_root() {
+        if let Some(git_root) = crate::utils::git_repo_root_from(cwd) {
             bin_dirs.push(std::path::PathBuf::from(git_root).join(".pie").join("bin"));
         }
 
         let sandbox =
-            p1e_sandbox::PlatformSandbox::new((*self.sandbox).clone()).with_bin_dirs(bin_dirs);
+            p1e_sandbox::PlatformSandbox::new((*self.sandbox).clone(), cwd).with_bin_dirs(bin_dirs);
 
         Ok(SdkAgent::builder()
             .client(self.model.clone())
             .component(Sandbox::new(sandbox))
+            .component(agentsdk::core::Cwd(cwd.to_path_buf()))
             .options(
                 agentsdk::AgentOptions::builder()
                     .max_iterations(self.step_limit())
@@ -466,6 +557,110 @@ impl PieAgent {
         })
     }
 
+    /// The skill search paths for a run: pie-home skills, the repo's
+    /// `.pie/skills`, plus every path the agent definition adds (relative
+    /// paths belong to the run's directory).
+    fn skill_paths(&self, cwd: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut paths = vec![crate::config::pie_home().join("skills")];
+        if let Some(root) = crate::utils::git_repo_root_from(cwd) {
+            paths.push(std::path::PathBuf::from(root).join(".pie").join("skills"));
+        }
+        if let Some(agent) = self.find_agent_definition() {
+            for p in &agent.skills_paths {
+                let expanded = p
+                    .strip_prefix("~/")
+                    .and_then(|rest| dirs::home_dir().map(|h| h.join(rest)))
+                    .unwrap_or_else(|| std::path::PathBuf::from(p));
+                // Relative skill paths belong to the run's directory.
+                let expanded = if expanded.is_absolute() {
+                    expanded
+                } else {
+                    cwd.join(expanded)
+                };
+                paths.push(expanded);
+            }
+        }
+        paths
+    }
+
+    /// Register the always-on and selection-gated plugins on the SDK
+    /// builder. Streaming/TUI-facing plugins (stream, history) and the
+    /// fs/shell persistence pair are applied by the caller.
+    async fn register_plugins(
+        &self,
+        mut builder: agentsdk::AgentBuilder,
+        selection: &PluginSelection,
+        cwd: &std::path::Path,
+    ) -> Result<agentsdk::AgentBuilder> {
+        let mode = self.config.mode.unwrap_or_default();
+        builder = builder
+            .plugin(JewelsPlugin::new())
+            .plugin({
+                let modes = ModePlugin::new(mode);
+                if self.config.mode_switching {
+                    modes
+                } else {
+                    modes.without_switching()
+                }
+            })
+            .plugin(crate::plugin::EmbeddedSystemPromptPlugin::new(
+                include_str!("../../../../.pie/SYSTEM.md"),
+            ))
+            .plugin(crate::plugin::PermissionsPlugin::new(
+                self.registry.clone(),
+                self.resolve_grants(),
+                self.permission_tx.clone(),
+            ));
+
+        if let Some((gate_tx, grants)) = &self.tool_gate {
+            builder = builder.plugin(ToolGatePlugin::new(gate_tx.clone(), Arc::clone(grants)));
+        }
+
+        if selection[PluginFlags::AGENTSMD] {
+            builder = builder.plugin(crate::plugin::build_agentsmd_plugin(cwd)?);
+        }
+        if selection[PluginFlags::SKILLS] {
+            builder = builder.plugin(
+                SkillsPlugin::builder()
+                    .search_paths(self.skill_paths(cwd))
+                    .build()
+                    .map_err(|e| AppError::Plugin(format!("failed to build skills plugin: {e}")))?,
+            );
+        }
+
+        if selection[PluginFlags::SHELL] {
+            builder = builder.plugin(ShellPlugin::new());
+        }
+        if selection[PluginFlags::WEBSEARCH] {
+            builder = builder.plugin(WebsearchPlugin::new());
+        }
+        if selection.mcp != McpSelection::Off {
+            let config = CONFIG
+                .get()
+                .ok_or_else(|| AppError::Config("global config not initialized".into()))?;
+            builder = builder.plugin(
+                Self::build_mcp_plugin(&config.mcp, &selection.mcp, self.config.depth).await?,
+            );
+        }
+
+        builder = builder
+            .plugin(HelperBinariesPlugin::new(cwd))
+            .plugin(UserCommandPlugin::new(
+                self.registry.clone(),
+                self.config.agent_name.clone(),
+            ))
+            .plugin(crate::plugin::DoomLoopPlugin::new());
+
+        if AgentConfig::is_debug() {
+            builder = builder.plugin(crate::plugin::DebugPlugin::new(
+                &self.session.id.to_string(),
+                "",
+            ));
+        }
+
+        Ok(builder)
+    }
+
     pub fn stream<'a>(
         &'a mut self,
         query_str: &'a str,
@@ -473,30 +668,15 @@ impl PieAgent {
     ) -> BoxFuture<'a, Result<RunOutcome>> {
         Box::pin(async move {
             let t_build = std::time::Instant::now();
-            let mut builder = self.build_sdk_agent()?;
+            let cwd = self.run_cwd()?;
+            let mut builder = self.build_sdk_agent(&cwd)?;
 
             let history_plugin = MemoryHistoryPlugin::new();
             for msg in self.session.to_messages() {
                 history_plugin.push(msg).await;
             }
 
-            let mut paths = vec![crate::config::pie_home().join("skills")];
-            if let Some(root) = crate::utils::git_repo_root() {
-                paths.push(std::path::PathBuf::from(root).join(".pie").join("skills"));
-            }
-            if let Some(agent) = self.find_agent_definition() {
-                for p in &agent.skills_paths {
-                    let expanded = p
-                        .strip_prefix("~/")
-                        .and_then(|rest| dirs::home_dir().map(|h| h.join(rest)))
-                        .unwrap_or_else(|| std::path::PathBuf::from(p));
-                    paths.push(expanded);
-                }
-            }
-
             let selection = Self::selected_plugins(self.find_agent_definition(), &self.sandbox)?;
-            let grants = self.resolve_grants();
-            let mode = self.config.mode.unwrap_or_default();
 
             if !self.config.mode_switching {
                 // The mode is fixed for this run, so what it forbids can never
@@ -504,6 +684,7 @@ impl PieAgent {
                 // round trip discovering they are refused. (With switching on,
                 // the model may switch and then legitimately use them, so the
                 // list has to stay complete and `ModePlugin` refuses per call.)
+                let mode = self.config.mode.unwrap_or_default();
                 builder = builder.tool_filter(move |name| !mode.is_tool_blocked(name));
             }
 
@@ -513,45 +694,8 @@ impl PieAgent {
             // it (the output clamp, debug result logging) would be preempted.
             let stream_plugin =
                 crate::agent::StreamPlugin::new(event_tx.clone(), self.config.retry.clone());
-            builder = builder
-                .plugin(stream_plugin)
-                .plugin(history_plugin.clone())
-                .plugin(JewelsPlugin::new())
-                .plugin({
-                    let modes = ModePlugin::new(mode);
-                    if self.config.mode_switching {
-                        modes
-                    } else {
-                        modes.without_switching()
-                    }
-                })
-                .plugin(crate::plugin::EmbeddedSystemPromptPlugin::new(
-                    include_str!("../../../../.pie/SYSTEM.md"),
-                ))
-                .plugin(crate::plugin::PermissionsPlugin::new(
-                    self.registry.clone(),
-                    grants,
-                    self.permission_tx.clone(),
-                ));
-
-            if let Some((gate_tx, grants)) = &self.tool_gate {
-                builder = builder.plugin(ToolGatePlugin::new(gate_tx.clone(), Arc::clone(grants)));
-            }
-
-            if selection.agentsmd {
-                builder = builder.plugin(crate::plugin::build_agentsmd_plugin()?);
-            }
-            if selection.skills {
-                builder = builder.plugin(
-                    SkillsPlugin::builder()
-                        .search_paths(paths)
-                        .build()
-                        .map_err(|e| {
-                            AppError::Plugin(format!("failed to build skills plugin: {e}"))
-                        })?,
-                );
-            }
-
+            builder = builder.plugin(stream_plugin).plugin(history_plugin.clone());
+            builder = self.register_plugins(builder, &selection, &cwd).await?;
             builder = match selection.fs {
                 FsMode::Full => builder.plugin(FileSystemPlugin::new()),
                 FsMode::Readonly => builder.plugin(ReadOnlyFileSystemPlugin::new()),
@@ -559,40 +703,11 @@ impl PieAgent {
             }
             .plugin(PersistencePlugin::new(self.session.clone()));
 
-            if selection.shell {
-                builder = builder.plugin(ShellPlugin::new());
-            }
-            if selection.websearch {
-                builder = builder.plugin(WebsearchPlugin::new());
-            }
-            if selection.mcp != McpSelection::Off {
-                let config = CONFIG
-                    .get()
-                    .ok_or_else(|| AppError::Config("global config not initialized".into()))?;
-                builder =
-                    builder.plugin(Self::build_mcp_plugin(&config.mcp, &selection.mcp).await?);
-            }
-
-            builder = builder
-                .plugin(HelperBinariesPlugin::new())
-                .plugin(UserCommandPlugin::new(
-                    self.registry.clone(),
-                    self.config.agent_name.clone(),
-                ))
-                .plugin(crate::plugin::DoomLoopPlugin::new());
-
-            if AgentConfig::is_debug() {
-                builder = builder.plugin(crate::plugin::DebugPlugin::new(
-                    &self.session.id.to_string(),
-                    "",
-                ));
-            }
-
             let mut agent = builder
                 .build()
                 .map_err(|e| AppError::Config(e.to_string()))?;
             tracing::debug!(
-                ms = t_build.elapsed().as_millis() as u64,
+                ms = crate::utils::ms_of(t_build.elapsed()),
                 "timing: agent built"
             );
 
@@ -605,9 +720,9 @@ impl PieAgent {
             }
 
             let t_prompt = std::time::Instant::now();
-            let system = self.prepare_system_prompt()?;
+            let system = self.prepare_system_prompt(&cwd)?;
             tracing::debug!(
-                ms = t_prompt.elapsed().as_millis() as u64,
+                ms = crate::utils::ms_of(t_prompt.elapsed()),
                 "timing: system prompt prepared"
             );
 
@@ -629,7 +744,7 @@ impl PieAgent {
             let t_run = std::time::Instant::now();
             let output = agent.run().await?;
             tracing::debug!(
-                ms = t_run.elapsed().as_millis() as u64,
+                ms = crate::utils::ms_of(t_run.elapsed()),
                 "timing: agent run done"
             );
 
@@ -780,10 +895,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(sel.fs, FsMode::Readonly);
-        assert!(sel.shell);
-        assert!(!sel.websearch);
-        assert!(!sel.skills);
-        assert!(!sel.agentsmd);
+        assert!(sel[PluginFlags::SHELL]);
+        assert!(!sel[PluginFlags::WEBSEARCH]);
+        assert!(!sel[PluginFlags::SKILLS]);
+        assert!(!sel[PluginFlags::AGENTSMD]);
 
         // empty list = no tools at all
         let sel =
@@ -873,10 +988,58 @@ mod tests {
             url: format!("https://{host}/mcp").parse().unwrap(),
             api_key: None,
             headers: HashMap::new(),
+            main_agent_only: false,
         };
         HashMap::from([
             ("b".to_string(), server("b")),
             ("a".to_string(), server("a")),
+        ])
+    }
+
+    #[test]
+    fn depth_zero_keeps_main_agent_only_servers() {
+        let configured = main_agent_only_config();
+        let (filtered, _) = PieAgent::filter_for_depth(&configured, &McpSelection::All, 0);
+        assert_eq!(filtered.len(), 2, "top-level runs see everything");
+    }
+
+    #[test]
+    fn nested_runs_drop_main_agent_only_servers() {
+        let configured = main_agent_only_config();
+        let (filtered, _) = PieAgent::filter_for_depth(&configured, &McpSelection::All, 1);
+        assert_eq!(filtered.keys().cloned().collect::<Vec<_>>(), vec!["b"]);
+
+        let (filtered, _) = PieAgent::filter_for_depth(&configured, &McpSelection::Available, 1);
+        assert_eq!(filtered.keys().cloned().collect::<Vec<_>>(), vec!["b"]);
+    }
+
+    #[test]
+    fn nested_runs_only_selection_naming_filtered_server_is_warned_and_dropped() {
+        let configured = main_agent_only_config();
+        let (filtered, selection) = PieAgent::filter_for_depth(
+            &configured,
+            &McpSelection::Only(vec!["self".into(), "b".into()]),
+            1,
+        );
+        assert_eq!(filtered.keys().cloned().collect::<Vec<_>>(), vec!["b"]);
+        assert_eq!(selection, McpSelection::Only(vec!["b".into()]));
+
+        // Top-level explicit selection is untouched.
+        let (_, selection) =
+            PieAgent::filter_for_depth(&configured, &McpSelection::Only(vec!["self".into()]), 0);
+        assert_eq!(selection, McpSelection::Only(vec!["self".into()]));
+    }
+
+    fn main_agent_only_config() -> HashMap<String, McpServerConfig> {
+        let server = |host: &str, main_agent_only: bool| McpServerConfig {
+            url: format!("https://{host}/mcp").parse().unwrap(),
+            api_key: None,
+            headers: HashMap::new(),
+            main_agent_only,
+        };
+        HashMap::from([
+            ("self".to_string(), server("self", true)),
+            ("b".to_string(), server("b", false)),
         ])
     }
 
@@ -931,6 +1094,7 @@ mod tests {
             url: "http://127.0.0.1:1/mcp".parse().unwrap(),
             api_key: None,
             headers: HashMap::new(),
+            main_agent_only: false,
         };
         HashMap::from([("dead".to_string(), server)])
     }
@@ -946,7 +1110,11 @@ mod tests {
     #[test]
     fn explicit_mcp_connection_failure_fails_the_run() {
         let configured = dead_mcp_config();
-        let result = block_on(PieAgent::build_mcp_plugin(&configured, &McpSelection::All));
+        let result = block_on(PieAgent::build_mcp_plugin(
+            &configured,
+            &McpSelection::All,
+            0,
+        ));
         let Err(err) = result else {
             panic!("a dead server must fail an explicit request");
         };
@@ -965,6 +1133,7 @@ mod tests {
         let plugin = block_on(PieAgent::build_mcp_plugin(
             &configured,
             &McpSelection::Available,
+            0,
         ))
         .unwrap();
         assert!(

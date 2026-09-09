@@ -8,24 +8,27 @@ license = "MIT"
 repository = "https://github.com/dineshdb/pie"
 
 [workspace]
-members = [".", "crates/p1e-sandbox", "crates/pie-core", "crates/pie-acp"]
+members = [".", "crates/p1e-sandbox", "crates/pie-core", "crates/pie-acp", "crates/pie-a2a"]
 
 [workspace.dependencies]
 dirs = "6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
-jewels = { path = "../agentsdk/crates/jewels" }
+jewels = { git = "https://github.com/dineshdb/agentsdk", branch = "main" }
 
 [dependencies]
 pie-core = { path = "crates/pie-core", version = "0.3.0" }
 pie-acp = { path = "crates/pie-acp", version = "0.3.0" }
-agentsdk = { path = "../agentsdk" }
+pie-a2a = { path = "crates/pie-a2a", version = "0.1.0" }
+agentsdk = { git = "https://github.com/dineshdb/agentsdk", branch = "main" }
 anyhow = "1"
 arboard = "3"
 clap = { version = "4", features = ["derive", "env"] }
 p1e-sandbox = { path = "crates/p1e-sandbox", version = "0.2.0" }
 pulldown-cmark = "0.13"
+uuid = { version = "1", features = ["v4"] }
+dirs.workspace = true
 tachyonfx = "0.25"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "io-util", "io-std", "sync"] }
 tracing.workspace = true
@@ -42,6 +45,7 @@ jewels.workspace = true
 workspace = true
 
 [dev-dependencies]
+tempfile = "3"
 
 [profile.release]
 lto = true

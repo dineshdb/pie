@@ -105,8 +105,8 @@ question about the project:
 <env>
 os: {{ extra_context.os }}
 arch: {{ extra_context.arch }}
-model: {{ extra_context.model_name }}
 date: {{ extra_context.date }}
+pwd: {{ extra_context.pwd }}
 repo: {{ extra_context.repo_root }}
 </env>
 

@@ -6,15 +6,14 @@
 //! returns — a multi-minute LLM turn must not block `session/cancel` or the
 //! routing of `session/request_permission` responses.
 //!
-//! One pie process serves many ACP sessions, but the pie engine resolves
-//! relative paths and sandbox entries against the *process* working
-//! directory. A workspace lock therefore serializes session lifecycle ops
-//! and prompt turns, and each one `chdir`s to its session's `cwd` first.
-//! The `cwd` (and any `additionalDirectories`) is also granted read+write
-//! in the session's sandbox copy — an ACP client explicitly points the
-//! agent at that workspace, which is exactly the trust pie's CLI gets from
-//! being started inside a project. `deny_read`/`deny_write` still apply on
-//! top, so `~/.ssh` and `.env` stay off limits even under a broad root.
+//! Runs carry their working directory in `AgentConfig.cwd`; the engine never
+//! touches the process cwd, so sessions in different workspaces run
+//! concurrently in one process. The `cwd` (and any `additionalDirectories`)
+//! is granted read+write in the session's sandbox copy — an ACP client
+//! explicitly points the agent at that workspace, which is exactly the
+//! trust pie's CLI gets from being started inside a project.
+//! `deny_read`/`deny_write` still apply on top, so `~/.ssh` and `.env` stay
+//! off limits even under a broad root.
 //!
 //! Known v1 gaps (deliberate):
 //! - `session/set_mode` applies from the next prompt, and the model can
@@ -40,13 +39,14 @@ use pie_core::db::DbPool;
 use pie_core::p1e_sandbox::SandboxConfig;
 use pie_core::plugin::{AgentMode, GateAsk, ToolGrants};
 use pie_core::registry::Registry;
+use pie_core::sandbox_grant::granted_sandbox;
 use pie_core::session::{Role, Session, SessionId as PieSessionId};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex as StdMutex, PoisonError};
-use tokio::sync::{Mutex as AsyncMutex, mpsc, watch};
+use tokio::sync::{mpsc, watch};
 
 /// Everything a connection needs from the pie process.
 pub struct AppContext {
@@ -61,8 +61,6 @@ pub struct AppContext {
 pub struct Shared {
     pub(crate) ctx: AppContext,
     sessions: StdMutex<HashMap<String, AcpSession>>,
-    /// Held for the duration of any chdir-affected operation.
-    pub(crate) workspace_lock: AsyncMutex<()>,
 }
 
 /// Per-ACP-session state.
@@ -83,7 +81,6 @@ impl Shared {
         Self {
             ctx,
             sessions: StdMutex::new(HashMap::new()),
-            workspace_lock: AsyncMutex::new(()),
         }
     }
 
@@ -116,23 +113,6 @@ fn conflict_error(message: impl Into<String>) -> Error {
 }
 
 // ── session lifecycle ──────────────────────────────────────────────
-
-/// Canonicalize the session root and grant it read+write in a per-session
-/// sandbox copy. This is where ACP clients get their workspace access: the
-/// CLI's `allow_write = ["."]` only ever covers the directory pie was
-/// *started* in, while an ACP client points pie at any project via `cwd`.
-fn granted_sandbox(base: &SandboxConfig, roots: &[PathBuf]) -> SandboxConfig {
-    let mut sandbox = base.clone();
-    for root in roots {
-        let as_str = root.to_string_lossy().to_string();
-        for list in [&mut sandbox.allow_read, &mut sandbox.allow_write] {
-            if !list.contains(&as_str) {
-                list.push(as_str.clone());
-            }
-        }
-    }
-    sandbox
-}
 
 fn canonical_roots(
     cwd: &PathBuf,
@@ -195,14 +175,9 @@ pub(crate) async fn new_session(
     let mut roots = vec![cwd.clone()];
     roots.extend(extra);
 
-    let session = {
-        let _workspace = shared.workspace_lock.lock().await;
-        std::env::set_current_dir(&cwd)
-            .map_err(|e| internal_error(format!("cannot chdir to session workspace: {e}")))?;
-        Session::create(shared.ctx.pool.clone())
-            .await
-            .map_err(|e| internal_error(e.to_string()))?
-    };
+    let session = Session::create(shared.ctx.pool.clone(), &cwd)
+        .await
+        .map_err(|e| internal_error(e.to_string()))?;
 
     let session_id = session.id.to_string();
     register_session(shared, &session_id, session, cwd, &roots);
@@ -249,11 +224,6 @@ pub(crate) async fn load_session(
         send_notification(cx, &req.session_id, update);
     }
 
-    {
-        let _workspace = shared.workspace_lock.lock().await;
-        std::env::set_current_dir(&cwd)
-            .map_err(|e| internal_error(format!("cannot chdir to session workspace: {e}")))?;
-    }
     let session_id = req.session_id.to_string();
     register_session(shared, &session_id, session, cwd, &roots);
     tracing::info!(session = %session_id, cwd = %req.cwd.display(), "acp: session loaded");
@@ -435,11 +405,10 @@ pub(crate) fn start_prompt_turn(
     Ok(())
 }
 
-/// One full agent run. Holds the workspace lock (process cwd is ours for
-/// the duration), forwards engine events as `session/update` notifications,
-/// and races the engine future against the cancel signal via the SDK's
-/// request-cancellation marker — dropping it aborts the in-flight LLM
-/// request.
+/// One full agent run. Forwards engine events as `session/update`
+/// notifications, and races the engine future against the cancel signal via
+/// the SDK's request-cancellation marker — dropping it aborts the in-flight
+/// LLM request. The run carries its own cwd; the process cwd is never ours.
 #[allow(clippy::too_many_arguments)]
 async fn run_turn(
     shared: &Shared,
@@ -454,10 +423,6 @@ async fn run_turn(
     cancel_rx: &mut watch::Receiver<()>,
     cancellation: &acp::RequestCancellation,
 ) -> Result<PromptResponse, Error> {
-    let _workspace = shared.workspace_lock.lock().await;
-    std::env::set_current_dir(&cwd)
-        .map_err(|e| internal_error(format!("cannot chdir to session workspace: {e}")))?;
-
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<AgentEvent>();
     let (ask_tx, mut ask_rx) = mpsc::unbounded_channel::<GateAsk>();
     let approver_grants = Arc::clone(&grants);
@@ -483,6 +448,7 @@ async fn run_turn(
         // The client owns the mode selector, so the model gets no
         // switch_mode tool and never sees what this mode forbids.
         mode_switching: false,
+        cwd: Some(cwd),
         ..AgentConfig::default()
     };
     let model = shared.ctx.provider.build_client();
@@ -682,17 +648,6 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, BufReader, DuplexStream, duplex};
     use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-    /// Session lifecycle ops chdir the process; tests serialize on this.
-    static SERVER_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-    /// Restore the process cwd when a test that chdir'd ends.
-    struct CwdGuard(PathBuf);
-    impl Drop for CwdGuard {
-        fn drop(&mut self) {
-            let _ = std::env::set_current_dir(&self.0);
-        }
-    }
-
     fn test_provider() -> ResolvedProvider {
         ResolvedProvider {
             name: "test".into(),
@@ -805,9 +760,6 @@ mod tests {
 
     #[tokio::test]
     async fn session_new_reports_modes_and_bad_cwd_fails() {
-        let _lock = SERVER_LOCK.lock().await;
-        let original = std::env::current_dir().unwrap();
-        let _guard = CwdGuard(original.clone());
         let tmp = tempfile::tempdir().unwrap();
         let mut client = spawn_server(test_ctx().await);
 
@@ -835,28 +787,22 @@ mod tests {
         let modes = &response["result"]["modes"];
         assert_eq!(modes["currentModeId"], "build");
         assert_eq!(modes["availableModes"].as_array().unwrap().len(), 6);
-        // macOS canonicalizes /var → /private/var; compare canonically.
-        let canonical_cwd = std::fs::canonicalize(tmp.path()).unwrap();
-        assert_eq!(std::env::current_dir().unwrap(), canonical_cwd);
+        // The session's cwd is metadata now: the process cwd is never
+        // touched, so sessions in different workspaces can run concurrently.
+        assert_ne!(std::env::current_dir().unwrap(), tmp.path());
     }
 
     #[tokio::test]
     async fn session_load_replays_history_and_set_mode_notifies() {
-        let _lock = SERVER_LOCK.lock().await;
-        let original = std::env::current_dir().unwrap();
-        let _guard = CwdGuard(original.clone());
         let tmp = tempfile::tempdir().unwrap();
         let cwd = tmp.path().to_string_lossy().to_string();
         let ctx = test_ctx().await;
 
         // Seed a session directly in the store with history to replay.
-        std::env::set_current_dir(tmp.path()).unwrap();
-        let mut session = Session::create(ctx.pool.clone()).await.unwrap();
+        let mut session = Session::create(ctx.pool.clone(), tmp.path()).await.unwrap();
         session.add_user("what is 2+2").await.unwrap();
         session.add_assistant("4").await.unwrap();
-        std::env::set_current_dir(&original).unwrap();
         let session_id = session.id.to_string();
-        let _ = &original;
 
         let mut client = spawn_server(ctx);
         send(
@@ -948,9 +894,6 @@ mod tests {
     /// required" and hide the real cause behind a login prompt.
     #[tokio::test]
     async fn failed_turn_is_not_mislabeled_as_auth_required() {
-        let _lock = SERVER_LOCK.lock().await;
-        let original = std::env::current_dir().unwrap();
-        let _guard = CwdGuard(original.clone());
         let tmp = tempfile::tempdir().unwrap();
 
         // The test provider points at a dead port; zero the retries so the
@@ -993,35 +936,5 @@ mod tests {
         let code = response["error"]["code"].as_i64().expect("error frame");
         assert_ne!(code, -32000, "auth-reserved code leaked: {response}");
         assert_eq!(code, -32603, "{response}");
-    }
-
-    #[test]
-    fn granted_sandbox_adds_roots_to_read_and_write_once() {
-        let base = SandboxConfig {
-            allow_write: vec![".".into(), "/tmp".into()],
-            allow_read: vec!["/".into()],
-            ..SandboxConfig::default()
-        };
-        let roots = vec![PathBuf::from("/Users/me/proj")];
-
-        let granted = granted_sandbox(&base, &roots);
-        assert!(granted.allow_write.contains(&"/Users/me/proj".to_string()));
-        assert!(granted.allow_read.contains(&"/Users/me/proj".to_string()));
-        assert!(granted.allow_write.contains(&".".to_string()));
-
-        // Re-granting the same root must not duplicate entries (the config
-        // validator warns on duplicates).
-        let again = granted_sandbox(&granted, &roots);
-        assert_eq!(
-            again
-                .allow_write
-                .iter()
-                .filter(|p| **p == "/Users/me/proj")
-                .count(),
-            1
-        );
-
-        // deny_read survives the grant: ~/.ssh stays protected.
-        assert!(granted.deny_read.contains(&"~/.ssh".to_string()));
     }
 }

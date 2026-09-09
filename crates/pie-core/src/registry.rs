@@ -1,11 +1,11 @@
-use crate::agent::{Agent, get_all_agents};
+use crate::agent::{Agent, get_all_agents_from};
 use crate::cmd::BuiltinCommand;
 use crate::config::{EMBEDDED_PIE_DIR, pie_home};
 use agentsdk_plugin_skills::parse_skill;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock, PoisonError};
 use strum::IntoEnumIterator;
 
 pub use agentsdk_plugin_skills::{Reference, Skill};
@@ -33,10 +33,51 @@ pub struct Registry {
 
 static REGISTRY: OnceLock<Arc<Registry>> = OnceLock::new();
 
+/// Registries keyed by canonical workspace root. The CLI loads one registry
+/// for the process cwd ([`Registry::load`]); servers serve turns in many
+/// workspaces, so project-level `.pie/{agents,skills}` discovery is per root
+/// and cached here.
+#[derive(Default)]
+pub struct RegistryCache(StdMutex<HashMap<PathBuf, Arc<Registry>>>);
+
+impl std::fmt::Debug for RegistryCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegistryCache").finish_non_exhaustive()
+    }
+}
+
+impl RegistryCache {
+    /// The registry for a workspace, loaded on first use and cached by
+    /// canonical path.
+    pub fn get(&self, cwd: &std::path::Path) -> Arc<Registry> {
+        let key = fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+        let mut map = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(registry) = map.get(&key) {
+            return registry.clone();
+        }
+        let registry = Registry::load_from(&key);
+        map.insert(key, registry.clone());
+        registry
+    }
+}
+
 impl Registry {
+    /// Load the registry for the process working directory and memoize it
+    /// (the CLI frontends). Servers serving multiple directories use
+    /// [`Registry::load_from`] with their own cache instead.
     pub fn load() -> Arc<Self> {
-        let agents = get_all_agents();
-        let skills = get_all_skills();
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let registry = Self::load_from(&cwd);
+        let _ = REGISTRY.set(registry.clone());
+        registry
+    }
+
+    /// Load the registry for a run rooted at `cwd`: project-level
+    /// `.pie/{agents,skills}` discovery walks up from `cwd`. Never
+    /// memoized — the caller decides the cache key.
+    pub fn load_from(cwd: &std::path::Path) -> Arc<Self> {
+        let agents = get_all_agents_from(cwd);
+        let skills = get_all_skills_from(cwd);
 
         let mut completions = Vec::new();
 
@@ -68,14 +109,11 @@ impl Registry {
 
         completions.sort_by_key(|c| c.kind);
 
-        let registry = Arc::new(Self {
+        Arc::new(Self {
             agents,
             skills,
             completions,
-        });
-
-        let _ = REGISTRY.set(registry.clone());
-        registry
+        })
     }
 }
 
@@ -98,8 +136,8 @@ pub fn resolve_skills<'a>(all: &'a [Skill], names: &[String]) -> Vec<&'a Skill> 
     resolved
 }
 
-fn skills_root_local() -> Option<PathBuf> {
-    crate::utils::git_repo_root()
+fn skills_root_local_from(cwd: &std::path::Path) -> Option<PathBuf> {
+    crate::utils::git_repo_root_from(cwd)
         .map(|root| PathBuf::from(root).join(".pie").join("skills"))
         .filter(|p| p.is_dir())
 }
@@ -124,10 +162,14 @@ fn load_embedded_skills() -> Vec<Skill> {
 }
 
 pub fn get_all_skills() -> Vec<Skill> {
+    get_all_skills_from(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
+pub fn get_all_skills_from(cwd: &std::path::Path) -> Vec<Skill> {
     crate::utils::load_resources(
         load_embedded_skills(),
         &pie_home().join("skills"),
-        skills_root_local(),
+        skills_root_local_from(cwd),
         load_skills_from_dir,
         |s| &s.name,
     )

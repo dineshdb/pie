@@ -147,3 +147,19 @@ denied_domains = []
 input = 0.6
 cached_input = 0.1
 output = 2.2
+
+# The `pie server` daemon: pie exposed to other agents over the A2A
+# protocol (JSON-RPC over streamable HTTP). Discovery is the Agent Card at
+# `http://<bind>/.well-known/agent-card.json`; RPC lives at `/a2a`. All
+# values are optional.
+[server]
+# Address to bind. `pie server --bind <addr>` overrides this.
+bind = "127.0.0.1:8629"
+# Hostnames remote clients will use. The transport rejects any
+# non-loopback Host header that is not listed here (DNS-rebinding
+# guard), so remote access fails with 403 until these are set.
+# allowed_hosts = ["citadel.lvh.me"]
+# Bearer token clients must send (`Authorization: Bearer <value>`). A value
+# matching a `[secrets]` key is resolved from there. Required for any
+# non-loopback bind; the server refuses to start without one.
+# api_key = "pie-server-key"

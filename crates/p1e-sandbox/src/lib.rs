@@ -176,8 +176,9 @@ pub struct SecurityReport {
 }
 
 impl SandboxConfig {
-    /// Comprehensive security check for a command string.
-    pub fn check_command_safety(&self, cmd: &str) -> SecurityReport {
+    /// Comprehensive security check for a command string. Relative paths in
+    /// the command resolve against `base` (the run's working directory).
+    pub fn check_command_safety(&self, cmd: &str, base: &Path) -> SecurityReport {
         let mode = if self.allowed_bins.is_empty() {
             SecurityMode::Guard
         } else {
@@ -240,7 +241,7 @@ impl SandboxConfig {
             }
 
             if word.contains('/') || word.contains('.') {
-                match self.is_within_allowed_paths(&word) {
+                match self.is_within_allowed_paths(&word, base) {
                     Ok(allowed) => {
                         if !allowed {
                             report.is_safe = false;
@@ -260,18 +261,20 @@ impl SandboxConfig {
     }
 
     /// Build a sandboxed shell command with standard agent environment defaults.
+    /// The command runs in `base` (the run's working directory).
     /// Returns the command.
     pub fn build_safe_command(
         &self,
         cmd: &str,
         bin_dirs: &[std::path::PathBuf],
+        base: &Path,
     ) -> Result<Command, String> {
-        let report = self.check_command_safety(cmd);
+        let report = self.check_command_safety(cmd, base);
         if !report.is_safe {
             return Err(report.errors.join("; "));
         }
 
-        let mut c = build_shell_command(cmd, self);
+        let mut c = build_shell_command(cmd, self, base);
         c.env("GIT_TERMINAL_PROMPT", "0");
         c.env("PAGER", "cat");
 
@@ -346,15 +349,20 @@ impl SandboxConfig {
     }
 
     /// Check if a candidate path falls within any of the allowed read or write paths.
-    pub fn is_within_allowed_paths(&self, candidate: &str) -> std::io::Result<bool> {
+    ///
+    /// `base` is the working directory the check applies to: relative
+    /// candidates and relative allow/deny entries resolve against it, so a
+    /// run's sandbox is fully determined by `(config, base)` and never by
+    /// the process cwd.
+    pub fn is_within_allowed_paths(&self, candidate: &str, base: &Path) -> std::io::Result<bool> {
         let candidate_path = Path::new(candidate);
 
-        // If it's just a filename without path components, it's relative to CWD, which is usually allowed.
+        // If it's just a filename without path components, it's relative to the
+        // working directory, which is usually allowed.
         if !candidate.contains('/') && !candidate.contains("..") {
             return Ok(true);
         }
 
-        let base = std::env::current_dir()?;
         let full_path = if candidate_path.is_absolute() {
             candidate_path.to_path_buf()
         } else {
@@ -387,8 +395,7 @@ impl SandboxConfig {
         allowed_paths.extend(self.allow_write.clone());
 
         for allowed in allowed_paths {
-            let expanded = expand_tilde(&allowed);
-            let Ok(allowed_canonical) = std::fs::canonicalize(expanded) else {
+            let Ok(allowed_canonical) = std::fs::canonicalize(resolve_entry(&allowed, base)) else {
                 continue;
             };
             if resolved.starts_with(&allowed_canonical) {
@@ -411,7 +418,8 @@ fn find_duplicates(list: &[String], name: &str, warnings: &mut Vec<String>) {
 
 /// Build a sandboxed command using native OS sandboxing.
 /// Falls back to unsandboxed command if the sandbox tool is unavailable.
-pub fn build_command(program: &str, args: &[String], cfg: &SandboxConfig) -> Command {
+/// The child runs in `base` (the run's working directory).
+pub fn build_command(program: &str, args: &[String], cfg: &SandboxConfig, base: &Path) -> Command {
     let should_sandbox = !cfg.permissions.iter().any(|p| {
         if let Permission::Unsandboxed(b) = p {
             b == program || program.ends_with(&format!("/{b}"))
@@ -423,23 +431,26 @@ pub fn build_command(program: &str, args: &[String], cfg: &SandboxConfig) -> Com
     if !should_sandbox {
         let mut c = Command::new(program);
         c.args(args);
+        c.current_dir(base);
         return c;
     }
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     let available = *AVAILABLE.get_or_init(is_sandbox_tool_available);
 
     if available {
-        build_sandboxed(program, args, cfg)
+        build_sandboxed(program, args, cfg, base)
     } else {
         tracing::warn!("sandbox tool not found, running unsandboxed");
         let mut c = Command::new(program);
         c.args(args);
+        c.current_dir(base);
         c
     }
 }
 
 /// Build a sandboxed shell command (via `bash -c`).
-pub fn build_shell_command(cmd: &str, cfg: &SandboxConfig) -> Command {
+/// The child runs in `base` (the run's working directory).
+pub fn build_shell_command(cmd: &str, cfg: &SandboxConfig, base: &Path) -> Command {
     let mut should_sandbox_bash = true;
     if let Ok(words) = shell_words::split(cmd)
         && let Some(first) = words.first()
@@ -457,10 +468,11 @@ pub fn build_shell_command(cmd: &str, cfg: &SandboxConfig) -> Command {
     if !should_sandbox_bash {
         let mut c = Command::new("bash");
         c.args(["-c", cmd]);
+        c.current_dir(base);
         return c;
     }
 
-    build_command("bash", &["-c".into(), cmd.into()], cfg)
+    build_command("bash", &["-c".into(), cmd.into()], cfg, base)
 }
 
 /// Expand `~` to home directory.
@@ -478,15 +490,14 @@ fn expand_tilde(path: &str) -> String {
     }
 }
 
-/// Resolve a path to absolute (expand ~, prepend cwd if relative).
-fn resolve_path(path: &str) -> String {
-    let expanded = expand_tilde(path);
-    if Path::new(&expanded).is_absolute() {
-        expanded
+/// Resolve a config entry to absolute: expand `~`, join `base` if relative.
+fn resolve_entry(entry: &str, base: &Path) -> std::path::PathBuf {
+    let expanded = expand_tilde(entry);
+    let path = Path::new(&expanded);
+    if path.is_absolute() {
+        path.to_path_buf()
     } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(&expanded).to_string_lossy().to_string())
-            .unwrap_or(expanded)
+        base.join(path)
     }
 }
 
@@ -505,15 +516,21 @@ pub(crate) mod platform {
             .is_ok_and(|o| o.status.success())
     }
 
-    pub(crate) fn build(program: &str, args: &[String], cfg: &SandboxConfig) -> Command {
-        let profile = generate_profile(cfg);
+    pub(crate) fn build(
+        program: &str,
+        args: &[String],
+        cfg: &SandboxConfig,
+        base: &Path,
+    ) -> Command {
+        let profile = generate_profile(cfg, base);
         tracing::trace!(%program, ?args, BINARY);
         let mut c = Command::new(BINARY);
         c.arg("-p").arg(&profile).arg(program).args(args);
+        c.current_dir(base);
         c
     }
 
-    pub(crate) fn generate_profile(cfg: &SandboxConfig) -> String {
+    pub(crate) fn generate_profile(cfg: &SandboxConfig, base: &Path) -> String {
         let mut lines = vec![
             "(version 1)".to_string(),
             "(allow default)".to_string(),
@@ -529,12 +546,12 @@ pub(crate) mod platform {
         }
 
         for path in &cfg.deny_read {
-            let resolved = resolve_path(path);
+            let resolved = resolve_entry(path, base).to_string_lossy().to_string();
             lines.push(format!("(deny file-read* (subpath \"{resolved}\"))"));
         }
 
         for path in &cfg.allow_read {
-            let resolved = resolve_path(path);
+            let resolved = resolve_entry(path, base).to_string_lossy().to_string();
             lines.push(format!("(allow file-read* (subpath \"{resolved}\"))"));
         }
 
@@ -558,7 +575,7 @@ pub(crate) mod platform {
             }
 
             for path in &cfg.allow_write {
-                let resolved = resolve_path(path);
+                let resolved = resolve_entry(path, base).to_string_lossy().to_string();
                 lines.push(format!("(allow file-write* (subpath \"{resolved}\"))"));
             }
         }
@@ -593,15 +610,20 @@ pub(crate) mod platform {
             .is_ok_and(|o| o.status.success())
     }
 
-    pub(crate) fn build(program: &str, args: &[String], cfg: &SandboxConfig) -> Command {
+    pub(crate) fn build(
+        program: &str,
+        args: &[String],
+        cfg: &SandboxConfig,
+        base: &Path,
+    ) -> Command {
         let mut c = Command::new(BINARY);
         c.arg("--die-with-parent");
 
         for path in &cfg.allow_read {
-            let resolved = resolve_path(path);
-            if resolved == "/dev" {
+            let resolved = resolve_entry(path, base);
+            if resolved == Path::new("/dev") {
                 c.arg("--dev").arg("/dev");
-            } else if resolved == "/proc" {
+            } else if resolved == Path::new("/proc") {
                 c.arg("--proc").arg("/proc");
             } else {
                 c.arg("--ro-bind").arg(&resolved).arg(&resolved);
@@ -609,12 +631,12 @@ pub(crate) mod platform {
         }
 
         for path in &cfg.deny_read {
-            let resolved = resolve_path(path);
+            let resolved = resolve_entry(path, base);
             c.arg("--tmpfs").arg(&resolved);
         }
 
         for path in &cfg.allow_write {
-            let resolved = resolve_path(path);
+            let resolved = resolve_entry(path, base);
             c.arg("--bind").arg(&resolved).arg(&resolved);
         }
 
@@ -637,6 +659,7 @@ pub(crate) mod platform {
         }
 
         c.arg(program).args(args);
+        c.current_dir(base);
         tracing::debug!(%program, ?args, "bwrap:");
         c
     }
@@ -654,20 +677,25 @@ fn is_sandbox_tool_available() -> bool {
     plat::is_available()
 }
 
-fn build_sandboxed(program: &str, args: &[String], cfg: &SandboxConfig) -> Command {
-    plat::build(program, args, cfg)
+fn build_sandboxed(program: &str, args: &[String], cfg: &SandboxConfig, base: &Path) -> Command {
+    plat::build(program, args, cfg, base)
 }
 
 pub struct PlatformSandbox {
     config: SandboxConfig,
     bin_dirs: Vec<std::path::PathBuf>,
+    /// The working directory this sandbox applies to: relative config
+    /// entries, relative tool paths, and spawned commands all resolve
+    /// against it instead of the process cwd.
+    cwd: std::path::PathBuf,
 }
 
 impl PlatformSandbox {
-    pub fn new(config: SandboxConfig) -> Self {
+    pub fn new(config: SandboxConfig, cwd: impl Into<std::path::PathBuf>) -> Self {
         Self {
             config,
             bin_dirs: Vec::new(),
+            cwd: cwd.into(),
         }
     }
 
@@ -681,7 +709,7 @@ impl PlatformSandbox {
         let path_str = path.to_string_lossy();
         if self
             .config
-            .is_within_allowed_paths(&path_str)
+            .is_within_allowed_paths(&path_str, &self.cwd)
             .unwrap_or(false)
         {
             Ok(())
@@ -694,7 +722,7 @@ impl PlatformSandbox {
         let path_str = path.to_string_lossy();
         if self
             .config
-            .is_within_allowed_paths(&path_str)
+            .is_within_allowed_paths(&path_str, &self.cwd)
             .unwrap_or(false)
         {
             Ok(())
@@ -733,7 +761,15 @@ impl FSProvider for PlatformSandbox {
     }
 
     fn glob(&self, pattern: &str) -> Result<Vec<String>, SandboxError> {
-        let entries = glob::glob(pattern).map_err(std::io::Error::other)?;
+        // glob crates resolve relative patterns against the process cwd;
+        // anchor them to this sandbox's working directory instead.
+        let pattern_path = Path::new(pattern);
+        let absolute = if pattern_path.is_absolute() {
+            pattern.to_string()
+        } else {
+            self.cwd.join(pattern_path).to_string_lossy().to_string()
+        };
+        let entries = glob::glob(&absolute).map_err(std::io::Error::other)?;
         let mut paths = Vec::new();
         for entry in entries {
             let path = entry.map_err(std::io::Error::other)?;
@@ -746,7 +782,7 @@ impl FSProvider for PlatformSandbox {
     async fn exec(&self, cmd: &str) -> Result<SandboxOutput, SandboxError> {
         let command = self
             .config
-            .build_safe_command(cmd, &self.bin_dirs)
+            .build_safe_command(cmd, &self.bin_dirs, &self.cwd)
             .map_err(SandboxError::CommandDenied)?;
 
         let output = tokio::process::Command::from(command).output().await?;
@@ -774,22 +810,53 @@ mod tests {
     }
 
     #[test]
-    fn resolve_path_expands_tilde() {
-        let resolved = resolve_path("~/test");
-        assert!(!resolved.starts_with('~'));
-        assert!(resolved.ends_with("/test"));
+    fn resolve_entry_expands_tilde() {
+        let resolved = resolve_entry("~/test", Path::new("/"));
+        let home = dirs::home_dir().expect("home dir exists");
+        assert_eq!(resolved, home.join("test"));
     }
 
     #[test]
-    fn resolve_path_makes_relative_absolute() {
-        let resolved = resolve_path(".");
-        assert!(Path::new(&resolved).is_absolute());
+    fn resolve_entry_joins_base_for_relative_paths() {
+        let resolved = resolve_entry(".", Path::new("/workspaces/proj"));
+        assert_eq!(resolved, Path::new("/workspaces/proj"));
+
+        let nested = resolve_entry("src/lib.rs", Path::new("/workspaces/proj"));
+        assert_eq!(nested, Path::new("/workspaces/proj/src/lib.rs"));
     }
 
     #[test]
-    fn resolve_path_leaves_absolute_unchanged() {
-        let resolved = resolve_path("/tmp");
-        assert_eq!(resolved, "/tmp");
+    fn resolve_entry_leaves_absolute_unchanged() {
+        let resolved = resolve_entry("/tmp", Path::new("/somewhere/else"));
+        assert_eq!(resolved, Path::new("/tmp"));
+    }
+
+    #[test]
+    fn path_checks_use_explicit_base_not_process_cwd() {
+        // Both candidates exist on disk, so the canonicalize path (not the
+        // logical fallback) decides. The process cwd is elsewhere entirely,
+        // so any process-cwd leak flips these assertions.
+        let root = std::env::temp_dir().join("p1e-sandbox-base-test");
+        let dir = root.join("proj");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::create_dir_all(root.join("outside")).unwrap();
+        std::fs::write(dir.join("sub").join("file.txt"), "x").unwrap();
+        std::fs::write(root.join("outside").join("file.txt"), "x").unwrap();
+
+        let cfg = SandboxConfig {
+            // Defaults allow reading `/`, which would make every path pass;
+            // an empty read list isolates the write grant under test.
+            allow_read: vec![],
+            allow_write: vec![".".into()],
+            ..SandboxConfig::default()
+        };
+
+        assert!(cfg.is_within_allowed_paths("sub/file.txt", &dir).unwrap());
+        assert!(
+            !cfg.is_within_allowed_paths("../outside/file.txt", &dir)
+                .unwrap()
+        );
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
@@ -838,7 +905,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     fn generate_macos_profile(cfg: &SandboxConfig) -> String {
-        platform::generate_profile(cfg)
+        platform::generate_profile(cfg, Path::new("/base/unused/by/absolute/entries"))
     }
 
     #[test]

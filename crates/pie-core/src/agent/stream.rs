@@ -168,7 +168,7 @@ impl AgentPlugin for StreamPlugin {
             tracing::debug!(
                 iteration,
                 had_tool_calls,
-                ms = start.elapsed().as_millis() as u64,
+                ms = crate::utils::ms_of(start.elapsed()),
                 "timing: iteration end"
             );
         }
@@ -229,7 +229,7 @@ impl AgentPlugin for StreamPlugin {
         if let Some(tool_start) = self.tool_starts.remove(id) {
             tracing::debug!(
                 tool = name,
-                ms = tool_start.start.elapsed().as_millis() as u64,
+                ms = crate::utils::ms_of(tool_start.start.elapsed()),
                 ok = result.is_ok(),
                 args = %tool_start.args,
                 "timing: tool done"

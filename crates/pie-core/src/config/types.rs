@@ -147,6 +147,9 @@ pub struct PieConfig {
     pub model: HashMap<String, ModelTier>,
     #[serde(default)]
     pub mcp: HashMap<String, McpServerConfig>,
+    /// The `pie server` daemon: `[server]`.
+    #[serde(default)]
+    pub server: ServerConfig,
     /// Per-model token pricing in USD per million tokens, keyed by the
     /// exact model id: `[pricing."claude-sonnet-4"]`. A model without an
     /// entry gets token stats but no cost.
@@ -156,6 +159,56 @@ pub struct PieConfig {
     pub sandbox: Option<SandboxConfig>,
     pub output_format: Option<String>,
     pub log_level: Option<String>,
+}
+
+/// The `pie server` daemon (`[server]` in pie.toml). It exposes pie
+/// sessions as MCP tasks over streamable HTTP.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct ServerConfig {
+    /// Address to bind, e.g. `127.0.0.1:8629`.
+    pub bind: String,
+    /// Bearer token clients must send as `Authorization: Bearer <value>`.
+    /// A value that exactly matches a `[secrets]` key is replaced by that
+    /// secret's value at load time. Required for non-loopback binds.
+    #[serde(default)]
+    pub api_key: Option<Secret<String>>,
+    /// Hostnames remote clients will use to reach the server (e.g.
+    /// `"citadel.lvh.me"`). The transport rejects any non-loopback `Host`
+    /// header that is not listed here — a DNS-rebinding guard — so remote
+    /// access without this list fails with 403.
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            bind: "127.0.0.1:8629".to_string(),
+            api_key: None,
+            allowed_hosts: Vec::new(),
+        }
+    }
+}
+
+impl ServerConfig {
+    pub fn resolve_secrets(&mut self, secrets: &HashMap<String, Secret<String>>) {
+        if let Some(key) = &mut self.api_key
+            && let Some(val) = secrets.get(key.expose_secret())
+        {
+            *key = val.clone();
+        }
+    }
+
+    /// Whether the bind address is a loopback interface.
+    pub fn is_loopback_bind(&self) -> bool {
+        use std::net::ToSocketAddrs as _;
+        self.bind
+            .to_socket_addrs()
+            .ok()
+            .and_then(|mut addrs| addrs.next())
+            .is_some_and(|addr| addr.ip().is_loopback())
+    }
 }
 
 /// Token pricing for a model, in USD per million tokens.
@@ -193,6 +246,12 @@ pub struct McpServerConfig {
     /// `[secrets]` key is replaced by that secret's value at load time.
     #[serde(default)]
     pub headers: HashMap<String, Secret<String>>,
+    /// Only top-level runs (depth 0) connect this server. Nested runs —
+    /// turns served by the `pie` MCP daemon itself — never see it, so an
+    /// agent spawned through pie cannot spawn another through the same
+    /// door.
+    #[serde(default)]
+    pub main_agent_only: bool,
 }
 
 impl Serialize for McpServerConfig {
@@ -203,9 +262,10 @@ impl Serialize for McpServerConfig {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut s = serializer.serialize_struct("McpServerConfig", 2)?;
+        let mut s = serializer.serialize_struct("McpServerConfig", 3)?;
         s.serialize_field("url", self.url.as_str())?;
         s.serialize_field("headers", &self.headers.keys().collect::<Vec<_>>())?;
+        s.serialize_field("main_agent_only", &self.main_agent_only)?;
         s.end()
     }
 }
@@ -387,6 +447,39 @@ api_key = "MEM_KEY"
     }
 
     #[test]
+    fn server_section_defaults_to_loopback_bind() {
+        let pie = parse("log_level = \"info\"");
+        assert_eq!(pie.server.bind, "127.0.0.1:8629");
+        assert!(pie.server.api_key.is_none());
+        assert!(pie.server.is_loopback_bind());
+
+        let pie = parse(
+            r#"
+[server]
+bind = "0.0.0.0:8629"
+api_key = "PIE_SERVER_KEY"
+"#,
+        );
+        assert_eq!(pie.server.bind, "0.0.0.0:8629");
+        assert!(!pie.server.is_loopback_bind());
+    }
+
+    #[test]
+    fn server_api_key_resolves_through_secrets() {
+        let mut pie = parse(
+            r#"
+[server]
+api_key = "MY_KEY"
+
+[secrets]
+MY_KEY = "real-key"
+"#,
+        );
+        pie.server.resolve_secrets(&pie.secrets);
+        assert_eq!(pie.server.api_key.unwrap().expose_secret(), "real-key");
+    }
+
+    #[test]
     fn parse_pricing_defaults_cached_to_input_rate() {
         let pie = parse(
             r#"
@@ -423,6 +516,7 @@ output = 2.0
                     Secret::new("Bearer literal".to_string()),
                 ),
             ]),
+            main_agent_only: false,
         };
 
         let mut secrets = HashMap::new();
@@ -448,6 +542,7 @@ output = 2.0
             url: "https://mcp.example.com/mcp".parse().unwrap(),
             api_key: Some(Secret::new("real-mem".to_string())),
             headers: HashMap::new(),
+            main_agent_only: false,
         };
         server.resolve_secrets(&HashMap::new());
 
@@ -468,6 +563,7 @@ output = 2.0
                 "authorization".to_string(),
                 Secret::new("Bearer custom".to_string()),
             )]),
+            main_agent_only: false,
         };
 
         let headers = server.http_headers();
@@ -484,6 +580,7 @@ output = 2.0
                 "CONTEXT7_API_KEY".to_string(),
                 Secret::new("ctx".to_string()),
             )]),
+            main_agent_only: false,
         };
 
         let headers = server.http_headers();

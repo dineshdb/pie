@@ -235,7 +235,10 @@ fn handle_submit(
             }
         }
         CommandAction::NewSession => {
-            let new_session = run_sync(Session::create(input.session_pool.clone()));
+            let new_session = run_sync(Session::create(
+                input.session_pool.clone(),
+                &std::env::current_dir().unwrap_or_default(),
+            ));
             if let Ok(new_session) = new_session {
                 if let Some(chat) = chat_mut!(app) {
                     chat.clear_messages();
@@ -388,7 +391,8 @@ fn execute_shell_direct(
             let _ = session.add_user(&format!("!{command}")).await;
         }
 
-        let output = p1e_sandbox::build_shell_command(&command, &sandbox)
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let output = p1e_sandbox::build_shell_command(&command, &sandbox, &cwd)
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("PAGER", "cat")
             .env("EDITOR", "true")

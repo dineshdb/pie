@@ -139,15 +139,14 @@ pub async fn run_due_jobs(pool: Arc<DbPool>, registry: Arc<Registry>) -> anyhow:
 
         tracing::info!("running schedule: {}", sched.id);
 
-        let mut session = Session::create_with_parent(pool.clone(), Some(&sched.id)).await?;
-        let cron_run = CronRun::start(&pool, &sched.id, &session.id.to_string()).await?;
-
         let cwd = sched
             .source_path
             .parent()
             .and_then(|p| p.parent())
-            .and_then(|p| p.to_str())
-            .unwrap_or(".");
+            .map_or_else(|| PathBuf::from("."), std::path::Path::to_path_buf);
+
+        let mut session = Session::create_with_parent(pool.clone(), &cwd, Some(&sched.id)).await?;
+        let cron_run = CronRun::start(&pool, &sched.id, &session.id.to_string()).await?;
 
         let sandbox = {
             let mut cfg = crate::config::build_sandbox(&crate::config::load_config()?)
@@ -164,7 +163,7 @@ pub async fn run_due_jobs(pool: Arc<DbPool>, registry: Arc<Registry>) -> anyhow:
         let exit_code = prompt_exec(
             &mut session,
             &sched.prompt,
-            cwd,
+            &cwd,
             registry.clone(),
             sandbox,
             grants,

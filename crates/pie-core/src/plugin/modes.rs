@@ -1,4 +1,5 @@
 use agentsdk::core::agent::PreToolAction;
+use agentsdk::core::cwd::Cwd;
 use agentsdk::core::messages::Message;
 use agentsdk::core::plugin::{AgentPlugin, PluginContext};
 use agentsdk::openai::api::types::ChatCompletionRequestUserMessageContent;
@@ -6,7 +7,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
 use std::borrow::Cow;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use strum::{Display, EnumString};
 
@@ -132,9 +133,10 @@ pub struct ModeFile {
 }
 
 /// Resolve a mode file path: local `.pie/modes/` first, fall back to global.
-fn resolve_mode_path(name: &str) -> Option<PathBuf> {
+/// Both lookups key off the run's cwd, never the process cwd.
+fn resolve_mode_path(name: &str, cwd: &Path) -> Option<PathBuf> {
     // local repo
-    if let Some(root) = crate::utils::git_repo_root() {
+    if let Some(root) = crate::utils::git_repo_root_from(cwd) {
         let local = PathBuf::from(root).join(".pie").join("modes").join(name);
         if local.is_file() {
             return Some(local);
@@ -149,7 +151,11 @@ fn resolve_mode_path(name: &str) -> Option<PathBuf> {
 }
 
 pub fn load_mode_file(mode: AgentMode) -> Option<ModeFile> {
-    let path = resolve_mode_path(&mode.file_name())?;
+    load_mode_file_in(mode, &Cwd::fallback().0)
+}
+
+pub fn load_mode_file_in(mode: AgentMode, cwd: &Path) -> Option<ModeFile> {
+    let path = resolve_mode_path(&mode.file_name(), cwd)?;
     let raw = std::fs::read_to_string(path).ok()?;
     let (yaml, body) = split_frontmatter(&raw);
     let fm: ModeFrontmatter = serde_yaml::from_str(&yaml).ok()?;
@@ -256,9 +262,9 @@ impl AgentPlugin for ModePlugin {
 
     async fn prepare_system_prompt(
         &mut self,
-        _ctx: &mut PluginContext,
+        ctx: &mut PluginContext,
     ) -> Option<Cow<'static, str>> {
-        let mode_file = load_mode_file(self.mode)?;
+        let mode_file = load_mode_file_in(self.mode, &Cwd::from_ctx(ctx).0)?;
         let fixed = if self.switching {
             ""
         } else {
@@ -278,13 +284,13 @@ impl AgentPlugin for ModePlugin {
 
     async fn on_tool_pre_execute(
         &mut self,
-        _ctx: &mut PluginContext,
+        ctx: &mut PluginContext,
         _id: &str,
         name: &str,
         _args: &Value,
     ) -> PreToolAction {
         if self.mode.is_tool_blocked(name) {
-            let restrictions = load_mode_file(self.mode)
+            let restrictions = load_mode_file_in(self.mode, &Cwd::from_ctx(ctx).0)
                 .map(|f| f.tool_restrictions)
                 .unwrap_or_default();
             return PreToolAction::Abort(format!(

@@ -419,7 +419,8 @@ mod tests {
         use std::sync::Arc;
 
         let pool = Arc::new(crate::db::create_test_pool().await?);
-        let session = crate::session::Session::create(pool.clone()).await?;
+        let session =
+            crate::session::Session::create(pool.clone(), std::path::Path::new("/test")).await?;
         let sid = session.id.to_string();
         let now = chrono::Utc::now().timestamp_millis();
 

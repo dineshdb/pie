@@ -1,6 +1,6 @@
 use crate::config::pie_home;
 use anyhow::Result;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 
 pub type DbPool = sqlx::SqlitePool;
 
@@ -11,7 +11,11 @@ pub async fn create_persistent_pool() -> Result<DbPool> {
 
     let options = SqliteConnectOptions::new()
         .filename(&db_path)
-        .create_if_missing(true);
+        .create_if_missing(true)
+        // The daemon hosts many concurrent agent turns; WAL lets history
+        // reads proceed while writers commit instead of blocking on the
+        // rollback journal.
+        .journal_mode(SqliteJournalMode::Wal);
     let pool = SqlitePoolOptions::new()
         .max_connections(4)
         .connect_with(options)

@@ -29,6 +29,8 @@ use std::sync::Arc;
 use tracing::trace;
 use tracing_subscriber::EnvFilter;
 
+mod server_service;
+
 #[derive(Parser, Clone)]
 #[command(name = "pie", version = "0.1.0")]
 #[command(about = "Minimal Pi-like agent using OpenAI-compatible providers")]
@@ -92,6 +94,27 @@ enum Commands {
     },
     /// Serve the Agent Client Protocol (ACP) over stdio, for editor clients
     Acp,
+    /// Serve the A2A agent-to-agent protocol over streamable HTTP
+    Server {
+        /// Bind address override ([server] bind in pie.toml by default)
+        #[arg(long, global = true)]
+        bind: Option<String>,
+        /// Hostname remote clients will use (`allowed_hosts`; install only)
+        #[arg(long, global = true)]
+        host: Vec<String>,
+        #[command(subcommand)]
+        command: Option<ServerCommand>,
+    },
+}
+
+#[derive(clap::Subcommand, Clone, Debug)]
+enum ServerCommand {
+    /// Print the api key clients must send as the bearer token
+    Token,
+    /// Install the daemon as a login service (launchd / systemd user unit)
+    Install,
+    /// Remove the installed service
+    Uninstall,
 }
 
 impl Cli {
@@ -101,11 +124,14 @@ impl Cli {
 }
 
 async fn resolve_session(pool: Arc<DbPool>, resume: bool) -> Result<Session> {
-    let cwd = std::env::current_dir()?.to_string_lossy().to_string();
-    if resume && let Some(session) = Session::find_latest_for_cwd(pool.clone(), &cwd).await? {
+    let cwd = std::env::current_dir()?;
+    if resume
+        && let Some(session) =
+            Session::find_latest_for_cwd(pool.clone(), &cwd.to_string_lossy()).await?
+    {
         return Ok(session);
     }
-    Session::create(pool).await
+    Session::create(pool, &cwd).await
 }
 
 /// Run the PIE agent.
@@ -142,8 +168,18 @@ pub async fn run() -> anyhow::Result<()> {
     let t = std::time::Instant::now();
     let registry = Registry::load();
     timing.push(("registry_load", t.elapsed()));
+    let server_config = pie_config.server.clone();
+    let base_sandbox = build_sandbox(&pie_config);
     if let Some(cmd) = cli.command {
-        return handle_command(cmd, config, &registry, pool.clone()).await;
+        return handle_command(
+            cmd,
+            config,
+            &registry,
+            pool.clone(),
+            &server_config,
+            &base_sandbox,
+        )
+        .await;
     }
 
     // `pie <agent> [query...]`: a first token matching an agent name selects
@@ -168,24 +204,28 @@ pub async fn run() -> anyhow::Result<()> {
     if format.is_explicit() || has_query {
         init_stderr_subscriber(cli.overrides.debug, &config.log_level);
         for (phase, dur) in &timing {
-            tracing::debug!(phase, ms = dur.as_millis() as u64, "timing: startup phase");
+            tracing::debug!(
+                phase,
+                ms = pie_core::utils::ms_of(*dur),
+                "timing: startup phase"
+            );
         }
-        run_single_shot(
-            cli, config, session, format, registry, agent, model, sandbox,
-        )
-        .await
-    } else {
-        init_file_subscriber(&session.id.to_string(), &config.log_level)?;
-        run_interactive(
-            session,
-            &pie_config,
+        let engine = RunEngine {
             registry,
             agent,
             model,
-            provider,
-            sandbox,
-        )
-        .await
+            sandbox_settings: sandbox,
+        };
+        run_single_shot(cli, config, session, format, engine).await
+    } else {
+        init_file_subscriber(&session.id.to_string(), &config.log_level)?;
+        let engine = RunEngine {
+            registry,
+            agent,
+            model,
+            sandbox_settings: sandbox,
+        };
+        run_interactive(session, &pie_config, provider, engine).await
     }
 }
 
@@ -218,6 +258,8 @@ async fn handle_command(
     config: &ResolvedConfig,
     registry: &Arc<Registry>,
     pool: Arc<DbPool>,
+    server_config: &config::ServerConfig,
+    base_sandbox: &Arc<SandboxConfig>,
 ) -> anyhow::Result<()> {
     // Commands that don't need interactive UI usually want stderr logging
     if !matches!(cmd, Commands::Daemon { .. }) || config.debug {
@@ -226,7 +268,7 @@ async fn handle_command(
 
     match cmd {
         Commands::Status => {
-            cmd::handle_status(config, registry);
+            cmd::handle_status(config, registry, server_config);
             Ok(())
         }
         Commands::Usage { days } => cmd::handle_usage(config, pool, days).await,
@@ -241,6 +283,28 @@ async fn handle_command(
         Commands::Cron { command } => cmd::handle_cron(command, pool, registry.clone()).await,
         Commands::Exec { skill, script } => cmd::handle_exec(config, registry, skill, &script),
         Commands::Acp => pie_acp::serve_stdio(pool, registry.clone(), config).await,
+        Commands::Server {
+            bind,
+            host,
+            command,
+        } => match command {
+            Some(ServerCommand::Token) => {
+                server_service::show_token(server_config);
+                Ok(())
+            }
+            Some(ServerCommand::Install) => server_service::install(bind, &host, server_config),
+            Some(ServerCommand::Uninstall) => server_service::uninstall(),
+            None => {
+                pie_a2a::serve(
+                    bind,
+                    pool,
+                    base_sandbox.clone(),
+                    server_config.clone(),
+                    config,
+                )
+                .await
+            }
+        },
         Commands::Daemon { interval } => {
             if !config.debug {
                 tracing::info!(
@@ -253,15 +317,22 @@ async fn handle_command(
     }
 }
 
+/// The engine dependencies shared by both run paths (single-shot and
+/// interactive): the model handle, the sandbox and the registry/agent
+/// selection resolved at startup.
+struct RunEngine {
+    registry: Arc<Registry>,
+    agent: Option<Agent>,
+    model: agentsdk::OpenAI,
+    sandbox_settings: Arc<SandboxConfig>,
+}
+
 async fn run_single_shot(
     cli: Cli,
     config: &ResolvedConfig,
     session: Session,
     format: OutputFormat,
-    registry: Arc<Registry>,
-    agent: Option<Agent>,
-    model: agentsdk::OpenAI,
-    sandbox_settings: Arc<SandboxConfig>,
+    engine: RunEngine,
 ) -> anyhow::Result<()> {
     trace!(config = ?config, "config");
     let piped_stdin = read_piped_stdin();
@@ -281,14 +352,14 @@ async fn run_single_shot(
 
     let query = Instructions::new(full_query);
     handler::handle_query(handler::HandleParams {
-        model,
+        model: engine.model,
         query,
         session,
         format,
-        sandbox_settings,
+        sandbox_settings: engine.sandbox_settings,
         retry: config.retry.clone(),
-        registry,
-        agent_name: agent.map(|a| a.name),
+        registry: engine.registry,
+        agent_name: engine.agent.map(|a| a.name),
     })
     .await
 }
@@ -296,20 +367,17 @@ async fn run_single_shot(
 async fn run_interactive(
     session: Session,
     pie_config: &PieConfig,
-    registry: Arc<Registry>,
-    agent: Option<Agent>,
-    model: agentsdk::OpenAI,
     provider: config::ResolvedProvider,
-    sandbox_settings: Arc<SandboxConfig>,
+    engine: RunEngine,
 ) -> anyhow::Result<()> {
     ui::tui::run_tui(
-        model,
+        engine.model,
         provider,
         session,
-        sandbox_settings,
+        engine.sandbox_settings,
         pie_config.clone(),
-        registry,
-        agent.map(|a| a.name),
+        engine.registry,
+        engine.agent.map(|a| a.name),
     )
     .await
 }

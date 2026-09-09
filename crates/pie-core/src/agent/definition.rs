@@ -95,8 +95,8 @@ fn agents_root_global() -> PathBuf {
     crate::config::pie_home().join("commands")
 }
 
-fn agents_root_local() -> Option<PathBuf> {
-    crate::utils::git_repo_root()
+fn agents_root_local_from(cwd: &std::path::Path) -> Option<PathBuf> {
+    crate::utils::git_repo_root_from(cwd)
         .map(|root| PathBuf::from(root).join(".pie").join("commands"))
         .filter(|p| p.is_dir())
 }
@@ -193,17 +193,21 @@ fn load_embedded_agents() -> Vec<Agent> {
 /// `~/.pie/agents/` + `.pie/agents/` (strict — no tools unless `plugins:`
 /// says otherwise). Later layers override by name.
 pub fn get_all_agents() -> Vec<Agent> {
+    get_all_agents_from(&std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
+pub fn get_all_agents_from(cwd: &std::path::Path) -> Vec<Agent> {
     let base = crate::utils::load_resources(
         load_embedded_agents(),
         &agents_root_global(),
-        agents_root_local(),
+        agents_root_local_from(cwd),
         load_agents_from_dir,
         |a| &a.name,
     );
     crate::utils::load_resources(
         base,
         &agents_strict_root_global(),
-        agents_strict_root_local(),
+        agents_strict_root_local_from(cwd),
         load_strict_agents_from_dir,
         |a| &a.name,
     )
@@ -213,8 +217,8 @@ fn agents_strict_root_global() -> PathBuf {
     crate::config::pie_home().join("agents")
 }
 
-fn agents_strict_root_local() -> Option<PathBuf> {
-    crate::utils::git_repo_root()
+fn agents_strict_root_local_from(cwd: &std::path::Path) -> Option<PathBuf> {
+    crate::utils::git_repo_root_from(cwd)
         .map(|root| PathBuf::from(root).join(".pie").join("agents"))
         .filter(|p| p.is_dir())
 }

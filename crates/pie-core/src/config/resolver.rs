@@ -362,6 +362,7 @@ mod tests {
             secrets: HashMap::new(),
             model: HashMap::new(),
             mcp: HashMap::new(),
+            server: crate::config::ServerConfig::default(),
             pricing: HashMap::new(),
             agent: None,
             sandbox: None,

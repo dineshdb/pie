@@ -104,6 +104,95 @@ What the client gets:
   a client that approves edits should not be walked around. Reads (Read, Ls,
   Glob, Grep) never ask.
 
+## A2A server (agent-to-agent over HTTP)
+
+`pie server` runs an HTTP daemon that exposes pie to other agents over the
+[Agent2Agent protocol](https://a2a-protocol.org) (v1.0, JSON-RPC over
+streamable HTTP) — the door for a main agent that delegates work to pie as
+needed, or for a UI driving pie sessions. One daemon serves many
+conversations, reusing its database pool and provider config; sessions in
+different workspaces run in parallel, and turns on the same session queue.
+
+```bash
+# Run in the foreground (bind defaults to 127.0.0.1:8629)
+pie server
+
+# Or install it as a login service that restarts on failure.
+# A non-loopback bind generates the api key and stores it in pie.toml.
+# `--host` lists the hostname remote clients will use (required: the
+# server answers 403 to any non-loopback Host header that is not
+# allowlisted, a DNS-rebinding guard).
+pie server install --bind 0.0.0.0:8629 --host citadel.lvh.me
+
+# The credentials, any time
+pie server token
+pie status          # shows bind + whether auth is on (never the key)
+```
+
+Discovery is the Agent Card (unauthenticated; it declares the auth scheme
+when one is configured):
+
+```
+GET http://127.0.0.1:8629/.well-known/agent-card.json
+POST http://127.0.0.1:8629/a2a        (JSON-RPC 2.0, Authorization: Bearer)
+```
+
+Send `SendStreamingMessage` and read the SSE response: a `Task` frame first,
+then `artifactUpdate` per token delta and `statusUpdate` per tool call, ending
+with a `final: true` status. Frames flow from the first millisecond, so no
+proxy idle timer fires mid-turn. `SendMessage` is the blocking fallback (one
+request, final task); `SubscribeToTask` reattaches after a dropped
+connection (a resolved task has nothing to stream — read it with `GetTask`);
+`CancelTask` aborts the in-flight turn.
+
+**Inspection** — `GetTask` returns any task's full record;
+`historyLength` controls how much of the conversation transcript rides
+along as the task's `history` (0 omits it, N returns the N most recent).
+`ListTasks` enumerates the daemon's tasks, newest activity first:
+filter by `contextId`, `status` or `statusTimestampAfter`, page with
+`pageSize`/`pageToken`, and set `includeArtifacts` when you want the
+answer artifacts included.
+
+**Push notifications** — the callback channel for callers that can't hold a
+stream. Pass a `pushNotificationConfig` in the send request (or attach one to
+a task with `CreateTaskPushNotificationConfig`; configs are durable and keep
+firing for later turns):
+
+```json
+{"configuration": {"pushNotificationConfig": {"url": "https://your.app/a2a-hook", "token": "verify-me"}}}
+```
+
+The daemon POSTs a `StreamResponse` frame to the webhook on every status
+transition — turn start, and the final snapshot with the full answer
+artifact — echoing your `token` in `x-a2a-notification-token` and sending an
+`Authorization: Bearer` header when the config carries
+`authentication: {scheme: "bearer", credentials}`. Failed deliveries retry
+three times with exponential backoff.
+
+Task identity follows the protocol's "life of a task": **a task is the whole
+conversation** — the canonical `taskId` is the pie session id, and the
+`contextId` (always the session id) groups the tasks of one conversation.
+Between turns the task sits in `INPUT_REQUIRED`; follow-ups resend the same
+`taskId`. A resolved task (`FAILED`/`CANCELED`) is immutable — references to
+it answer `TaskNotFound`; to continue after a failure, send a fresh message
+with the old `contextId` and no `taskId`, which opens a new task instance on
+the same conversation. Every finished turn appends its answer as one more
+artifact on the task, so a conversation's outputs accumulate; and a `messageId`
+on the send request is honored — a redelivery replays the task it produced
+instead of starting another turn.
+
+The interactive-session model is exactly this: the agent answers, the task
+park in `INPUT_REQUIRED`, and the next message with the same `taskId`
+continues the conversation with full context — across daemon restarts,
+since task state and transcripts are durable in SQLite. `GetExtendedAgentCard`
+returns the richer authenticated card: the public card plus one skill per
+agent persona registered on the daemon (`~/.pie/agents` and the daemon
+workspace's `.pie/agents`). Statelessness holds at the transport only (any
+request works against any daemon instance) — one running turn per
+conversation is enforced across every entry point, and delegated runs serve
+at depth 1, so agents cannot nest through this door (`main_agent_only` MCP
+servers stay invisible to them).
+
 ## Custom agents (markdown)
 
 Agents are markdown files: frontmatter for configuration, body is the

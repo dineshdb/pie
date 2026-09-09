@@ -9,15 +9,17 @@ pub struct HelperBinariesPlugin {
 }
 
 impl HelperBinariesPlugin {
-    pub fn new() -> Self {
-        let scan_cache = Self::generate_descriptions();
+    /// Scan the helper-binary dirs for a run rooted at `cwd`
+    /// (`~/.pie/bin` plus `<git root of cwd>/.pie/bin`).
+    pub fn new(cwd: &std::path::Path) -> Self {
+        let scan_cache = Self::generate_descriptions(cwd);
         Self { scan_cache }
     }
 
-    fn generate_descriptions() -> String {
+    fn generate_descriptions(cwd: &std::path::Path) -> String {
         let mut descriptions = Vec::new();
         let mut bin_dirs = vec![crate::config::pie_home().join("bin")];
-        if let Some(git_root) = crate::utils::git_repo_root() {
+        if let Some(git_root) = crate::utils::git_repo_root_from(cwd) {
             bin_dirs.push(std::path::PathBuf::from(git_root).join(".pie").join("bin"));
         }
 

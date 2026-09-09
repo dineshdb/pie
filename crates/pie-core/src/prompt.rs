@@ -1,6 +1,6 @@
 use crate::agent::{Agent, OutputMode};
 use crate::registry::Skill;
-use crate::utils::{AnonymizedPath, git_repo_root};
+use crate::utils::{AnonymizedPath, git_repo_root_from};
 use anyhow::{Context, Result};
 use minijinja::Environment;
 use serde::{Deserialize, Serialize};
@@ -64,7 +64,7 @@ pub struct SystemPromptCtx<'a> {
 }
 
 impl<'a> SystemPromptCtx<'a> {
-    pub fn new(sp: &'a SystemPrompt<'a>) -> Self {
+    pub fn new(sp: &SystemPrompt<'a>) -> Self {
         let agent_name = sp.agent.map(|a| a.name.as_str());
         let agent_content = sp.agent.map(|a| a.content.as_str());
 
@@ -72,9 +72,13 @@ impl<'a> SystemPromptCtx<'a> {
             .output_mode
             .unwrap_or_else(|| sp.agent.map_or(OutputMode::Md, |a| a.output_mode));
 
-        let (date, pwd, os, arch, hostname) = SystemPrompt::env_vars();
+        let cwd = sp
+            .cwd
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let (date, pwd, os, arch, hostname) = SystemPrompt::env_vars(&cwd);
         let pwd = AnonymizedPath::from(pwd);
-        let repo_root_real = git_repo_root();
+        let repo_root_real = git_repo_root_from(&cwd);
         let project_files = if let Some(ref root) = repo_root_real {
             discover_project_files(root)
         } else {
@@ -138,6 +142,7 @@ pub struct SystemPrompt<'a> {
     agents: &'a [Agent],
     agent: Option<&'a Agent>,
     output_mode: Option<OutputMode>,
+    cwd: Option<std::path::PathBuf>,
 }
 
 impl<'a> SystemPrompt<'a> {
@@ -148,12 +153,21 @@ impl<'a> SystemPrompt<'a> {
             agents,
             agent: None,
             output_mode: None,
+            cwd: None,
         }
     }
 
     /// Use a specific agent persona.
     pub fn with_agent(mut self, name: Option<&str>) -> Self {
         self.agent = name.and_then(|n| self.agents.iter().find(|a| a.name == n));
+        self
+    }
+
+    /// Run in `cwd`: the `<pwd>` block, repo discovery, and project files
+    /// all key off the run's working directory, not the process's.
+    #[must_use]
+    pub fn with_cwd(mut self, cwd: std::path::PathBuf) -> Self {
+        self.cwd = Some(cwd);
         self
     }
 
@@ -170,14 +184,9 @@ impl<'a> SystemPrompt<'a> {
         render_template(&ctx)
     }
 
-    pub fn env_vars() -> (String, String, String, String, String) {
+    pub fn env_vars(cwd: &std::path::Path) -> (String, String, String, String, String) {
         let date = chrono::Local::now().format("%Y-%m-%d").to_string();
-        let pwd = std::env::var("PWD").unwrap_or_else(|_| {
-            std::env::current_dir()
-                .unwrap_or_default()
-                .display()
-                .to_string()
-        });
+        let pwd = cwd.display().to_string();
         let os = std::env::consts::OS.to_string();
         let arch = std::env::consts::ARCH.to_string();
         let hostname = hostname::get().map_or_else(
@@ -288,6 +297,20 @@ mod test_helpers {
             .render()
             .expect("test render main")
     }
+
+    /// Render the main agent prompt running in `cwd`.
+    #[allow(clippy::expect_used)]
+    pub fn render_main_in(
+        skills: &[Skill],
+        output_mode: OutputMode,
+        cwd: &std::path::Path,
+    ) -> String {
+        SystemPrompt::new(skills, &[])
+            .with_output_mode(output_mode)
+            .with_cwd(cwd.to_path_buf())
+            .render()
+            .expect("test render main")
+    }
 }
 
 #[cfg(test)]
@@ -307,20 +330,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn main_agent_outside_repo_has_no_repo_instructions() {
-        let result = render_main(&[], OutputMode::Md);
+    async fn runtime_context_includes_date_and_working_directory() {
+        // The `<pwd>` block reflects the run's cwd (`with_cwd`), never the
+        // process env — one process serves runs in many directories.
+        let dir = std::env::temp_dir().join("pie-prompt-cwd-test");
+        let result = render_main_in(&[], OutputMode::Md, &dir);
         assert!(
-            !result.contains("git repo"),
-            "should not mention git repo when not in one"
+            result.contains("date: 2"),
+            "env block must carry a date: {result}"
+        );
+        assert!(
+            result.contains(&dir.display().to_string()),
+            "pwd must be the run's cwd: {result}"
         );
     }
 
     #[tokio::test]
-    async fn runtime_context_includes_date_and_working_directory() {
-        unsafe { std::env::set_var("PWD", "/test/project") };
-        let result = render_main(&[], OutputMode::Md);
-        assert!(result.contains('-'), "date must appear");
-        assert!(result.contains("/test/project"), "pwd must appear");
+    async fn run_outside_a_repo_reports_no_repo() {
+        // Outside a git repo the env block must not claim repo context —
+        // the model would otherwise anchor exploration on the wrong root.
+        let dir = std::env::temp_dir().join("pie-prompt-no-repo-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let result = render_main_in(&[], OutputMode::Md, &dir);
+        let repo_line = result
+            .lines()
+            .find(|l| l.trim_start().starts_with("repo:"))
+            .expect("env block has a repo line");
+        let value = repo_line.trim_start_matches("repo:").trim();
+        assert!(
+            value.is_empty() || value == "none" || value == "None",
+            "repo must be empty outside a repo, got: {repo_line}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[tokio::test]

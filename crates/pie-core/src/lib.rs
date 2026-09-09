@@ -41,8 +41,10 @@ pub mod instructions;
 pub mod plugin;
 pub mod prompt;
 pub mod registry;
+pub mod sandbox_grant;
 pub mod session;
 pub mod tools;
+pub mod turn_gate;
 pub mod usage;
 pub mod utils;
 

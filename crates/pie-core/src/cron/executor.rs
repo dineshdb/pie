@@ -7,36 +7,14 @@ use p1e_sandbox::{Permission, SandboxConfig};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-struct CwdGuard {
-    original: Option<std::path::PathBuf>,
-}
-
-impl CwdGuard {
-    fn new(cwd: &str) -> Self {
-        let original = std::env::current_dir().ok();
-        let _ = std::env::set_current_dir(cwd);
-        Self { original }
-    }
-}
-
-impl Drop for CwdGuard {
-    fn drop(&mut self) {
-        if let Some(ref p) = self.original {
-            let _ = std::env::set_current_dir(p);
-        }
-    }
-}
-
 pub async fn prompt_exec(
     session: &mut Session,
     prompt: &str,
-    cwd: &str,
+    cwd: &std::path::Path,
     registry: Arc<Registry>,
     sandbox: Arc<SandboxConfig>,
     grants: HashSet<Permission>,
 ) -> i64 {
-    let _guard = CwdGuard::new(cwd);
-
     let Some(config) = CONFIG.get() else {
         tracing::error!("config not initialized");
         return 1;
@@ -78,6 +56,7 @@ pub async fn prompt_exec(
         AgentConfig {
             retry: config.retry.clone(),
             grants,
+            cwd: Some(cwd.to_path_buf()),
             ..AgentConfig::default()
         },
     );

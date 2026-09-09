@@ -4,10 +4,16 @@ pub use path::*;
 
 use std::ops::ControlFlow;
 
+/// Milliseconds of `elapsed`, saturating instead of truncating — for
+/// `tracing::debug!(ms = ms_of(dur), ...)` style timing logs.
+pub fn ms_of(elapsed: std::time::Duration) -> u64 {
+    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+}
+
 /// Merge `incoming` items into `items` by name, overriding duplicates.
-pub fn merge_by_name<T, F>(
+pub fn merge_by_name<T, F, S: ::std::hash::BuildHasher>(
     items: &mut Vec<T>,
-    names: &mut std::collections::HashSet<String>,
+    names: &mut std::collections::HashSet<String, S>,
     incoming: Vec<T>,
     get_name: F,
 ) where
@@ -56,12 +62,15 @@ where
     resources
 }
 
-/// Walk from cwd upward, calling `check` on each directory.
+/// Walk from `start` upward, calling `check` on each directory.
 /// Stops at home directory, filesystem root, or after 32 levels.
 /// The closure returns `Break(Some(T))` when found, `Break(None)` to stop, `Continue(())` to keep going.
-fn walk_upward<T>(mut check: impl FnMut(&std::path::Path) -> ControlFlow<Option<T>>) -> Option<T> {
+fn walk_upward<T>(
+    start: &std::path::Path,
+    mut check: impl FnMut(&std::path::Path) -> ControlFlow<Option<T>>,
+) -> Option<T> {
     let home = dirs::home_dir();
-    let mut dir = std::env::current_dir().ok()?;
+    let mut dir = start.to_path_buf();
     for _ in 0..32 {
         match check(&dir) {
             ControlFlow::Break(value) => return value,
@@ -74,16 +83,22 @@ fn walk_upward<T>(mut check: impl FnMut(&std::path::Path) -> ControlFlow<Option<
     None
 }
 
-/// Find the git repo root by walking up from cwd looking for `.git`.
+/// Find the git repo root by walking up from `start` looking for `.git`.
 /// Stops at the user's home directory to avoid scanning system paths.
-pub fn git_repo_root() -> Option<String> {
-    walk_upward(|dir| {
+pub fn git_repo_root_from(start: &std::path::Path) -> Option<String> {
+    walk_upward(start, |dir| {
         if dir.join(".git").exists() {
             ControlFlow::Break(Some(dir.display().to_string()))
         } else {
             ControlFlow::Continue(())
         }
     })
+}
+
+/// [`git_repo_root_from`] starting at the process working directory.
+pub fn git_repo_root() -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    git_repo_root_from(&cwd)
 }
 
 #[cfg(test)]
@@ -135,7 +150,7 @@ mod tests {
     fn merge_by_name_empty_incoming() {
         let mut items = vec!["a".to_string()];
         let mut names = std::collections::HashSet::from(["a".to_string()]);
-        merge_by_name::<String, _>(&mut items, &mut names, vec![], |s| s);
+        merge_by_name::<String, _, _>(&mut items, &mut names, vec![], |s| s);
         assert_eq!(items, vec!["a"]);
     }
 }

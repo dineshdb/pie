@@ -72,6 +72,14 @@ struct McpServerStatus {
     url: String,
 }
 
+/// The `pie server` daemon configuration. The api key is deliberately absent —
+/// `pie server token` reveals it.
+#[derive(Serialize)]
+struct ServerStatus {
+    bind: String,
+    auth_required: bool,
+}
+
 #[derive(Serialize)]
 struct StatusOutput<'a> {
     provider: &'a crate::config::ResolvedProvider,
@@ -80,6 +88,7 @@ struct StatusOutput<'a> {
     skills: Vec<String>,
     agents: Vec<String>,
     mcp_servers: Vec<McpServerStatus>,
+    server: ServerStatus,
 }
 
 fn mcp_server_status(config: &ResolvedConfig) -> Vec<McpServerStatus> {
@@ -95,7 +104,15 @@ fn mcp_server_status(config: &ResolvedConfig) -> Vec<McpServerStatus> {
     servers
 }
 
-pub fn handle_status(config: &ResolvedConfig, registry: &Arc<Registry>) {
+pub fn handle_status(
+    config: &ResolvedConfig,
+    registry: &Arc<Registry>,
+    server: &crate::config::ServerConfig,
+) {
+    let server_status = || ServerStatus {
+        bind: server.bind.clone(),
+        auth_required: server.api_key.is_some(),
+    };
     if config.output_format.is_json() {
         let status = StatusOutput {
             provider: &config.provider,
@@ -104,6 +121,7 @@ pub fn handle_status(config: &ResolvedConfig, registry: &Arc<Registry>) {
             skills: registry.skills.iter().map(|s| s.name.clone()).collect(),
             agents: registry.agents.iter().map(|a| a.name.clone()).collect(),
             mcp_servers: mcp_server_status(config),
+            server: server_status(),
         };
 
         if let Ok(json) = serde_json::to_string_pretty(&status) {
@@ -128,6 +146,18 @@ pub fn handle_status(config: &ResolvedConfig, registry: &Arc<Registry>) {
             println!(" - {}: {}", server.name, server.url);
         }
     }
+
+    let server_status = server_status();
+    println!("\n--- MCP tasks server ---");
+    println!("Bind:        {}", server_status.bind);
+    println!(
+        "Auth:        {}",
+        if server_status.auth_required {
+            "bearer token (reveal with `pie server token`)"
+        } else {
+            "none"
+        }
+    );
 
     println!("\n--- Registry ---");
     println!("Skills: {}", registry.skills.len());
@@ -344,8 +374,10 @@ pub fn handle_exec(
         format!("{script_quoted} {}", args_quoted.join(" "))
     };
 
+    let cwd = std::env::current_dir()
+        .map_err(|e| anyhow::anyhow!("cannot determine working directory: {e}"))?;
     let exit_code =
-        crate::tools::run_sandboxed_command_streaming(&cmd, &sandbox_cfg, &extra_bin_dirs)
+        crate::tools::run_sandboxed_command_streaming(&cmd, &sandbox_cfg, &extra_bin_dirs, &cwd)
             .map_err(|e| anyhow::anyhow!("execution failed: {e}"))?;
 
     std::process::exit(exit_code);
@@ -529,7 +561,8 @@ fn build_launch_process(
     if let Some(cfg) = launch_cfg
         && let Some(sandbox) = &cfg.sandbox
     {
-        return p1e_sandbox::build_command(command, args, sandbox);
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        return p1e_sandbox::build_command(command, args, sandbox, &cwd);
     }
     let mut c = std::process::Command::new(command);
     c.args(args);
