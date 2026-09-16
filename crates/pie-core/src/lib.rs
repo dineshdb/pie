@@ -39,6 +39,7 @@ pub mod db;
 pub mod error;
 pub mod handler;
 pub mod instructions;
+pub mod mcp_auth;
 pub mod plugin;
 pub mod prompt;
 pub mod registry;

@@ -29,12 +29,14 @@ p1e-sandbox = { path = "../p1e-sandbox", version = "0.2.0" }
 sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "migrate"] }
 itertools = "0.15"
 termion = "4"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "net", "time"] }
 tracing.workspace = true
 uuid = { version = "1", features = ["v7", "serde"] }
 hostname = "0.4.2"
 lexiclean = "0.0.2"
+open = "5"
 redact = { version = "0.1.11", features = ["serde"] }
+rmcp = { version = "3.4", features = ["client", "schemars", "reqwest", "transport-streamable-http-client", "transport-streamable-http-client-reqwest", "auth"] }
 url = { version = "2.5.8", features = ["serde"] }
 thiserror = "2.0.18"
 derive_more = { version = "2.1.1", features = ["display", "from"] }
@@ -54,6 +56,9 @@ test-util = []
 
 [dev-dependencies]
 tempfile = "3"
+# The mcp_auth login test stubs rmcp's OAuthHttpClient, whose request and
+# response types come from the oauth2 crate's re-export of http.
+oauth2 = "5"
 # Real reqwest decode errors can't be fabricated — the retry-policy tests
 # stand up a raw socket that lies about Content-Length and hangs up mid-body.
 tokio = { version = "1", features = ["net"] }

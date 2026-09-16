@@ -163,6 +163,9 @@ pub struct PieConfig {
 
 /// The `pie server` daemon (`[server]` in pie.toml): the a2acp A2A
 /// gateway, hosted by pie with itself as the in-process agent.
+||||||| parent of 16a1016 (feat(mcp): OAuth2 login for remote servers via upstream rmcp auth)
+/// The `pie server` daemon (`[server]` in pie.toml). It exposes pie
+/// sessions as MCP tasks over streamable HTTP.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ServerConfig {
@@ -271,6 +274,10 @@ pub struct McpServerConfig {
     /// `[secrets]` key is replaced by that secret's value at load time.
     #[serde(default)]
     pub headers: HashMap<String, Secret<String>>,
+    /// OAuth 2.1 authorization ([`McpAuthConfig`]). Mutually exclusive with
+    /// `api_key` — run `pie mcp login <name>` once to authorize.
+    #[serde(default)]
+    pub auth: Option<McpAuthConfig>,
     /// Only top-level runs (depth 0) connect this server. Nested runs —
     /// turns served by the `pie` MCP daemon itself — never see it, so an
     /// agent spawned through pie cannot spawn another through the same
@@ -279,17 +286,52 @@ pub struct McpServerConfig {
     pub main_agent_only: bool,
 }
 
+/// `[mcp.<name>.auth]` — OAuth 2.1 login for an MCP server, per the MCP
+/// authorization spec. The browser flow runs once via `pie mcp login
+/// <name>`: metadata discovery, then dynamic client registration (no
+/// `client_id`) or the pre-registered credentials, then authorization code
+/// + PKCE. Tokens are stored in `~/.pie/pie.db`; runs authorize from the
+/// store and refresh transparently.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct McpAuthConfig {
+    /// Pre-registered client id from the authorization server. Omit to
+    /// register dynamically (RFC 7591) when the server supports it.
+    pub client_id: Option<String>,
+    /// Client secret for confidential clients; must pair with `client_id`.
+    pub client_secret: Option<Secret<String>>,
+    /// Scopes to request. Empty adopts what the server's challenge and
+    /// metadata advertise (the spec's scope-selection policy).
+    pub scopes: Vec<String>,
+    /// Fixed port for the local OAuth callback
+    /// (`http://127.0.0.1:<port>/callback`). Some servers only accept
+    /// pre-registered exact redirect URIs; otherwise an ephemeral port is
+    /// used.
+    pub redirect_port: Option<u16>,
+}
+
 impl Serialize for McpServerConfig {
     /// Header and api-key values are secrets by construction; only header
-    /// names survive serialization.
+    /// names survive serialization. The auth section serializes without its
+    /// secret.
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut s = serializer.serialize_struct("McpServerConfig", 3)?;
+        let mut s = serializer.serialize_struct("McpServerConfig", 4)?;
         s.serialize_field("url", self.url.as_str())?;
         s.serialize_field("headers", &self.headers.keys().collect::<Vec<_>>())?;
+        s.serialize_field(
+            "auth",
+            &self.auth.as_ref().map(|auth| {
+                serde_json::json!({
+                    "client_id": auth.client_id,
+                    "scopes": auth.scopes,
+                    "redirect_port": auth.redirect_port,
+                })
+            }),
+        )?;
         s.serialize_field("main_agent_only", &self.main_agent_only)?;
         s.end()
     }
@@ -299,19 +341,45 @@ impl Serialize for McpServerConfig {
 const AUTHORIZATION_HEADER: &str = "AUTHORIZATION";
 
 impl McpServerConfig {
-    /// Replace header and api-key values that exactly match a `[secrets]`
-    /// key with the secret's value; literal values pass through untouched.
+    /// Replace header, api-key and client-secret values that exactly match a
+    /// `[secrets]` key with the secret's value; literal values pass through
+    /// untouched.
     pub fn resolve_secrets(&mut self, secrets: &HashMap<String, Secret<String>>) {
         if let Some(key) = &mut self.api_key
             && let Some(val) = secrets.get(key.expose_secret())
         {
             *key = val.clone();
         }
+        if let Some(auth) = &mut self.auth
+            && let Some(secret) = &mut auth.client_secret
+            && let Some(val) = secrets.get(secret.expose_secret())
+        {
+            *secret = val.clone();
+        }
         for header in self.headers.values_mut() {
             if let Some(val) = secrets.get(header.expose_secret()) {
                 *header = val.clone();
             }
         }
+    }
+
+    /// Reject combinations that would silently misbehave: OAuth alongside a
+    /// static bearer token, and a client secret without the client id it
+    /// authenticates.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.api_key.is_some() && self.auth.is_some() {
+            return Err("configure either `api_key` or `[mcp.<name>.auth]`, not both".into());
+        }
+        if let Some(auth) = &self.auth
+            && auth.client_secret.is_some()
+            && auth.client_id.is_none()
+        {
+            return Err(
+                "`client_secret` needs a `client_id` — secret-only clients are not supported"
+                    .into(),
+            );
+        }
+        Ok(())
     }
 
     /// Header map for the MCP transport: the configured `headers`, plus
@@ -567,6 +635,46 @@ output = 2.0
     }
 
     #[test]
+    fn parse_mcp_auth_config() {
+        let pie = parse(
+            r#"
+[mcp.linear]
+url = "https://mcp.linear.app/mcp"
+
+[mcp.linear.auth]
+client_id = "pie-client"
+client_secret = "LINEAR_SECRET"
+scopes = ["read", "write"]
+redirect_port = 8123
+
+[mcp.auto]
+url = "https://mcp.example.com/mcp"
+[mcp.auto.auth]
+"#,
+        );
+
+        let linear = &pie.mcp["linear"].auth.as_ref().unwrap();
+        assert_eq!(linear.client_id.as_deref(), Some("pie-client"));
+        assert_eq!(
+            linear.client_secret.as_ref().unwrap().expose_secret(),
+            "LINEAR_SECRET"
+        );
+        assert_eq!(linear.scopes, vec!["read".to_string(), "write".to_string()]);
+        assert_eq!(linear.redirect_port, Some(8123));
+
+        let auto = &pie.mcp["auto"].auth.as_ref().unwrap();
+        assert_eq!(
+            auto.client_id, None,
+            "no client_id means dynamic registration"
+        );
+        assert!(auto.scopes.is_empty(), "empty scopes adopt server policy");
+        assert_eq!(
+            auto.redirect_port, None,
+            "callback port defaults to ephemeral"
+        );
+    }
+
+    #[test]
     fn resolve_secrets_replaces_exact_matches_only() {
         let mut server = McpServerConfig {
             url: "https://mcp.example.com/mcp".parse().unwrap(),
@@ -578,6 +686,7 @@ output = 2.0
                     Secret::new("Bearer literal".to_string()),
                 ),
             ]),
+            auth: None,
             main_agent_only: false,
         };
 
@@ -604,6 +713,7 @@ output = 2.0
             url: "https://mcp.example.com/mcp".parse().unwrap(),
             api_key: Some(Secret::new("real-mem".to_string())),
             headers: HashMap::new(),
+            auth: None,
             main_agent_only: false,
         };
         server.resolve_secrets(&HashMap::new());
@@ -625,6 +735,7 @@ output = 2.0
                 "authorization".to_string(),
                 Secret::new("Bearer custom".to_string()),
             )]),
+            auth: None,
             main_agent_only: false,
         };
 
@@ -642,11 +753,119 @@ output = 2.0
                 "CONTEXT7_API_KEY".to_string(),
                 Secret::new("ctx".to_string()),
             )]),
+            auth: None,
             main_agent_only: false,
         };
 
         let headers = server.http_headers();
         assert_eq!(headers["CONTEXT7_API_KEY"], "ctx");
         assert_eq!(headers.len(), 1);
+    }
+
+    #[test]
+    fn mcp_api_key_and_auth_are_rejected() {
+        let server = McpServerConfig {
+            url: "https://mcp.example.com/mcp".parse().unwrap(),
+            api_key: Some(Secret::new("k".to_string())),
+            headers: HashMap::new(),
+            auth: Some(McpAuthConfig {
+                client_id: Some("id".to_string()),
+                client_secret: None,
+                scopes: Vec::new(),
+                redirect_port: None,
+            }),
+            main_agent_only: false,
+        };
+
+        assert!(
+            server.validate().is_err(),
+            "api_key and auth authorize the same header twice"
+        );
+    }
+
+    #[test]
+    fn mcp_auth_secret_without_client_id_is_rejected() {
+        let server = McpServerConfig {
+            url: "https://mcp.example.com/mcp".parse().unwrap(),
+            api_key: None,
+            headers: HashMap::new(),
+            auth: Some(McpAuthConfig {
+                client_id: None,
+                client_secret: Some(Secret::new("s".to_string())),
+                scopes: Vec::new(),
+                redirect_port: None,
+            }),
+            main_agent_only: false,
+        };
+
+        assert!(
+            server.validate().is_err(),
+            "a client secret authenticates a client id; alone it is a config error"
+        );
+    }
+
+    #[test]
+    fn mcp_auth_with_client_id_and_defaults_is_valid() {
+        let server = McpServerConfig {
+            url: "https://mcp.example.com/mcp".parse().unwrap(),
+            api_key: None,
+            headers: HashMap::new(),
+            auth: Some(McpAuthConfig::default()),
+            main_agent_only: false,
+        };
+
+        assert!(server.validate().is_ok());
+    }
+
+    #[test]
+    fn mcp_auth_client_secret_resolves_through_secrets() {
+        let mut server = McpServerConfig {
+            url: "https://mcp.example.com/mcp".parse().unwrap(),
+            api_key: None,
+            headers: HashMap::new(),
+            auth: Some(McpAuthConfig {
+                client_id: Some("pie".to_string()),
+                client_secret: Some(Secret::new("LINEAR_SECRET".to_string())),
+                scopes: Vec::new(),
+                redirect_port: None,
+            }),
+            main_agent_only: false,
+        };
+
+        let secrets = HashMap::from([(
+            "LINEAR_SECRET".to_string(),
+            Secret::new("real-secret".to_string()),
+        )]);
+        server.resolve_secrets(&secrets);
+
+        assert_eq!(
+            server.auth.unwrap().client_secret.unwrap().expose_secret(),
+            "real-secret"
+        );
+    }
+
+    #[test]
+    fn mcp_serialization_redacts_auth_secret() {
+        let server = McpServerConfig {
+            url: "https://mcp.example.com/mcp".parse().unwrap(),
+            api_key: Some(Secret::new("static-bearer".to_string())),
+            headers: HashMap::from([("X-KEY".to_string(), Secret::new("hush".to_string()))]),
+            auth: Some(McpAuthConfig {
+                client_id: Some("pie".to_string()),
+                client_secret: Some(Secret::new("browser-flow-secret".to_string())),
+                scopes: vec!["read".to_string()],
+                redirect_port: None,
+            }),
+            main_agent_only: false,
+        };
+
+        let rendered = serde_json::to_string(&server).unwrap();
+        assert!(!rendered.contains("static-bearer"), "{rendered}");
+        assert!(!rendered.contains("hush"), "{rendered}");
+        assert!(
+            !rendered.contains("browser-flow-secret"),
+            "the auth secret must not survive serialization: {rendered}"
+        );
+        assert!(rendered.contains("\"client_id\":\"pie\""), "{rendered}");
     }
 }

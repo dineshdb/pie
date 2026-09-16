@@ -58,8 +58,11 @@ pub fn load_config() -> Result<PieConfig> {
         }
     }
 
-    for server in pie_config.mcp.values_mut() {
+    for (name, server) in pie_config.mcp.iter_mut() {
         server.resolve_secrets(&pie_config.secrets);
+        server
+            .validate()
+            .map_err(|e| AppError::Config(format!("mcp.{name}: {e}")))?;
     }
 
     Ok(pie_config)

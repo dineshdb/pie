@@ -1,6 +1,7 @@
 use crate::agent::AgentEvent;
 use crate::config::CONFIG;
 use crate::config::McpServerConfig;
+use crate::db::DbPool;
 use crate::error::{AppError, Result};
 use crate::plugin::{
     AgentMode, GateAsk, HelperBinariesPlugin, ModePlugin, PermissionRequest, PersistencePlugin,
@@ -428,6 +429,7 @@ impl PieAgent {
     }
 
     async fn build_mcp_plugin(
+        pool: &DbPool,
         configured: &HashMap<String, McpServerConfig>,
         selection: &McpSelection,
         depth: u32,
@@ -439,10 +441,34 @@ impl PieAgent {
         let mut plugin = McpPlugin::new();
         for (name, server) in servers {
             let headers = server.http_headers();
-            match plugin
-                .add_remote_server(name.clone(), server.url.as_str(), headers)
-                .await
-            {
+            let connect: std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> =
+                match &server.auth {
+                    // OAuth servers authorize from the tokens `pie mcp login`
+                    // stored; rmcp refreshes and retries 401s transparently.
+                    Some(_) => {
+                        match crate::mcp_auth::authorization_manager(&name, server, pool.clone())
+                            .await
+                        {
+                            Ok(manager) => {
+                                plugin
+                                    .add_remote_server_authorized(
+                                        name.clone(),
+                                        server.url.as_str(),
+                                        headers,
+                                        manager,
+                                    )
+                                    .await
+                            }
+                            Err(e) => Err(Box::new(e)),
+                        }
+                    }
+                    None => {
+                        plugin
+                            .add_remote_server(name.clone(), server.url.as_str(), headers)
+                            .await
+                    }
+                };
+            match connect {
                 Ok(()) => tracing::debug!(server = name, "mcp server connected"),
                 Err(e) if strict => {
                     return Err(AppError::Plugin(format!(
@@ -450,7 +476,12 @@ impl PieAgent {
                     )));
                 }
                 Err(e) => {
-                    tracing::warn!(server = name, error = %e, "mcp server unavailable, continuing without it");
+                    let hint = if server.auth.is_some() {
+                        format!(" — run `pie mcp login {name}`")
+                    } else {
+                        String::new()
+                    };
+                    tracing::warn!(server = name, error = %e, "mcp server unavailable, continuing without it{hint}");
                 }
             }
         }
@@ -639,7 +670,13 @@ impl PieAgent {
                 .get()
                 .ok_or_else(|| AppError::Config("global config not initialized".into()))?;
             builder = builder.plugin(
-                Self::build_mcp_plugin(&config.mcp, &selection.mcp, self.config.depth).await?,
+                Self::build_mcp_plugin(
+                    &self.session.pool,
+                    &config.mcp,
+                    &selection.mcp,
+                    self.config.depth,
+                )
+                .await?,
             );
         }
 
@@ -986,6 +1023,7 @@ mod tests {
             url: format!("https://{host}/mcp").parse().unwrap(),
             api_key: None,
             headers: HashMap::new(),
+            auth: None,
             main_agent_only: false,
         };
         HashMap::from([
@@ -1033,6 +1071,7 @@ mod tests {
             url: format!("https://{host}/mcp").parse().unwrap(),
             api_key: None,
             headers: HashMap::new(),
+            auth: None,
             main_agent_only,
         };
         HashMap::from([
@@ -1092,6 +1131,7 @@ mod tests {
             url: "http://127.0.0.1:1/mcp".parse().unwrap(),
             api_key: None,
             headers: HashMap::new(),
+            auth: None,
             main_agent_only: false,
         };
         HashMap::from([("dead".to_string(), server)])
@@ -1108,7 +1148,9 @@ mod tests {
     #[test]
     fn explicit_mcp_connection_failure_fails_the_run() {
         let configured = dead_mcp_config();
+        let pool = block_on(crate::db::create_test_pool()).unwrap();
         let result = block_on(PieAgent::build_mcp_plugin(
+            &pool,
             &configured,
             &McpSelection::All,
             0,
@@ -1128,7 +1170,9 @@ mod tests {
         let configured = dead_mcp_config();
         // The run asked for no server in particular: a dead one is skipped
         // (with a warning in the session log) instead of failing the run.
+        let pool = block_on(crate::db::create_test_pool()).unwrap();
         let plugin = block_on(PieAgent::build_mcp_plugin(
+            &pool,
             &configured,
             &McpSelection::Available,
             0,

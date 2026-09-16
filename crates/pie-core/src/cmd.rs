@@ -580,6 +580,56 @@ fn build_launch_process(
     c
 }
 
+/// The MCP CLI surface: subcommands of `pie mcp`.
+#[derive(clap::Subcommand, Clone, Debug)]
+pub enum McpCommand {
+    /// Run the OAuth browser flow for a server and store its tokens
+    Login {
+        /// The `[mcp.<name>]` section to authorize
+        name: String,
+    },
+    /// Forget the stored OAuth tokens of a server
+    Logout {
+        /// The `[mcp.<name>]` section to deauthorize
+        name: String,
+    },
+}
+
+pub async fn handle_mcp(
+    command: McpCommand,
+    config: &ResolvedConfig,
+    pool: Arc<DbPool>,
+) -> anyhow::Result<()> {
+    match command {
+        McpCommand::Login { name } => {
+            let Some(server) = config.mcp.get(&name) else {
+                return Err(crate::error::AppError::NotFound(format!(
+                    "mcp server '{name}' is not configured"
+                ))
+                .into());
+            };
+            if server.auth.is_none() {
+                return Err(crate::error::AppError::Config(format!(
+                    "mcp '{name}' has no [mcp.{name}.auth] section"
+                ))
+                .into());
+            }
+            let granted = crate::mcp_auth::login(&name, server, (*pool).clone()).await?;
+            let scopes = if granted.is_empty() {
+                "(none advertised)".to_string()
+            } else {
+                granted.join(", ")
+            };
+            println!("{name} authorized — granted scopes: {scopes}");
+            Ok(())
+        }
+        McpCommand::Logout { name } => {
+            crate::mcp_auth::logout(&name, (*pool).clone()).await?;
+            Ok(())
+        }
+    }
+}
+
 /// The cron CLI surface: subcommands of `pie cron`.
 #[derive(clap::Subcommand, Clone, Debug)]
 pub enum CronCommand {

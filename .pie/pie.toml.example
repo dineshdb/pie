@@ -97,9 +97,23 @@ url = "https://mcp.context7.com/mcp"
 # [mcp.github.headers]
 # Authorization = "github_pat"
 
+# OAuth-protected servers: run `pie mcp login <name>` once — pie runs the
+# MCP-spec browser flow (discovery, dynamic client registration or your
+# pre-registered credentials, PKCE) and stores tokens in ~/.pie/pie.db.
+# Runs authorize from the store and refresh automatically.
+# [mcp.linear]
+# url = "https://mcp.linear.app/mcp"
+# [mcp.linear.auth]
+# # omit client_id on servers supporting dynamic client registration
+# client_id = "pie-client"
+# client_secret = "linear_secret"   # optional; pairs with client_id
+# # scopes = ["read", "write"]      # empty adopts what the server advertises
+# # redirect_port = 8123            # only if the server requires a fixed redirect URI
+
 # [secrets]
 # context7_key = "..."
 # github_pat = "github_pat_..."
+# linear_secret = "..."
 
 [sandbox]
 # Native OS-level isolation (sandbox-exec on macOS, bubblewrap on Linux)

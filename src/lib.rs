@@ -88,6 +88,11 @@ enum Commands {
         #[command(subcommand)]
         command: cmd::CronCommand,
     },
+    /// Manage MCP server OAuth authorization
+    Mcp {
+        #[command(subcommand)]
+        command: cmd::McpCommand,
+    },
     /// Execute a script from a skill directly (no LLM)
     #[command(name = "x")]
     Exec {
@@ -291,6 +296,7 @@ async fn handle_command(
             no_sandbox,
         } => cmd::handle_launch(config, &all_args, no_sandbox),
         Commands::Cron { command } => cmd::handle_cron(command, pool, registry.clone()).await,
+        Commands::Mcp { command } => cmd::handle_mcp(command, config, pool).await,
         Commands::Exec { skill, script } => cmd::handle_exec(config, registry, skill, &script),
         Commands::Acp => pie_acp::serve_stdio(pool, registry.clone(), config).await,
         Commands::Server {
