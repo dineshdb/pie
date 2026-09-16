@@ -7,13 +7,18 @@ license = "MIT"
 repository = "https://github.com/dineshdb/pie"
 
 [dependencies]
-agentsdk = { git = "https://github.com/dineshdb/agentsdk", branch = "main" }
-agentsdk-plugin-skills = { git = "https://github.com/dineshdb/agentsdk", branch = "main" }
-agentsdk-plugin-fs = { git = "https://github.com/dineshdb/agentsdk", branch = "main" }
-agentsdk-plugin-agentsmd = { git = "https://github.com/dineshdb/agentsdk", branch = "main" }
-agentsdk-plugin-jewels = { git = "https://github.com/dineshdb/agentsdk", branch = "main" }
-agentsdk-plugin-mcp = { git = "https://github.com/dineshdb/agentsdk", branch = "main" }
-agentsdk-plugin-shell = { git = "https://github.com/dineshdb/agentsdk", branch = "main" }
+# TODO(oauth): temporary local paths — swap each back to
+# { git = "https://github.com/dineshdb/agentsdk", branch = "main" }
+# once agentsdk main pushes add_remote_server_authorized. All agentsdk
+# crates must move together or the git-sourced plugins would pull in a
+# second, conflicting agentsdk instance.
+agentsdk = { path = "../../../../agentsdk" }
+agentsdk-plugin-skills = { path = "../../../../agentsdk/crates/agentsdk-plugin-skills" }
+agentsdk-plugin-fs = { path = "../../../../agentsdk/crates/agentsdk-plugin-fs" }
+agentsdk-plugin-agentsmd = { path = "../../../../agentsdk/crates/agentsdk-plugin-agentsmd" }
+agentsdk-plugin-jewels = { path = "../../../../agentsdk/crates/agentsdk-plugin-jewels" }
+agentsdk-plugin-mcp = { path = "../../../../agentsdk/crates/agentsdk-plugin-mcp" }
+agentsdk-plugin-shell = { path = "../../../../agentsdk/crates/agentsdk-plugin-shell" }
 anyhow = "1"
 async-trait = "0.1"
 cel = "0.14"

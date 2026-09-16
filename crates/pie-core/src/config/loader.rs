@@ -58,7 +58,7 @@ pub fn load_config() -> Result<PieConfig> {
         }
     }
 
-    for (name, server) in pie_config.mcp.iter_mut() {
+    for (name, server) in &mut pie_config.mcp {
         server.resolve_secrets(&pie_config.secrets);
         server
             .validate()

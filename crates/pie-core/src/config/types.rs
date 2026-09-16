@@ -163,9 +163,6 @@ pub struct PieConfig {
 
 /// The `pie server` daemon (`[server]` in pie.toml): the a2acp A2A
 /// gateway, hosted by pie with itself as the in-process agent.
-||||||| parent of 16a1016 (feat(mcp): OAuth2 login for remote servers via upstream rmcp auth)
-/// The `pie server` daemon (`[server]` in pie.toml). It exposes pie
-/// sessions as MCP tasks over streamable HTTP.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ServerConfig {
@@ -289,9 +286,9 @@ pub struct McpServerConfig {
 /// `[mcp.<name>.auth]` — OAuth 2.1 login for an MCP server, per the MCP
 /// authorization spec. The browser flow runs once via `pie mcp login
 /// <name>`: metadata discovery, then dynamic client registration (no
-/// `client_id`) or the pre-registered credentials, then authorization code
-/// + PKCE. Tokens are stored in `~/.pie/pie.db`; runs authorize from the
-/// store and refresh transparently.
+/// `client_id`) or the pre-registered credentials, then an authorization
+/// code + PKCE. Tokens are stored in `~/.pie/pie.db`; runs authorize from
+/// the store and refresh transparently.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct McpAuthConfig {

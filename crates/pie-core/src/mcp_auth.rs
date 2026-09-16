@@ -23,13 +23,15 @@ use tokio::net::TcpListener;
 const CALLBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// An [`AuthorizationManager`] wired to the stored credentials of one
-/// configured MCP server. Fails with the login hint when the server has no
-/// stored token yet; once authorized, rmcp refreshes transparently.
+/// configured MCP server, plus whether a token was actually stored. With no
+/// stored token the manager still works — rmcp sends requests
+/// unauthenticated, so open servers connect as usual and OAuth servers
+/// answer 401, which is the cue to run `pie mcp login`.
 pub async fn authorization_manager(
     name: &str,
     server: &McpServerConfig,
     pool: DbPool,
-) -> Result<AuthorizationManager> {
+) -> Result<(AuthorizationManager, bool)> {
     let mut manager = AuthorizationManager::new(server.url.as_str())
         .await
         .map_err(auth_err(name))?;
@@ -38,16 +40,13 @@ pub async fn authorization_manager(
         .initialize_from_store()
         .await
         .map_err(auth_err(name))?;
-    if !stored {
-        return Err(AppError::Plugin(format!(
-            "mcp '{name}' has no stored OAuth token — run `pie mcp login {name}`"
-        )));
-    }
-    Ok(manager)
+    Ok((manager, stored))
 }
 
 /// Run the interactive browser flow for `name` and store the resulting
-/// tokens. Returns the granted scopes.
+/// tokens. Returns the granted scopes. Works for any configured server —
+/// `[mcp.<name>.auth]` only overrides the defaults (pre-registered
+/// credentials, scopes, fixed callback port).
 pub async fn login(name: &str, server: &McpServerConfig, pool: DbPool) -> Result<Vec<String>> {
     let listener =
         bind_callback_listener(server.auth.as_ref().and_then(|a| a.redirect_port)).await?;
@@ -92,9 +91,6 @@ pub(crate) async fn run_login(
     pool: DbPool,
     announce: impl Fn(&str),
 ) -> Result<Vec<String>> {
-    let auth = server.auth.as_ref().ok_or_else(|| {
-        AppError::Config(format!("mcp '{name}' has no [mcp.{name}.auth] section"))
-    })?;
     manager.set_credential_store(SqliteCredentialStore::new(pool.clone(), name.to_string()));
 
     let resolution = manager
@@ -106,14 +102,19 @@ pub(crate) async fn run_login(
     let port = listener.local_addr()?.port();
     let mut request = AuthorizationRequest::new(format!("http://127.0.0.1:{port}/callback"))
         .with_client_name("pie");
-    if let Some(client_id) = &auth.client_id {
-        request = request.with_preregistered_client(client_id);
-        if let Some(secret) = &auth.client_secret {
-            request = request.with_client_secret(secret.expose_secret());
+    // The section is optional: present, it overrides the defaults
+    // (pre-registered credentials instead of dynamic registration, explicit
+    // scopes, and login() already took its redirect_port).
+    if let Some(auth) = &server.auth {
+        if let Some(client_id) = &auth.client_id {
+            request = request.with_preregistered_client(client_id);
+            if let Some(secret) = &auth.client_secret {
+                request = request.with_client_secret(secret.expose_secret());
+            }
         }
-    }
-    if !auth.scopes.is_empty() {
-        request = request.with_scopes(auth.scopes.clone());
+        if !auth.scopes.is_empty() {
+            request = request.with_scopes(auth.scopes.clone());
+        }
     }
 
     let session = AuthorizationSession::new(manager, request)
@@ -148,9 +149,11 @@ pub(crate) async fn run_login(
 /// (`/callback?code=…&state=…`).
 async fn wait_for_callback(listener: &TcpListener) -> Result<String> {
     let (mut socket, _) = listener.accept().await?;
+    // Zero-initialized, so the unread tail past a short read is NULs that
+    // the first-line parse never reaches.
     let mut buf = vec![0u8; 8192];
-    let n = socket.read(&mut buf).await?;
-    let request_uri = String::from_utf8_lossy(&buf[..n])
+    let _ = socket.read(&mut buf).await?;
+    let request_uri = String::from_utf8_lossy(&buf)
         .lines()
         .next()
         .and_then(|line| line.split_whitespace().nth(1))
@@ -237,13 +240,14 @@ mod tests {
     use crate::config::McpAuthConfig;
     use crate::config::McpServerConfig;
     use rmcp::transport::auth::{OAuthHttpClient, OAuthHttpClientFuture, OAuthHttpRequest};
+    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     fn server_with(auth: McpAuthConfig) -> McpServerConfig {
         McpServerConfig {
             url: "https://mcp.example.test/mcp".parse().unwrap(),
             api_key: None,
-            headers: Default::default(),
+            headers: HashMap::default(),
             auth: Some(auth),
             main_agent_only: false,
         }
@@ -328,7 +332,7 @@ mod tests {
         .await
         .unwrap();
 
-        let auth_urls: Arc<Mutex<Vec<String>>> = Default::default();
+        let auth_urls: Arc<Mutex<Vec<String>>> = Arc::default();
         let flow_urls = auth_urls.clone();
         let flow = run_login(
             "linear",
@@ -394,14 +398,86 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn authorization_manager_requires_a_stored_token() {
+    async fn authorization_manager_reports_missing_token_without_failing() {
         let pool = crate::db::create_test_pool().await.unwrap();
         let server = server_with(McpAuthConfig::default());
 
-        let Err(AppError::Plugin(msg)) = authorization_manager("linear", &server, pool).await
-        else {
-            panic!("expected a Plugin error when no token is stored");
+        // No stored token is not an error: the manager still connects
+        // servers unauthenticated and lets OAuth servers challenge.
+        let (_manager, stored) = authorization_manager("linear", &server, pool)
+            .await
+            .expect("manager builds without stored credentials");
+        assert!(!stored);
+    }
+
+    #[tokio::test]
+    async fn login_works_without_an_auth_section() {
+        let pool = crate::db::create_test_pool().await.unwrap();
+        // OAuth is assumed: no [mcp.<name>.auth] at all, defaults everywhere.
+        let server = server_with(McpAuthConfig::default());
+        let server = McpServerConfig {
+            auth: None,
+            ..server
         };
-        assert!(msg.contains("pie mcp login"), "{msg}");
+
+        let listener = bind_callback_listener(None).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let manager = AuthorizationManager::new_with_oauth_http_client(
+            server.url.as_str(),
+            Arc::new(StubAuthServer),
+        )
+        .await
+        .unwrap();
+
+        let auth_urls: Arc<Mutex<Vec<String>>> = Arc::default();
+        let flow_urls = auth_urls.clone();
+        let flow = run_login(
+            "board",
+            manager,
+            &server,
+            listener,
+            pool.clone(),
+            move |url| flow_urls.lock().unwrap().push(url.to_string()),
+        );
+
+        let browser = tokio::spawn(async move {
+            loop {
+                let state = auth_urls
+                    .lock()
+                    .unwrap()
+                    .first()
+                    .and_then(|url| extract_param(url, "state"));
+                if let Some(state) = state {
+                    let mut sock = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                        .await
+                        .unwrap();
+                    sock.write_all(
+                        format!(
+                            "GET /callback?code=the-code&state={state} HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n"
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                    sock.shutdown().await.unwrap();
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        });
+
+        let granted = flow.await.unwrap();
+        browser.await.unwrap();
+        assert!(
+            granted.contains(&"read".to_string()),
+            "granted: {granted:?}"
+        );
+
+        let row: (String,) =
+            sqlx::query_as("SELECT credentials FROM mcp_oauth_tokens WHERE server_name = 'board'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(row.0.contains("at-123"), "{}", row.0);
     }
 }

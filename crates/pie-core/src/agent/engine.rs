@@ -441,43 +441,42 @@ impl PieAgent {
         let mut plugin = McpPlugin::new();
         for (name, server) in servers {
             let headers = server.http_headers();
-            let connect: std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> =
-                match &server.auth {
-                    // OAuth servers authorize from the tokens `pie mcp login`
-                    // stored; rmcp refreshes and retries 401s transparently.
-                    Some(_) => {
-                        match crate::mcp_auth::authorization_manager(&name, server, pool.clone())
+            // OAuth is assumed: every server without an api_key connects
+            // through rmcp's AuthClient, which sends requests
+            // unauthenticated until `pie mcp login` has stored a token —
+            // open servers behave exactly as before, OAuth servers get
+            // refresh + challenge handling for free.
+            let connect: std::result::Result<bool, Box<dyn std::error::Error + Send + Sync>> =
+                if server.api_key.is_some() {
+                    plugin
+                        .add_remote_server(name.clone(), server.url.as_str(), headers)
+                        .await
+                        .map(|()| true)
+                } else {
+                    match crate::mcp_auth::authorization_manager(&name, server, pool.clone()).await
+                    {
+                        Ok((manager, stored)) => plugin
+                            .add_remote_server_authorized(
+                                name.clone(),
+                                server.url.as_str(),
+                                headers,
+                                manager,
+                            )
                             .await
-                        {
-                            Ok(manager) => {
-                                plugin
-                                    .add_remote_server_authorized(
-                                        name.clone(),
-                                        server.url.as_str(),
-                                        headers,
-                                        manager,
-                                    )
-                                    .await
-                            }
-                            Err(e) => Err(Box::new(e)),
-                        }
-                    }
-                    None => {
-                        plugin
-                            .add_remote_server(name.clone(), server.url.as_str(), headers)
-                            .await
+                            .map(|()| stored),
+                        Err(e) => Err(Box::new(e)),
                     }
                 };
             match connect {
-                Ok(()) => tracing::debug!(server = name, "mcp server connected"),
+                Ok(_) => tracing::debug!(server = name, "mcp server connected"),
                 Err(e) if strict => {
                     return Err(AppError::Plugin(format!(
                         "mcp server '{name}' failed to connect: {e}"
                     )));
                 }
                 Err(e) => {
-                    let hint = if server.auth.is_some() {
-                        format!(" — run `pie mcp login {name}`")
+                    let hint = if server.api_key.is_none() {
+                        format!(" — run `pie mcp login {name}` if it needs OAuth")
                     } else {
                         String::new()
                     };

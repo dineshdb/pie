@@ -277,20 +277,22 @@ context7_key = "..."
 
 ##### OAuth servers
 
-Servers behind OAuth 2.1 take an `[mcp.<name>.auth]` section instead of an
-`api_key`. Run `pie mcp login <name>` once: pie performs the MCP-spec
-browser flow — metadata discovery, dynamic client registration (or your
-pre-registered credentials), authorization code + PKCE — and stores the
-tokens in `~/.pie/pie.db`. Runs then authorize from the store and refresh
-automatically; with no stored token, strict selections fail and
-best-effort runs skip the server with a `pie mcp login` hint.
+OAuth 2.1 is assumed for any server without an `api_key`. Run
+`pie mcp login <name>` once: pie performs the MCP-spec browser flow —
+metadata discovery, dynamic client registration, authorization code +
+PKCE — and stores the tokens in `~/.pie/pie.db`. Runs then authorize
+from the store and refresh automatically; with no stored token,
+strict selections fail and best-effort runs skip the server with a
+`pie mcp login` hint.
 
 ```toml
 [mcp.linear]
 url = "https://mcp.linear.app/mcp"
 
+# Optional — only needed to override the defaults: pre-registered
+# credentials for servers without dynamic client registration, explicit
+# scopes, or a fixed callback port.
 [mcp.linear.auth]
-# omit client_id on servers supporting dynamic client registration
 client_id = "pie-client"
 client_secret = "linear_secret"   # optional; pairs with client_id
 # scopes = ["read", "write"]      # empty adopts what the server advertises

@@ -608,12 +608,6 @@ pub async fn handle_mcp(
                 ))
                 .into());
             };
-            if server.auth.is_none() {
-                return Err(crate::error::AppError::Config(format!(
-                    "mcp '{name}' has no [mcp.{name}.auth] section"
-                ))
-                .into());
-            }
             let granted = crate::mcp_auth::login(&name, server, (*pool).clone()).await?;
             let scopes = if granted.is_empty() {
                 "(none advertised)".to_string()
