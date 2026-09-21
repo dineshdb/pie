@@ -19,7 +19,7 @@ async-trait = "0.1"
 cel = "0.14"
 chrono = { version = "0.4.44", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
-croner = "3"
+croner = "4"
 dirs.workspace = true
 figment = { version = "0.10", features = ["toml"] }
 futures = "0.3"
@@ -27,13 +27,13 @@ include_dir = "0.7"
 minijinja = { version = "2", features = ["json"] }
 p1e-sandbox = { path = "../p1e-sandbox", version = "0.2.0" }
 sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "migrate"] }
-itertools = "0.14"
+itertools = "0.15"
 termion = "4"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync"] }
 tracing.workspace = true
 uuid = { version = "1", features = ["v7", "serde"] }
 hostname = "0.4.2"
-lexiclean = "0.0.1"
+lexiclean = "0.0.2"
 redact = { version = "0.1.11", features = ["serde"] }
 url = { version = "2.5.8", features = ["serde"] }
 thiserror = "2.0.18"

@@ -7,7 +7,7 @@ license = "MIT"
 repository = "https://github.com/dineshdb/pie"
 
 [dependencies]
-dirs = "6"
+dirs = "7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 shell-words = "1.1"

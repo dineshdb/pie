@@ -1,7 +1,10 @@
 .env
+.env.*
+!**/tests/**/.env
 build/
 target/
 .claude/
+.cargo-home/
 .fastembed_cache
 .antigravitycli
 .DS_Store
