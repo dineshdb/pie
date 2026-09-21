@@ -8,14 +8,12 @@
     )
 )]
 
-mod ui;
-
 use anyhow::Context;
 use clap::Parser;
 use core::option::Option::Some;
 use p1e_sandbox::SandboxConfig;
 use pie_core::agent::Agent;
-use pie_core::config::{PieConfig, ResolvedConfig, build_sandbox, load_config};
+use pie_core::config::{ResolvedConfig, build_sandbox, load_config};
 use pie_core::db::DbPool;
 use pie_core::error::Result;
 use pie_core::handler;
@@ -48,6 +46,12 @@ struct Cli {
     /// Continue the last session for this directory
     #[arg(short, long, global = true)]
     resume: bool,
+
+    /// Run the TUI against an external ACP agent instead of the
+    /// in-process engine: command and arguments, e.g. `pie --acp-agent
+    /// pie acp`
+    #[arg(long = "acp-agent", value_name = "COMMAND [ARGS]", num_args = 1..)]
+    acp_agent: Vec<String>,
 }
 
 #[derive(clap::Subcommand, Clone)]
@@ -219,13 +223,17 @@ pub async fn run() -> anyhow::Result<()> {
         run_single_shot(cli, config, session, format, engine).await
     } else {
         init_file_subscriber(&session.id.to_string(), &config.log_level)?;
-        let engine = RunEngine {
+        let setup = Interactive {
+            pool,
             registry,
-            agent,
-            model,
-            sandbox_settings: sandbox,
+            sandbox,
+            provider,
+            retry: config.retry.clone(),
+            agent_name: agent.map(|a| a.name),
+            session,
+            acp_agent: cli.acp_agent.clone(),
         };
-        run_interactive(session, &pie_config, provider, engine).await
+        run_interactive(setup).await
     }
 }
 
@@ -364,21 +372,95 @@ async fn run_single_shot(
     .await
 }
 
-async fn run_interactive(
-    session: Session,
-    pie_config: &PieConfig,
+/// Everything interactive mode needs to open its A2A door.
+struct Interactive {
+    pool: Arc<DbPool>,
+    registry: Arc<Registry>,
+    sandbox: Arc<SandboxConfig>,
     provider: config::ResolvedProvider,
-    engine: RunEngine,
-) -> anyhow::Result<()> {
-    ui::tui::run_tui(
-        engine.model,
+    retry: config::RetryConfig,
+    agent_name: Option<String>,
+    session: Session,
+    /// External ACP agent to run instead of the in-process engine
+    /// (`--acp-agent`); empty means in-process.
+    acp_agent: Vec<String>,
+}
+
+/// How long the interactive gateway keeps a conversation's agent session
+/// alive between turns: effectively forever — the TUI's conversation is
+/// the session, and an idle re-mint would open a fresh (amnesiac) one.
+/// TODO(a2acp): re-minted sessions should resume the conversation's
+/// session (`session/load`) instead of relying on a long grace.
+const TUI_IDLE_GRACE_SECS: u64 = 31_536_000; // one year
+
+/// The a2acp gateway config every TUI door runs on: permission asks are
+/// forwarded (the TUI answers them), no process agents unless
+/// `--acp-agent` provides one.
+fn tui_gateway_config() -> a2acp::Config {
+    a2acp::Config {
+        permission: a2acp::PermissionMode::Ask,
+        agents: std::collections::BTreeMap::new(),
+        idle_grace_secs: TUI_IDLE_GRACE_SECS,
+        ..a2acp::Config::default()
+    }
+}
+
+/// Interactive mode: assemble an a2acp gateway in process — pie hosted
+/// as its in-process agent by default, an external ACP agent's process
+/// spec with `--acp-agent` — and hand the front door to the TUI. The
+/// TUI's code path is identical either way; to the gateway the two
+/// hosting modes are indistinguishable.
+async fn run_interactive(setup: Interactive) -> anyhow::Result<()> {
+    let registry = setup.registry.clone();
+    let cwd = std::env::current_dir().context("cannot determine working directory")?;
+    let history = setup.session.history_entries().to_vec();
+    let session_id = pie_tui::SessionId::new(setup.session.id.to_string());
+    let provider = pie_tui::ProviderView {
+        name: setup.provider.name.clone(),
+        model: setup.provider.model.clone(),
+    };
+
+    let mut config = tui_gateway_config();
+    let mut in_process = std::collections::BTreeMap::new();
+    if setup.acp_agent.is_empty() {
+        let host: Arc<dyn a2acp::InProcessAgent> =
+            Arc::new(pie_acp::PieHost::new(pie_acp::HostDeps {
+                pool: setup.pool,
+                registry: setup.registry,
+                sandbox: setup.sandbox,
+                provider: setup.provider,
+                retry: setup.retry,
+                agent_name: setup.agent_name,
+                // The first turn continues the session pie resolved at
+                // launch (so `--resume` and fresh starts both behave like
+                // the pre-bridge TUI).
+                resume: Some(setup.session.id),
+            }));
+        config.a2a.default_agent = "pie".into();
+        in_process.insert("pie".to_string(), host);
+    } else {
+        let Some((program, args)) = setup.acp_agent.split_first() else {
+            anyhow::bail!("--acp-agent needs a command to run");
+        };
+        let spec = a2acp::AgentSpec {
+            command: program.clone(),
+            args: args.to_vec(),
+            ..a2acp::AgentSpec::new("", &[])
+        };
+        config.a2a.default_agent = "agent".into();
+        config.agents.insert("agent".to_string(), spec);
+    }
+    let gateway = a2acp::a2a::gateway_from_config(&config, &in_process)?;
+    let (client, events) = pie_tui::door::open(gateway.connect(), &config.a2a.default_agent, cwd);
+
+    pie_tui::run_tui(pie_tui::TuiDeps {
+        client,
+        events,
+        session_id,
+        history,
         provider,
-        session,
-        engine.sandbox_settings,
-        pie_config.clone(),
-        engine.registry,
-        engine.agent.map(|a| a.name),
-    )
+        registry,
+    })
     .await
 }
 
@@ -488,6 +570,7 @@ mod tests {
             overrides: config::CliOverrides::default(),
             query: query.split_whitespace().map(ToString::to_string).collect(),
             resume: false,
+            acp_agent: Vec::new(),
         }
     }
 

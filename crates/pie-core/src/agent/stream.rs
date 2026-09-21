@@ -456,7 +456,7 @@ mod tests {
             serde_json::from_str(r#"{"content":"line1\nline2","path":"a.rs"}"#).unwrap();
         assert_eq!(
             display_args(&args),
-            r#"{content = line1\nline2, path = a.rs}"#
+            "{content = line1\\nline2, path = a.rs}"
         );
 
         assert_eq!(display_args(&serde_json::json!({})), "{}");
@@ -472,6 +472,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
         tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt as _;
             let Ok((mut sock, _)) = listener.accept().await else {
                 return;
             };
@@ -479,7 +480,6 @@ mod tests {
             let _ = tokio::io::AsyncReadExt::read(&mut sock, &mut buf).await;
             let body = "data: {\"id\":\"c\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[]}\n\n";
             let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: 600\r\nconnection: close\r\n\r\n";
-            use tokio::io::AsyncWriteExt as _;
             let _ = sock.write_all(head.as_bytes()).await;
             let _ = sock.write_all(body.as_bytes()).await;
             let _ = sock.shutdown().await;
@@ -495,12 +495,9 @@ mod tests {
             .stream(&options, &[agentsdk::core::messages::user("Hi")])
             .await?;
         while let Some(chunk) = futures::StreamExt::next(&mut stream).await {
-            match chunk {
-                Ok(_) => continue,
-                Err(e) => {
-                    assert!(e.is_transport(), "fixture must mint a transport error");
-                    return Ok(e);
-                }
+            if let Err(e) = chunk {
+                assert!(e.is_transport(), "fixture must mint a transport error");
+                return Ok(e);
             }
         }
         Err(crate::error::AppError::Config(

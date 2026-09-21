@@ -864,8 +864,8 @@ mod tests {
 
     fn tooled_agent(plugins: Option<Vec<String>>, readonly: bool) -> Agent {
         Agent {
-            plugins,
             readonly,
+            plugins,
             ..test_agent(false)
         }
     }

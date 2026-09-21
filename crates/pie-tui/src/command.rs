@@ -1,4 +1,4 @@
-use crate::ui::tui::state::ChatMessage;
+use crate::state::ChatMessage;
 use pie_core::cmd::BuiltinCommand;
 use std::str::FromStr;
 
@@ -60,7 +60,7 @@ impl Command {
             Self::Builtin(builtin, args) => match builtin {
                 BuiltinCommand::Help => CommandAction::Help,
                 BuiltinCommand::Quit => CommandAction::Quit,
-                BuiltinCommand::Model => CommandAction::Model(args),
+                BuiltinCommand::Model => CommandAction::Model,
                 BuiltinCommand::Mode => CommandAction::Mode(args),
                 BuiltinCommand::Skills => {
                     let text = build_skills_list(registry);
@@ -81,7 +81,8 @@ pub enum CommandAction {
     NewSession,
     Stream(String),
     Shell(String),
-    Model(Option<String>),
+    /// `/model` — a bridge gap; the app answers with the notice.
+    Model,
     Mode(Option<String>),
     Help,
     Quit,

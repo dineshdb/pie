@@ -22,7 +22,10 @@ impl HelpOverlay<'_> {
         lines.push(Line::raw(""));
         let commands = [
             ("/help, /h", "          Show this help"),
-            ("/model", "             List/switch models"),
+            (
+                "/model",
+                "             Model switch (not available over the bridge)",
+            ),
             ("/skills, /ls", "       List agents and skills"),
             ("/clear", "             Clear conversation"),
             ("/exit, /quit", "        Exit"),
@@ -49,7 +52,10 @@ impl HelpOverlay<'_> {
             ("Up/Down", "           Navigate history"),
             ("Page Up/Down", "     Scroll messages"),
             ("Ctrl-T", "             Toggle plan list (Full / Compact)"),
-            ("Ctrl-K", "             Cycle mode (plan/build/debug/...)"),
+            (
+                "Ctrl-K",
+                "             Mode switch (not available over the bridge)",
+            ),
             ("Esc", "               Close dialog / Cancel"),
         ];
         for (key, desc) in keys {

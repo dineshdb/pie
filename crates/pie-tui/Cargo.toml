@@ -1,0 +1,25 @@
+[package]
+name = "pie-tui"
+version = "0.1.0"
+edition = "2024"
+description = "The pie interactive TUI: an A2A consumer over the a2acp front door"
+license = "MIT"
+repository = "https://github.com/dineshdb/pie"
+
+[dependencies]
+a2acp.workspace = true
+pie-core = { path = "../pie-core", version = "0.3.0" }
+serde_json.workspace = true
+anyhow = "1"
+arboard = "3"
+pulldown-cmark = "0.13"
+tachyonfx = "0.25"
+termion = "4"
+tokio = { version = "1", features = ["rt", "macros", "sync"] }
+tracing.workspace = true
+tui-textarea-2 = "0.13"
+tuirealm = { version = "4.0", features = ["termion"] }
+unicode-width = "0.2"
+
+[lints]
+workspace = true

@@ -31,6 +31,7 @@
 )]
 
 pub mod agent;
+pub mod bridge;
 pub mod cmd;
 pub mod config;
 pub mod cron;

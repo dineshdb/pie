@@ -1,5 +1,5 @@
-use crate::ui::tui::state::ChatMessage;
-use crate::ui::tui::widgets::render_cache::MessageRenderCache;
+use crate::state::ChatMessage;
+use crate::widgets::render_cache::MessageRenderCache;
 use pie_core::session::Role;
 use tuirealm::ratatui::buffer::Buffer;
 use tuirealm::ratatui::layout::Rect;

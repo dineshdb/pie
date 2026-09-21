@@ -95,7 +95,6 @@ use chrono::Utc;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full, StreamBody};
 use hyper::{HeaderMap, Request, Response};
-use pie_core::agent::AgentEvent;
 use pie_core::session::{Role, Session};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1522,20 +1521,10 @@ enum Reply {
 
 // ── turn driving ─────────────────────────────────────────────────────
 
-/// How a turn ended.
-enum TurnEnd {
-    Completed {
-        text: String,
-        usage: pie_core::usage::RunUsage,
-        cost_usd: Option<f64>,
-    },
-    Cancelled,
-    Failed(String),
-}
-
-/// Run one pie turn: forward engine events onto the live task's feed and
-/// finalize (terminal broadcast → drop from the registry). The gate guard
-/// drops here, wherever the turn ends.
+/// Run one pie turn: the engine is driven by the shared a2acp turn
+/// runner (`pie_core::bridge::run_turn`); this side projects the bridge events
+/// onto the live task's feed and finalizes (terminal broadcast → drop
+/// from the registry). The gate guard drops here, wherever the turn ends.
 #[allow(clippy::too_many_arguments)]
 async fn drive_turn(
     ctx: Arc<AppContext>,
@@ -1546,9 +1535,9 @@ async fn drive_turn(
     agent_name: Option<String>,
     prompt: String,
     guard: pie_core::turn_gate::TurnGuard,
-    mut cancel_rx: watch::Receiver<()>,
+    cancel_rx: watch::Receiver<()>,
 ) {
-    let mut agent = match crate::turn::prepare_turn(&ctx, &session, agent_name.as_deref()) {
+    let agent = match crate::turn::prepare_turn(&ctx, &session, agent_name.as_deref()) {
         Ok(agent) => agent,
         Err(e) => {
             end_turn(&turns, &live, &store, TaskState::Failed, Some(e)).await;
@@ -1556,25 +1545,28 @@ async fn drive_turn(
         }
     };
 
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-    let mut run = Box::pin(agent.stream(&prompt, event_tx));
-
-    let end = loop {
-        tokio::select! {
-            biased;
-            _ = cancel_rx.changed() => break TurnEnd::Cancelled,
-            Some(event) = event_rx.recv() => forward_event(&live, event),
-            result = &mut run => break result.map_or_else(|e| TurnEnd::Failed(e.to_string()), |outcome| TurnEnd::Completed {
-                    text: outcome.text,
-                    usage: outcome.usage,
-                    cost_usd: outcome.cost_usd,
-                }),
+    // Drain bridge events onto the live feed while the turn runs; the
+    // drain ends only after `run_turn` returns and drops its sender, so
+    // every delta and status line lands before finalization.
+    let (bridge_tx, mut bridge_rx) = mpsc::unbounded_channel::<pie_core::bridge::Event>();
+    let run = tokio::spawn(pie_core::bridge::run_turn(
+        agent, prompt, cancel_rx, bridge_tx,
+    ));
+    let drain_live = Arc::clone(&live);
+    let drain = tokio::spawn(async move {
+        while let Some(event) = bridge_rx.recv().await {
+            forward_event(&drain_live, event);
         }
+    });
+
+    let end = match run.await {
+        Ok(end) => end,
+        Err(e) => pie_core::bridge::PieTurnEnd::Failed(e.to_string()),
     };
-    drop(run);
+    let _ = drain.await;
 
     match end {
-        TurnEnd::Completed {
+        pie_core::bridge::PieTurnEnd::Completed {
             text,
             usage,
             cost_usd,
@@ -1599,8 +1591,10 @@ async fn drive_turn(
                 .unwrap_or_else(PoisonError::into_inner) = Some(completion);
             end_turn(&turns, &live, &store, TaskState::InputRequired, None).await;
         }
-        TurnEnd::Cancelled => end_turn(&turns, &live, &store, TaskState::Canceled, None).await,
-        TurnEnd::Failed(message) => {
+        pie_core::bridge::PieTurnEnd::Cancelled => {
+            end_turn(&turns, &live, &store, TaskState::Canceled, None).await;
+        }
+        pie_core::bridge::PieTurnEnd::Failed(message) => {
             end_turn(&turns, &live, &store, TaskState::Failed, Some(message)).await;
         }
     }
@@ -1684,10 +1678,10 @@ async fn end_turn(
     let _ = live.turn_epoch.send(next);
 }
 
-/// Map one engine event onto the live feed.
-fn forward_event(live: &LiveTask, event: AgentEvent) {
+/// Map one bridge event onto the live feed.
+fn forward_event(live: &LiveTask, event: pie_core::bridge::Event) {
     match event {
-        AgentEvent::Delta(text) => {
+        pie_core::bridge::Event::Delta(text) => {
             live.response
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -1698,7 +1692,7 @@ fn forward_event(live: &LiveTask, event: AgentEvent) {
         }
         // One pie turn is sequential, so at most one tool call is in
         // flight; non-empty `display` is the pre-execution announcement.
-        AgentEvent::ToolCall { display, .. } if !display.is_empty() => {
+        pie_core::bridge::Event::ToolCall { display, .. } if !display.is_empty() => {
             *live
                 .status_message
                 .lock()

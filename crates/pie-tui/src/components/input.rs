@@ -3,23 +3,17 @@
 //! Not mounted in the tuirealm App — accessed directly from the main loop.
 //! Only `ChatComponent` is the active tuirealm component.
 
-use crate::ui::tui::realm::{Msg, StreamEvent};
-use crate::ui::tui::stream::{PendingPermissions, StreamContext, spawn_stream};
-use crate::ui::tui::widgets::completion::{
-    CompletionPopup, CompletionState, Direction, slash_token_range,
-};
-use crate::ui::tui::widgets::history::InputHistory;
-use crate::ui::tui::widgets::input::{InputView, cursor_position};
-use p1e_sandbox::SandboxConfig;
-use pie_core::config::{ProviderConfig, ResolvedProvider, pie_home};
+use crate::door::Client;
+use crate::realm::{Msg, SessionId};
+use crate::widgets::completion::{CompletionPopup, CompletionState, Direction, slash_token_range};
+use crate::widgets::history::InputHistory;
+use crate::widgets::input::{InputView, cursor_position};
+use pie_core::config::pie_home;
 use pie_core::plugin::AgentMode;
 use pie_core::registry::Registry;
-use pie_core::session::{Session, SessionId};
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tachyonfx::{CellFilter, EffectManager, fx};
-use tokio::sync::mpsc;
 use tui_textarea::{Input as TaInput, Key as TaKey, TextArea};
 use tuirealm::event::{Key, KeyModifiers};
 use tuirealm::ratatui::Frame;
@@ -27,6 +21,14 @@ use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::{Color, Modifier, Style};
 
 const PLACEHOLDER: &str = "Type a query or /help for commands";
+
+/// The provider state the TUI keeps for display — names and model ids
+/// only; over the bridge nothing can steer them.
+#[derive(Debug, Clone)]
+pub struct ProviderView {
+    pub name: String,
+    pub model: String,
+}
 
 pub struct InputComponent {
     pub textarea: TextArea<'static>,
@@ -38,37 +40,22 @@ pub struct InputComponent {
     pub last_tick: Instant,
     pub spinner_frame: usize,
     stream_effect_active: bool,
-    pub model: agentsdk::OpenAI,
-    pub provider: ResolvedProvider,
-    pub available_providers: HashMap<String, ProviderConfig>,
+    pub client: Client,
+    pub provider: ProviderView,
     pub session_id: SessionId,
-    pub session_pool: Arc<pie_core::db::DbPool>,
-    pub sandbox_settings: Arc<SandboxConfig>,
-    pub stream_abort: Option<mpsc::UnboundedSender<()>>,
+    streaming: bool,
     last_query: Option<String>,
     pub registry: Arc<Registry>,
-    pub pending_permissions: PendingPermissions,
-    pub agent_name: Option<String>,
     pub mode: AgentMode,
-    pub pending_mode_toggles: u8,
-    pub mode_toggle_deadline: Option<Instant>,
 }
 
 impl InputComponent {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        model: agentsdk::OpenAI,
-        provider: ResolvedProvider,
-        session: &Session,
-        sandbox_settings: Arc<SandboxConfig>,
-        available_providers: HashMap<String, ProviderConfig>,
+        client: Client,
+        provider: ProviderView,
+        session_id: SessionId,
         registry: Arc<Registry>,
-        pending_permissions: PendingPermissions,
-        agent_name: Option<String>,
     ) -> Self {
-        let session_id = session.id.clone();
-        let session_pool = session.pool().clone();
-
         let history_dir = pie_home().join("history");
         let _ = std::fs::create_dir_all(&history_dir);
         let history_path = history_dir.join(format!("{session_id}.txt"));
@@ -90,20 +77,13 @@ impl InputComponent {
             last_tick: Instant::now(),
             spinner_frame: 0,
             stream_effect_active: false,
-            model,
+            client,
             provider,
-            available_providers,
             session_id,
-            session_pool,
-            sandbox_settings,
-            stream_abort: None,
+            streaming: false,
             last_query: None,
             registry,
-            pending_permissions,
-            agent_name,
             mode: AgentMode::Build,
-            pending_mode_toggles: 0,
-            mode_toggle_deadline: None,
         }
     }
 
@@ -268,16 +248,15 @@ impl InputComponent {
     pub fn handle_key_event(&mut self, key: &tuirealm::event::KeyEvent) -> Option<Msg> {
         if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, Key::Char('c')) {
             if self.is_streaming() {
-                self.take_abort_handle();
+                self.abort_stream();
                 return None;
             }
             return Some(Msg::Quit);
         }
 
         if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, Key::Char('k')) {
-            self.mode = self.mode.next();
-            self.pending_mode_toggles += 1;
-            self.mode_toggle_deadline = Some(Instant::now() + Duration::from_millis(200));
+            // Mode cycling is a bridge gap — the handler answers with the
+            // notice instead of switching anything.
             return Some(Msg::ToggleMode);
         }
 
@@ -342,7 +321,7 @@ impl InputComponent {
             }
             (Key::Esc, KeyModifiers::NONE) => {
                 if self.is_streaming() {
-                    self.take_abort_handle();
+                    self.abort_stream();
                 } else {
                     return Some(Msg::CloseHelp);
                 }
@@ -357,40 +336,25 @@ impl InputComponent {
     // ── Streaming ────────────────────────────────────────────────────
 
     pub fn is_streaming(&self) -> bool {
-        self.stream_abort.is_some()
+        self.streaming
     }
 
-    pub fn start_stream(&mut self, query: &str, tx: &mpsc::UnboundedSender<StreamEvent>) {
+    pub fn start_stream(&mut self, query: &str) {
         self.last_query = Some(query.to_string());
-        let (abort_tx, abort_rx) = mpsc::unbounded_channel();
-        self.stream_abort = Some(abort_tx);
-
-        let ctx = StreamContext::from(&*self);
-        tokio::spawn(spawn_stream(ctx, query.to_string(), tx.clone(), abort_rx));
+        self.streaming = true;
+        self.client.prompt(query);
     }
 
-    pub fn take_abort_handle(&mut self) -> Option<mpsc::UnboundedSender<()>> {
-        self.stream_abort.take()
+    /// Abort the in-flight turn; the stream answers with a terminal
+    /// `Error("Cancelled")` event.
+    pub fn abort_stream(&mut self) {
+        self.streaming = false;
+        self.client.cancel();
     }
 
     pub fn finish_stream(&mut self) -> Option<String> {
-        self.stream_abort = None;
+        self.streaming = false;
         self.last_query.take()
-    }
-
-    /// Returns a provider config based on current model.
-    pub fn get_provider(&self) -> ResolvedProvider {
-        self.provider.clone()
-    }
-
-    pub fn set_model(&mut self, model_name: &str) {
-        self.provider.model = model_name.to_string();
-        self.model = self.provider.build_client();
-    }
-
-    pub fn set_provider(&mut self, provider: ResolvedProvider) {
-        self.provider = provider;
-        self.model = self.provider.build_client();
     }
 
     pub fn active_steps(is_streaming: bool) -> Vec<String> {

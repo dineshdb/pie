@@ -1,4 +1,4 @@
-use crate::ui::tui::widgets::spinner::Spinner;
+use crate::widgets::spinner::Spinner;
 use tuirealm::ratatui::buffer::Buffer;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::{Color, Modifier, Style};

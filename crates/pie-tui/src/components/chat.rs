@@ -2,16 +2,13 @@
 //!
 //! Owns the message list, render cache, scroll state, and streaming response tracking.
 
-use crate::ui::tui::realm::{Msg, StreamEvent};
-use crate::ui::tui::state::ChatMessage;
-use crate::ui::tui::stream::PendingPermissions;
-use crate::ui::tui::widgets::chat::{self, ChatState, ChatView};
-use crate::ui::tui::widgets::render_cache::MessageRenderCache;
-use crate::ui::tui::widgets::tool_display::ToolCallResult;
-use pie_core::plugin::AgentMode;
+use crate::realm::{AskId, Msg, StreamEvent};
+use crate::state::ChatMessage;
+use crate::widgets::chat::{self, ChatState, ChatView};
+use crate::widgets::render_cache::MessageRenderCache;
+use crate::widgets::tool_display::ToolCallResult;
 use pie_core::registry::Registry;
 use std::sync::Arc;
-use tokio::sync::oneshot;
 use tuirealm::command::{Cmd, CmdResult};
 use tuirealm::component::{AppComponent, Component};
 use tuirealm::event::{Event, Key, KeyModifiers, MouseEvent, MouseEventKind};
@@ -22,26 +19,16 @@ use tuirealm::state::State;
 
 const MAX_MESSAGES: usize = 1_000;
 
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ModelSelectorState {
-    pub(crate) providers: Vec<String>,
-    pub(crate) provider_idx: usize,
-    pub(crate) models: Vec<String>,
-    pub(crate) selected_idx: Option<usize>,
-    pub(crate) is_loading: bool,
-    pub(crate) error: Option<String>,
-}
-
 #[derive(Debug, PartialEq)]
 pub enum ActiveDialog {
     None,
     Help { scroll_offset: u16 },
-    ModelSelector(ModelSelectorState),
     PermissionPrompt(PermissionPromptState),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PermissionPromptState {
+    pub id: AskId,
     pub skill: String,
     pub permissions: Vec<String>,
 }
@@ -52,41 +39,26 @@ pub struct ChatComponent {
     pub chat_state: ChatState,
     pub response_idx: Option<usize>,
     pub active_dialog: ActiveDialog,
-    pub current_model: String,
     pub last_area: Rect,
     pub render_plan: Vec<chat::ChatRenderItem>,
     pub total_height: usize,
     pub last_width: usize,
     pub registry: Arc<Registry>,
-    pub pending_permissions: PendingPermissions,
-    permission_response_tx: Option<oneshot::Sender<bool>>,
-    /// Usage summary seen before the run finished; shown once the
-    /// response message is finalized so it lands below it.
-    pending_usage: Option<String>,
 }
 
 impl ChatComponent {
-    pub fn new(
-        messages: Vec<ChatMessage>,
-        current_model: String,
-        registry: Arc<Registry>,
-        pending_permissions: PendingPermissions,
-    ) -> Self {
+    pub fn new(messages: Vec<ChatMessage>, registry: Arc<Registry>) -> Self {
         Self {
             messages,
             render_cache: MessageRenderCache::new(),
             chat_state: ChatState::new(),
             response_idx: None,
             active_dialog: ActiveDialog::None,
-            current_model,
             last_area: Rect::default(),
             render_plan: Vec::new(),
             total_height: 0,
             last_width: 0,
             registry,
-            pending_permissions,
-            permission_response_tx: None,
-            pending_usage: None,
         }
     }
 
@@ -137,19 +109,6 @@ impl ChatComponent {
         self.render_plan.clear();
     }
 
-    pub fn update_last_user_message(&mut self, content: String) {
-        if let Some((idx, msg)) = self
-            .messages
-            .iter_mut()
-            .enumerate()
-            .rev()
-            .find(|(_, m)| m.role == pie_core::session::Role::User)
-        {
-            msg.content = content;
-            self.render_cache.invalidate(idx);
-            self.render_plan.clear();
-        }
-    }
     pub fn clear_messages(&mut self) {
         self.messages.clear();
         self.render_cache.clear();
@@ -164,7 +123,6 @@ impl ChatComponent {
     pub fn start_response(&mut self) {
         self.add_message(ChatMessage::response());
         self.response_idx = Some(self.messages.len() - 1);
-        self.pending_usage = None;
         self.render_plan.clear();
     }
 
@@ -186,9 +144,6 @@ impl ChatComponent {
             self.render_cache.invalidate(idx);
         }
         self.response_idx = None;
-        if let Some(summary) = self.pending_usage.take() {
-            self.add_message(ChatMessage::system(&summary));
-        }
         self.render_plan.clear();
     }
 
@@ -276,47 +231,6 @@ impl Component for ChatComponent {
                     area,
                 );
             }
-            ActiveDialog::ModelSelector(state) => {
-                let provider_name = state
-                    .providers
-                    .get(state.provider_idx)
-                    .cloned()
-                    .unwrap_or_default();
-                let title = if provider_name.is_empty() {
-                    "Select Model".to_string()
-                } else {
-                    format!("Select Provider / Model ({provider_name})")
-                };
-
-                let current_model_idx = if state.is_loading {
-                    None
-                } else {
-                    let current = self.current_model.trim().to_lowercase();
-                    state.models.iter().position(|m| {
-                        let m_lower = m.trim().to_lowercase();
-                        m_lower == current
-                            || m_lower.ends_with(&format!("/{current}"))
-                            || current.ends_with(&format!("/{m_lower}"))
-                    })
-                };
-
-                frame.render_widget(
-                    super::super::widgets::dialog::Dialog::new(
-                        &title,
-                        super::super::widgets::model_selector::ModelSelectorOverlay {
-                            providers: &state.providers,
-                            provider_idx: state.provider_idx,
-                            models: &state.models,
-                            selected_idx: state.selected_idx,
-                            current_model_idx,
-                            is_loading: state.is_loading,
-                            error: state.error.as_deref(),
-                        },
-                    )
-                    .with_size(80, 80),
-                    area,
-                );
-            }
             ActiveDialog::PermissionPrompt(state) => {
                 let perm_lines: Vec<String> = state
                     .permissions
@@ -324,7 +238,7 @@ impl Component for ChatComponent {
                     .map(|p| format!("  - {p}"))
                     .collect();
                 let body = format!(
-                    "Skill '{}' requests:\n{}\n\n[Enter] Allow   [Esc/n] Deny",
+                    "'{}' wants permission:\n{}\n\n[Enter] Allow   [Esc/n] Deny",
                     state.skill,
                     perm_lines.join("\n")
                 );
@@ -417,21 +331,12 @@ impl ChatComponent {
 
     fn handle_user_event(&mut self, ev: &StreamEvent) -> Msg {
         match ev {
-            StreamEvent::UserMessage(s) => Msg::UserMessage(s.clone()),
             StreamEvent::Delta(s) => {
                 self.update_response(s);
                 Msg::Redraw
             }
             StreamEvent::Done(s) => Msg::StreamDone(s.clone()),
-            StreamEvent::Error(s) => {
-                if let ActiveDialog::ModelSelector(state) = &mut self.active_dialog {
-                    state.is_loading = false;
-                    state.error = Some(s.clone());
-                    Msg::Redraw
-                } else {
-                    Msg::StreamError(s.clone())
-                }
-            }
+            StreamEvent::Error(s) => Msg::StreamError(s.clone()),
             StreamEvent::ToolCall {
                 id,
                 name,
@@ -447,74 +352,23 @@ impl ChatComponent {
                 let tool = ToolCallResult::new(name, output, *failed);
                 let result_line = tool.to_string();
                 self.append_tool_result(id, &result_line);
-
-                if name == "switch_mode"
-                    && let Ok(val) = serde_json::from_str::<serde_json::Value>(output)
-                    && let Some(mode_str) = val.get("mode").and_then(serde_json::Value::as_str)
-                    && let Ok(mode) = mode_str.parse::<AgentMode>()
-                {
-                    return Msg::ModeChanged(mode);
-                }
-
                 Msg::Redraw
             }
-            StreamEvent::Usage(summary) => {
-                self.pending_usage = Some(summary.clone());
+            StreamEvent::PermissionAsk {
+                id,
+                skill,
+                permissions,
+            } => {
+                self.active_dialog = ActiveDialog::PermissionPrompt(PermissionPromptState {
+                    id: id.clone(),
+                    skill: skill.clone(),
+                    permissions: permissions.clone(),
+                });
                 Msg::Redraw
             }
-            StreamEvent::TurnUsage(summary) => {
-                self.add_message(ChatMessage::system(summary));
-                Msg::Redraw
-            }
-            StreamEvent::ModelList(models) => {
-                tracing::info!(count = models.len(), "received ModelList in ChatComponent");
-                if let ActiveDialog::ModelSelector(state) = &self.active_dialog {
-                    tracing::info!(provider = %state.providers.get(state.provider_idx).cloned().unwrap_or_default(), "updating ModelSelector state");
-                    let models = models.clone();
-                    let providers = state.providers.clone();
-                    let provider_idx = state.provider_idx;
-
-                    // Match current_model flexibly
-                    let current = self.current_model.trim().to_lowercase();
-                    let selected_idx = models
-                        .iter()
-                        .position(|m| {
-                            let m_lower = m.trim().to_lowercase();
-                            m_lower == current
-                                || m_lower.ends_with(&format!("/{current}"))
-                                || current.ends_with(&format!("/{m_lower}"))
-                        })
-                        .or(if models.is_empty() { None } else { Some(0) });
-
-                    tracing::info!(selected = ?selected_idx, "selected index determined");
-
-                    self.active_dialog = ActiveDialog::ModelSelector(ModelSelectorState {
-                        providers,
-                        provider_idx,
-                        models,
-                        selected_idx,
-                        is_loading: false,
-                        error: None,
-                    });
-                } else {
-                    tracing::warn!(dialog = ?self.active_dialog, "received ModelList but ModelSelector is not active");
-                }
-                Msg::Redraw
-            }
-            StreamEvent::PermissionRequest => {
-                let req = self
-                    .pending_permissions
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .take();
-                if let Some(req) = req {
-                    self.permission_response_tx = Some(req.response_tx);
-                    self.active_dialog = ActiveDialog::PermissionPrompt(PermissionPromptState {
-                        skill: req.skill,
-                        permissions: req.permissions.iter().map(ToString::to_string).collect(),
-                    });
-                }
-                Msg::Redraw
+            StreamEvent::SessionSwitched(session_id) => {
+                // The realm loop resets the input component onto it.
+                Msg::SessionSwitched(session_id.clone())
             }
         }
     }
@@ -528,28 +382,22 @@ impl ChatComponent {
                 let max_scroll = total_lines.saturating_sub(dialog_height);
                 Self::handle_help_keyboard_event(key, scroll_offset, max_scroll)
             }
-            ActiveDialog::ModelSelector(state) => {
-                Self::handle_model_selector_keyboard_event(key, state)
-            }
             ActiveDialog::PermissionPrompt(_) => {
                 Some(self.handle_permission_prompt_keyboard_event(key))
             }
         };
 
         if let Some(m) = msg {
-            if matches!(m, Msg::Redraw)
-                && (matches!(self.active_dialog, ActiveDialog::Help { .. })
-                    || matches!(self.active_dialog, ActiveDialog::ModelSelector(_)))
-            {
+            if matches!(m, Msg::Redraw) && matches!(self.active_dialog, ActiveDialog::Help { .. }) {
                 // If it was a close command, handle it here
                 if let Key::Esc | Key::Char('?') = key.code {
                     self.active_dialog = ActiveDialog::None;
                 }
-                if let Key::Enter | Key::Char('n') = key.code
-                    && matches!(self.active_dialog, ActiveDialog::PermissionPrompt(_))
-                {
-                    self.active_dialog = ActiveDialog::None;
-                }
+            }
+            if let Key::Enter | Key::Char('n') = key.code
+                && matches!(self.active_dialog, ActiveDialog::PermissionPrompt(_))
+            {
+                self.active_dialog = ActiveDialog::None;
             }
             return m;
         }
@@ -606,97 +454,20 @@ impl ChatComponent {
         }
     }
 
-    fn handle_model_selector_keyboard_event(
-        key: &tuirealm::event::KeyEvent,
-        state: &mut ModelSelectorState,
-    ) -> Option<Msg> {
-        match (key.modifiers, &key.code) {
-            (KeyModifiers::NONE, Key::Up) => {
-                if let Some(idx) = state.selected_idx
-                    && idx > 0
-                {
-                    state.selected_idx = Some(idx - 1);
-                }
-                Some(Msg::Redraw)
-            }
-            (KeyModifiers::NONE, Key::Down) => {
-                if let Some(idx) = state.selected_idx
-                    && idx + 1 < state.models.len()
-                {
-                    state.selected_idx = Some(idx + 1);
-                }
-                Some(Msg::Redraw)
-            }
-            (KeyModifiers::NONE, Key::Left) => {
-                if state.provider_idx > 0 {
-                    state.provider_idx -= 1;
-                    state.selected_idx = None;
-                    state.error = None;
-                    let provider_name = state
-                        .providers
-                        .get(state.provider_idx)
-                        .cloned()
-                        .unwrap_or_default();
-                    return Some(Msg::FetchModels(provider_name));
-                }
-                Some(Msg::Redraw)
-            }
-            (KeyModifiers::NONE, Key::Right) => {
-                if state.provider_idx + 1 < state.providers.len() {
-                    state.provider_idx += 1;
-                    state.selected_idx = None;
-                    state.error = None;
-                    let provider_name = state
-                        .providers
-                        .get(state.provider_idx)
-                        .cloned()
-                        .unwrap_or_default();
-                    return Some(Msg::FetchModels(provider_name));
-                }
-                Some(Msg::Redraw)
-            }
-            (KeyModifiers::NONE, Key::Enter) => {
-                if let Some(idx) = state.selected_idx
-                    && let Some(model) = state.models.get(idx)
-                {
-                    let model = model.clone();
-                    let provider_name = state
-                        .providers
-                        .get(state.provider_idx)
-                        .cloned()
-                        .unwrap_or_default();
-                    return Some(Msg::SwitchProviderAndModel(provider_name, model));
-                }
-                None
-            }
-            (KeyModifiers::NONE, Key::Esc) => {
-                if !state.is_loading {
-                    return Some(Msg::Redraw);
-                }
-                None
-            }
-            _ => None,
-        }
-    }
-
     fn handle_permission_prompt_keyboard_event(&mut self, key: &tuirealm::event::KeyEvent) -> Msg {
-        match (key.modifiers, &key.code) {
-            (KeyModifiers::NONE, Key::Enter) => {
-                if let Some(tx) = self.permission_response_tx.take() {
-                    let _ = tx.send(true);
-                }
-                self.active_dialog = ActiveDialog::None;
-                Msg::Redraw
-            }
-            (KeyModifiers::NONE, Key::Esc | Key::Char('n')) => {
-                if let Some(tx) = self.permission_response_tx.take() {
-                    let _ = tx.send(false);
-                }
-                self.active_dialog = ActiveDialog::None;
-                Msg::Redraw
-            }
-            _ => Msg::Redraw,
+        let answer = match (key.modifiers, &key.code) {
+            (KeyModifiers::NONE, Key::Enter) => Some(true),
+            (KeyModifiers::NONE, Key::Esc | Key::Char('n')) => Some(false),
+            _ => None,
+        };
+        if let (ActiveDialog::PermissionPrompt(state), Some(allow)) = (&self.active_dialog, answer)
+        {
+            let id = state.id.clone();
+            self.active_dialog = ActiveDialog::None;
+            // The realm loop routes the answer through the door client.
+            return Msg::AnswerPermission(id, allow);
         }
+        Msg::Redraw
     }
 }
 
@@ -713,19 +484,10 @@ mod tests {
         })
     }
 
-    fn test_pending() -> PendingPermissions {
-        Arc::new(std::sync::Mutex::new(None))
-    }
-
     #[tokio::test]
     async fn new_chat_has_welcome_message_first() {
         let messages = vec![ChatMessage::system("Welcome to pie! Type ? for help.")];
-        let chat = ChatComponent::new(
-            messages,
-            "test-model".to_string(),
-            test_registry(),
-            test_pending(),
-        );
+        let chat = ChatComponent::new(messages, test_registry());
         assert_eq!(chat.messages.len(), 1);
         assert_eq!(chat.messages[0].role, Role::System);
         assert!(chat.messages[0].content.contains("Welcome"));
@@ -733,12 +495,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_message_auto_scrolls() {
-        let mut chat = ChatComponent::new(
-            vec![ChatMessage::system("Welcome")],
-            "test-model".to_string(),
-            test_registry(),
-            test_pending(),
-        );
+        let mut chat = ChatComponent::new(vec![ChatMessage::system("Welcome")], test_registry());
         chat.chat_state.auto_scroll = false;
         chat.add_message(ChatMessage::user("test"));
         assert!(
@@ -748,27 +505,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_last_user_message() {
-        let mut chat = ChatComponent::new(
-            vec![ChatMessage::system("Welcome")],
-            "test-model".to_string(),
-            test_registry(),
-            test_pending(),
-        );
-        chat.add_message(ChatMessage::user("original"));
-        chat.update_last_user_message("updated".to_string());
-        assert_eq!(chat.messages[1].content, "updated");
-        assert_eq!(chat.messages[1].role, Role::User);
-    }
-
-    #[tokio::test]
     async fn start_and_finish_stream() {
-        let mut chat = ChatComponent::new(
-            vec![],
-            "test-model".to_string(),
-            test_registry(),
-            test_pending(),
-        );
+        let mut chat = ChatComponent::new(vec![], test_registry());
         chat.start_response();
         assert!(chat.is_streaming());
         assert_eq!(chat.response_idx, Some(0));
@@ -786,12 +524,7 @@ mod tests {
 
     #[tokio::test]
     async fn tool_calls_appear_before_active_response() {
-        let mut chat = ChatComponent::new(
-            vec![ChatMessage::user("run tool")],
-            "test-model".to_string(),
-            test_registry(),
-            test_pending(),
-        );
+        let mut chat = ChatComponent::new(vec![ChatMessage::user("run tool")], test_registry());
         chat.start_response(); // idx 1
         chat.update_response("I will run a tool");
         chat.add_message(ChatMessage::tool("tool result"));
@@ -809,12 +542,7 @@ mod tests {
     /// plus the result on its own line).
     #[tokio::test]
     async fn tool_call_pre_and_post_execution_merge_into_one_message() {
-        let mut chat = ChatComponent::new(
-            vec![],
-            "test-model".to_string(),
-            test_registry(),
-            test_pending(),
-        );
+        let mut chat = ChatComponent::new(vec![], test_registry());
 
         chat.handle_user_event(&StreamEvent::ToolCall {
             id: "call-1".to_string(),
@@ -846,12 +574,7 @@ mod tests {
     /// land on call A's header.
     #[tokio::test]
     async fn concurrent_tool_calls_merge_by_id_not_by_order() {
-        let mut chat = ChatComponent::new(
-            vec![],
-            "test-model".to_string(),
-            test_registry(),
-            test_pending(),
-        );
+        let mut chat = ChatComponent::new(vec![], test_registry());
 
         chat.handle_user_event(&StreamEvent::ToolCall {
             id: "a".to_string(),
@@ -892,19 +615,5 @@ mod tests {
             chat.messages[1].content.contains("two")
                 && chat.messages[1].content.contains("two-out")
         );
-    }
-
-    #[tokio::test]
-    async fn turn_usage_event_adds_a_system_message() {
-        let mut chat = ChatComponent::new(
-            vec![],
-            "test-model".to_string(),
-            test_registry(),
-            test_pending(),
-        );
-        chat.handle_user_event(&StreamEvent::TurnUsage("1.2k tokens · $0.0006".to_string()));
-        assert_eq!(chat.messages.len(), 1);
-        assert_eq!(chat.messages[0].role, Role::System);
-        assert_eq!(chat.messages[0].content, "1.2k tokens · $0.0006");
     }
 }

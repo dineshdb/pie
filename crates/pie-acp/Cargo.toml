@@ -8,6 +8,7 @@ repository = "https://github.com/dineshdb/pie"
 
 [dependencies]
 pie-core = { path = "../pie-core", version = "0.3.0" }
+a2acp.workspace = true
 agent-client-protocol = "2.1.0"
 anyhow = "1"
 tokio = { version = "1", features = ["io-util", "macros", "rt-multi-thread", "sync"] }

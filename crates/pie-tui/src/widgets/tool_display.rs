@@ -6,7 +6,7 @@
 //! `Edit`'s `path`) are parsed and reduced to what is new: exit code,
 //! output, counts. Anything else falls through to the raw truncated text.
 
-use crate::ui::tui::widgets::truncate_str;
+use crate::widgets::truncate_str;
 use serde_json::Value;
 use std::fmt;
 
