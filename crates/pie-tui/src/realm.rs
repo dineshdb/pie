@@ -88,11 +88,14 @@ pub enum Msg {
     SessionSwitched(SessionId),
     /// Trigger a UI redraw.
     Redraw,
-    /// Cycle the mode (Ctrl+K) — not available over the bridge; the
-    /// handler answers with a notice.
+    /// Cycle to the next advertised mode (Ctrl+K) — a pending selection
+    /// riding the next turn; the handler answers with a notice when the
+    /// agent's modes are not known yet.
     ToggleMode,
     /// Answer a parked permission ask.
     AnswerPermission(AskId, bool),
+    /// The model picker confirmed an entry (its selection id).
+    SelectModel(String),
 }
 
 /// Bridges the A2A event stream into tuirealm's `SyncPort` system.

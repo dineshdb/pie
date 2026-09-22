@@ -28,6 +28,9 @@ pub struct HostDeps {
     pub sandbox: Arc<SandboxConfig>,
     pub provider: ResolvedProvider,
     pub retry: RetryConfig,
+    /// The configured `[model.<name>]` tiers — what a model selection
+    /// resolves against (the selection extension's model leg).
+    pub model_tiers: std::collections::HashMap<String, ResolvedProvider>,
     pub agent_name: Option<String>,
     /// The conversation the very first opened session resumes — the
     /// interactive TUI's startup session, so the first turn continues
@@ -54,6 +57,7 @@ pub struct PieHost {
     sandbox: Arc<SandboxConfig>,
     provider: ResolvedProvider,
     retry: RetryConfig,
+    model_tiers: std::collections::HashMap<String, ResolvedProvider>,
     agent_name: Option<String>,
     /// Taken by the first connection's first session open.
     resume_first: StdMutex<Option<PieSessionId>>,
@@ -76,6 +80,7 @@ impl PieHost {
             sandbox: deps.sandbox,
             provider: deps.provider,
             retry: deps.retry,
+            model_tiers: deps.model_tiers,
             agent_name: deps.agent_name,
             resume_first: StdMutex::new(deps.resume),
         }
@@ -90,6 +95,7 @@ impl PieHost {
             Arc::clone(&self.sandbox),
             self.provider.clone(),
             self.retry.clone(),
+            self.model_tiers.clone(),
         );
         sessions.agent_name.clone_from(&self.agent_name);
         if let Some(id) = lock(&self.resume_first).take() {

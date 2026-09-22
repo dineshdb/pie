@@ -46,6 +46,8 @@ impl RosterDeps<'_> {
     /// (tier name or literal on the default provider), its sandbox
     /// merged onto the base, its persona pinned. `None` is the bare
     /// default entry (the user's provider and model, no persona).
+    /// The tier table rides along so selection-extension model picks
+    /// resolve the same way this resolver works.
     pub(crate) fn host_deps(&self, agent: Option<&Agent>) -> HostDeps {
         let mut sandbox = (*self.sandbox).clone();
         if let Some(agent_sandbox) = agent.and_then(|a| a.sandbox.as_ref()) {
@@ -61,6 +63,7 @@ impl RosterDeps<'_> {
                 &self.config.model_tiers,
             ),
             retry: self.config.retry.clone(),
+            model_tiers: self.config.model_tiers.clone(),
             agent_name: agent.map(|a| a.name.clone()),
             resume: None,
         }

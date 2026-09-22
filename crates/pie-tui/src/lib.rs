@@ -6,7 +6,9 @@
 //! never constructs agents, and calls no engine handlers — pie-core
 //! appears only as leaf value types (registry, config, session history),
 //! and a2acp only as the door. The frontend does not know or care that
-//! the agent is in process.
+//! the agent is in process. Model and mode selection go through the
+//! selection extension ([`crate::door::SELECTION_EXTENSION_URI`]) — no
+//! side channels.
 
 #![cfg_attr(
     test,
@@ -27,5 +29,6 @@ mod realm_terminal;
 mod state;
 mod widgets;
 
+pub use door::{CatalogEntry, ModeOption, ModelCatalog, SELECTION_EXTENSION_URI, Selection};
 pub use realm::{AskId, SessionId, StreamEvent};
 pub use realm_terminal::{ProviderView, TuiDeps, run_tui};

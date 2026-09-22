@@ -72,6 +72,7 @@ fn host(pool: Arc<DbPool>, resume: Option<pie_core::session::SessionId>) -> PieH
         sandbox: Arc::new(SandboxConfig::default()),
         provider: dead_provider(),
         retry: fail_fast_retry(),
+        model_tiers: std::collections::HashMap::new(),
         agent_name: None,
         resume,
     })

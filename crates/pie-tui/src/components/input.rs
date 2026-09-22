@@ -3,13 +3,12 @@
 //! Not mounted in the tuirealm App — accessed directly from the main loop.
 //! Only `ChatComponent` is the active tuirealm component.
 
-use crate::door::Client;
+use crate::door::{Client, ModelCatalog, Selection};
 use crate::realm::{Msg, SessionId};
 use crate::widgets::completion::{CompletionPopup, CompletionState, Direction, slash_token_range};
 use crate::widgets::history::InputHistory;
 use crate::widgets::input::{InputView, cursor_position};
 use pie_core::config::pie_home;
-use pie_core::plugin::AgentMode;
 use pie_core::registry::Registry;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -23,7 +22,7 @@ use tuirealm::ratatui::style::{Color, Modifier, Style};
 const PLACEHOLDER: &str = "Type a query or /help for commands";
 
 /// The provider state the TUI keeps for display — names and model ids
-/// only; over the bridge nothing can steer them.
+/// only; steering happens through the selection extension.
 #[derive(Debug, Clone)]
 pub struct ProviderView {
     pub name: String,
@@ -46,7 +45,17 @@ pub struct InputComponent {
     streaming: bool,
     last_query: Option<String>,
     pub registry: Arc<Registry>,
-    pub mode: AgentMode,
+    /// The startup model catalog — what `/model` offers and validates
+    /// against (plain data; the agent resolves selections).
+    pub catalog: ModelCatalog,
+    /// The selection the next outgoing message carries (the extension's
+    /// payload — either leg optional). Set by `/mode`, `/model`, and
+    /// Ctrl+K; flushed onto the next turn, then the door's read-back
+    /// takes over ([`InputComponent::sync_selection`]).
+    pub pending: Selection,
+    /// What the conversation last confirmed — `door.selection()` after
+    /// each settled turn; the mode bar's source of truth.
+    pub current: Selection,
 }
 
 impl InputComponent {
@@ -55,6 +64,7 @@ impl InputComponent {
         provider: ProviderView,
         session_id: SessionId,
         registry: Arc<Registry>,
+        catalog: ModelCatalog,
     ) -> Self {
         let history_dir = pie_home().join("history");
         let _ = std::fs::create_dir_all(&history_dir);
@@ -83,7 +93,9 @@ impl InputComponent {
             streaming: false,
             last_query: None,
             registry,
-            mode: AgentMode::Build,
+            catalog,
+            pending: Selection::default(),
+            current: Selection::default(),
         }
     }
 
@@ -255,8 +267,9 @@ impl InputComponent {
         }
 
         if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, Key::Char('k')) {
-            // Mode cycling is a bridge gap — the handler answers with the
-            // notice instead of switching anything.
+            // Mode cycling over the selection extension — the handler
+            // cycles the advertised modes and answers with a notice
+            // when the agent's modes are not known yet.
             return Some(Msg::ToggleMode);
         }
 
@@ -342,7 +355,19 @@ impl InputComponent {
     pub fn start_stream(&mut self, query: &str) {
         self.last_query = Some(query.to_string());
         self.streaming = true;
-        self.client.prompt(query);
+        // The pending selection rides this turn; the conversation
+        // remembers it agent-side, so it never re-sends.
+        let selection = std::mem::take(&mut self.pending);
+        self.client.prompt(query, &selection);
+    }
+
+    /// Re-read the conversation's selection and the card after a settled
+    /// turn: the read-back is the pickers' source of truth, and the
+    /// driven agent's modes appear on the card only after its first
+    /// session reported them.
+    pub fn sync_selection(&mut self) {
+        self.current = self.client.selection();
+        self.client.refresh_card();
     }
 
     /// Abort the in-flight turn; the stream answers with a terminal
@@ -375,6 +400,49 @@ impl InputComponent {
         let mut empty = TextArea::default();
         apply_textarea_style(&mut empty);
         self.textarea = empty;
+        // A fresh conversation starts unselected (the old context is
+        // dropped client-side); the pending choice carries over — the
+        // user picked it for what they are about to say next.
+        self.current = Selection::default();
+    }
+
+    /// The mode the mode bar should show: a pending selection first (it
+    /// rides the next turn), the conversation's confirmed selection,
+    /// else the agent's own default per the card.
+    pub fn effective_mode(&self) -> String {
+        self.pending
+            .mode
+            .clone()
+            .or_else(|| self.current.mode.clone())
+            .or_else(|| self.client.default_mode())
+            .unwrap_or_else(|| "build".to_string())
+    }
+
+    /// The model the mode bar should show: pending, confirmed, else the
+    /// startup provider's model.
+    pub fn effective_model(&self) -> String {
+        self.pending
+            .model
+            .clone()
+            .or_else(|| self.current.model.clone())
+            .unwrap_or_else(|| self.provider.model.clone())
+    }
+
+    /// Cycle to the next advertised mode (Ctrl+K) and make it pending.
+    /// Returns the cycled-to id, or `None` when the agent's modes are
+    /// not known yet (no session has reported them).
+    pub fn cycle_mode(&mut self) -> Option<String> {
+        let modes = self.client.modes();
+        let ids: Vec<&str> = modes.iter().map(|mode| mode.id.as_str()).collect();
+        let first = ids.first().copied()?;
+        let next = ids
+            .iter()
+            .position(|id| **id == self.effective_mode())
+            .and_then(|at| ids.get((at + 1) % ids.len()))
+            .copied()
+            .unwrap_or(first);
+        self.pending.mode = Some(next.to_string());
+        Some(next.to_string())
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, is_streaming: bool) {

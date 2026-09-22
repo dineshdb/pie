@@ -4,7 +4,9 @@
 //! an a2acp gateway. All protocol knowledge — handlers, the permission
 //! round trip, the event mapping — lives in this crate's server loop
 //! ([`server::serve_acp`]); the assembly only opens pie sessions and
-//! builds per-session engines.
+//! builds per-session engines, pinning their modes (`session/set_mode`)
+//! and providers (the selection extension's model leg on
+//! `session/prompt` `_meta`).
 //!
 //! Runs carry their working directory in the session's cwd; the engine
 //! never touches the process cwd, so sessions in different workspaces
@@ -37,8 +39,8 @@ pub use server::{
 };
 
 use agent_client_protocol as acp;
-use pie_core::bridge::{ModeCell, PieEngine, PieEngineDeps, RemoteDoor};
-use pie_core::config::ResolvedConfig;
+use pie_core::bridge::{ModeCell, PieEngine, PieEngineDeps, ProviderCell, RemoteDoor};
+use pie_core::config::{ResolvedConfig, ResolvedProvider};
 use pie_core::db::DbPool;
 use pie_core::p1e_sandbox::SandboxConfig;
 use pie_core::plugin::AgentMode;
@@ -54,22 +56,30 @@ fn lock<T>(lock: &StdMutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// The pie assembly behind the ACP server loop: opens pie sessions,
-/// builds one `PieEngine` per session, and steers their pinned modes.
-/// Everything here is pie-shaped; the protocol lives in [`server`].
+/// builds one `PieEngine` per session, and steers their pinned modes and
+/// provider selections. Everything here is pie-shaped; the protocol
+/// lives in [`server`].
 pub struct PieSessions {
     // Manual `Debug`: pool/registry handles have no useful
     // representation, and provider config must not leak its api key.
     pub pool: Arc<DbPool>,
     pub registry: Arc<Registry>,
     pub sandbox: Arc<SandboxConfig>,
-    pub provider: pie_core::config::ResolvedProvider,
+    pub provider: ResolvedProvider,
     pub retry: pie_core::config::RetryConfig,
+    /// The configured `[model.<name>]` tiers — what a model selection
+    /// resolves against (a tier name wins wholesale; see
+    /// [`resolve_model_selection`]).
+    model_tiers: HashMap<String, ResolvedProvider>,
     /// The agent persona turns run under (`pie <agent>`); `None` is the
     /// default pie agent.
     pub(crate) agent_name: Option<String>,
     /// Each session's pinned mode, swapped by `session/set_mode` and
     /// read by the engine at the next turn.
     pinned: StdMutex<HashMap<String, ModeCell>>,
+    /// Each session's pinned provider, swapped by the selection
+    /// extension's model leg and read by the engine at the next turn.
+    models: StdMutex<HashMap<String, ProviderCell>>,
     /// A session the next open resumes regardless of the wire request —
     /// the interactive host's startup conversation, taken once.
     resume_first: StdMutex<Option<PieSessionId>>,
@@ -87,8 +97,9 @@ impl PieSessions {
         pool: Arc<DbPool>,
         registry: Arc<Registry>,
         sandbox: Arc<SandboxConfig>,
-        provider: pie_core::config::ResolvedProvider,
+        provider: ResolvedProvider,
         retry: pie_core::config::RetryConfig,
+        model_tiers: HashMap<String, ResolvedProvider>,
     ) -> Self {
         Self {
             pool,
@@ -96,8 +107,10 @@ impl PieSessions {
             sandbox,
             provider,
             retry,
+            model_tiers,
             agent_name: None,
             pinned: StdMutex::new(HashMap::new()),
+            models: StdMutex::new(HashMap::new()),
             resume_first: StdMutex::new(None),
         }
     }
@@ -169,6 +182,7 @@ impl SessionSource for PieSessions {
             door: RemoteDoor {
                 cwd: open.cwd,
                 mode: self.pin(session.id.to_string()),
+                model: self.model_pin(session.id.to_string()),
             },
             session: session.clone(),
         });
@@ -188,9 +202,74 @@ impl SessionSource for PieSessions {
             return Err(format!("unknown session '{session_id}'"));
         };
         *lock(cell) = Some(mode);
+        // Persist as pie always has — the system marker — so the mode
+        // survives the process (a resumed conversation reads it back).
+        let pool = Arc::clone(&self.pool);
+        let (id, marker) = (session_id.to_string(), mode.system_marker());
+        tokio::spawn(async move {
+            if let Ok(mut session) = Session::load(pool, PieSessionId::from(id)).await
+                && let Err(e) = session.add_system(&marker).await
+            {
+                tracing::warn!("acp: persisting the mode marker failed: {e}");
+            }
+        });
         Ok(mode.short_name().to_string())
     }
+
+    fn select_model(&self, session_id: &str, selection: &str) -> Result<(), String> {
+        let models = lock(&self.models);
+        let Some(cell) = models.get(session_id) else {
+            return Err(format!("unknown session '{session_id}'"));
+        };
+        let current = lock(cell).clone().unwrap_or_else(|| self.provider.clone());
+        let resolved =
+            resolve_model_selection(&self.provider, &current, &self.model_tiers, selection)?;
+        *lock(cell) = Some(resolved);
+        Ok(())
+    }
 }
+
+/// Resolve a model selection the way the roster resolves an agent's
+/// `model:` — a configured tier name wins (that tier's provider
+/// wholesale), else a literal model id on the current provider. Two
+/// reserved spellings: `"default"` restores the startup provider, and
+/// the startup provider's own model id likewise resolves back to it (a
+/// literal would otherwise ride whatever provider a previous tier
+/// selection left active). Anything else is refused naming the catalog —
+/// the selection extension's error semantics for a fresh selection the
+/// agent rejects.
+pub(crate) fn resolve_model_selection(
+    default: &ResolvedProvider,
+    current: &ResolvedProvider,
+    tiers: &HashMap<String, ResolvedProvider>,
+    selection: &str,
+) -> Result<ResolvedProvider, String> {
+    let known = |id: &str| {
+        id == DEFAULT_MODEL_SELECTION
+            || id == default.model
+            || tiers.keys().any(|name| name == id)
+            || tiers.values().any(|tier| tier.model == id)
+    };
+    if !known(selection) {
+        let mut catalog: Vec<&str> = vec![DEFAULT_MODEL_SELECTION, default.model.as_str()];
+        catalog.extend(tiers.keys().map(String::as_str));
+        return Err(format!(
+            "unknown model selection '{selection}' — pick one of: {}",
+            catalog.join(", ")
+        ));
+    }
+    if let Some(tier) = tiers.get(selection) {
+        return Ok(tier.clone());
+    }
+    if selection == DEFAULT_MODEL_SELECTION || selection == default.model {
+        return Ok(default.clone());
+    }
+    Ok(current.clone().with_model(selection.to_string()))
+}
+
+/// The selection id that restores the startup provider — the catalog's
+/// default entry.
+pub const DEFAULT_MODEL_SELECTION: &str = "default";
 
 /// The session's sandbox roots: the cwd plus every additional directory.
 fn roots(open: &OpenSession) -> Vec<std::path::PathBuf> {
@@ -204,6 +283,13 @@ impl PieSessions {
     fn pin(&self, session_id: String) -> ModeCell {
         let cell: ModeCell = Arc::new(StdMutex::new(None));
         lock(&self.pinned).insert(session_id, Arc::clone(&cell));
+        cell
+    }
+
+    /// Register (or refresh) a session's pinned-provider cell.
+    fn model_pin(&self, session_id: String) -> ProviderCell {
+        let cell: ProviderCell = Arc::new(StdMutex::new(None));
+        lock(&self.models).insert(session_id, Arc::clone(&cell));
         cell
     }
 }
@@ -235,6 +321,7 @@ pub async fn serve_stdio(
         pie_core::config::build_sandbox(&pie_core::config::load_config()?),
         config.provider.clone(),
         config.retry.clone(),
+        config.model_tiers.clone(),
     );
     serve_transport(sessions, acp::Stdio::new()).await
 }
@@ -288,6 +375,7 @@ mod tests {
             Arc::new(SandboxConfig::default()),
             test_provider(),
             pie_core::config::RetryConfig::default(),
+            HashMap::new(),
         )
     }
 
@@ -556,5 +644,250 @@ mod tests {
         let code = response["error"]["code"].as_i64().expect("error frame");
         assert_ne!(code, -32000, "auth-reserved code leaked: {response}");
         assert_eq!(code, -32603, "{response}");
+    }
+    // ── the selection extension's model leg ─────────────────────────
+
+    /// The session's pinned-provider cell, as the engine's door sees it.
+    fn models_pin_for_test(sessions: &PieSessions, session_id: &str) -> Option<ProviderCell> {
+        lock(&sessions.models).get(session_id).cloned()
+    }
+
+    fn tier(name: &str, model: &str, url: &str) -> ResolvedProvider {
+        ResolvedProvider {
+            name: name.into(),
+            model: model.into(),
+            anthropic_url: None,
+            openai_url: url.parse().unwrap(),
+            api_key: Secret::new("k".into()),
+            temperature: None,
+        }
+    }
+
+    fn resolution_fixture() -> (ResolvedProvider, HashMap<String, ResolvedProvider>) {
+        let default = tier("default", "base-model", "http://default");
+        let tiers = HashMap::from([
+            ("deep".to_string(), tier("deep", "opus", "http://deep")),
+            ("fast".to_string(), tier("fast", "mini", "http://fast")),
+        ]);
+        (default, tiers)
+    }
+
+    /// A tier name wins wholesale — the tier's provider, not a model
+    /// swap on the current one (mirrors the roster's resolution).
+    #[test]
+    fn a_tier_selection_takes_the_tiers_provider() {
+        let (default, tiers) = resolution_fixture();
+        let resolved =
+            resolve_model_selection(&default, &default, &tiers, "deep").expect("tier resolves");
+        assert_eq!(resolved.model, "opus");
+        assert_eq!(
+            resolved.openai_url.as_str(),
+            "http://deep/",
+            "the whole provider rides, not just the model"
+        );
+    }
+
+    /// A literal model id rides the CURRENT provider — after a tier
+    /// selection swapped it, a literal stays on what is active (here:
+    /// the fast tier's model id on the deep tier's endpoint).
+    #[test]
+    fn a_literal_selection_rides_the_current_provider() {
+        let (default, tiers) = resolution_fixture();
+        let current = tiers["deep"].clone();
+        let resolved =
+            resolve_model_selection(&default, &current, &tiers, "mini").expect("resolves");
+        assert_eq!(resolved.model, "mini");
+        assert_eq!(resolved.openai_url.as_str(), "http://deep/");
+    }
+
+    /// The catalog's model ids are valid literals — the picker offers
+    /// exactly what the resolver accepts.
+    #[test]
+    fn a_catalog_model_id_is_a_valid_literal() {
+        let (default, tiers) = resolution_fixture();
+        let resolved =
+            resolve_model_selection(&default, &default, &tiers, "mini").expect("resolves");
+        assert_eq!(resolved.model, "mini");
+        assert_eq!(resolved.openai_url.as_str(), "http://default/");
+    }
+
+    /// `default` (and the startup model id) restore the startup provider
+    /// wholesale — a literal would otherwise ride a tier-selected
+    /// provider with the wrong endpoint.
+    #[test]
+    fn default_spellings_restore_the_startup_provider() {
+        let (default, tiers) = resolution_fixture();
+        let current = tiers["deep"].clone();
+        for spelling in ["default", "base-model"] {
+            let resolved = resolve_model_selection(&default, &current, &tiers, spelling)
+                .expect("the default spelling resolves");
+            assert_eq!(resolved.model, "base-model");
+            assert_eq!(resolved.openai_url.as_str(), "http://default/");
+        }
+    }
+
+    /// An unknown selection is refused naming the catalog — the
+    /// extension's error semantics for a fresh selection the agent
+    /// rejects (the send fails; the turn never runs).
+    #[test]
+    fn an_unknown_selection_is_refused_naming_the_catalog() {
+        let (default, tiers) = resolution_fixture();
+        let err = resolve_model_selection(&default, &default, &tiers, "gibberish")
+            .expect_err("unknown ids are refused");
+        assert!(err.contains("unknown model selection 'gibberish'"), "{err}");
+        assert!(
+            err.contains("default") && err.contains("deep") && err.contains("fast"),
+            "{err}"
+        );
+    }
+
+    /// `select_model` pins the resolved provider per session and keeps
+    /// applying it — the gateway re-sends the selection on every prompt,
+    /// so resolution must be stable.
+    #[tokio::test]
+    async fn select_model_pins_a_resolved_provider_per_session() {
+        let mut sessions = test_sessions().await;
+        sessions.model_tiers =
+            HashMap::from([("deep".to_string(), tier("deep", "opus", "http://deep"))]);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let opened = SessionSource::open(
+            &sessions,
+            OpenSession {
+                cwd: tmp.path().to_path_buf(),
+                additional_directories: Vec::new(),
+                resume: None,
+            },
+        )
+        .await
+        .expect("session opens");
+        let id = opened.id;
+
+        // Tier, then the same tier again (the gateway re-sends the
+        // selection on every prompt), then the default — each resolves
+        // absolutely, never compounding.
+        sessions.select_model(&id, "deep").expect("pins");
+        sessions.select_model(&id, "deep").expect("re-pins");
+        let pinned = models_pin_for_test(&sessions, &id).expect("registered");
+        let provider = lock(pinned.as_ref()).clone().expect("resolved");
+        assert_eq!(provider.model, "opus");
+        sessions.select_model(&id, "default").expect("restores");
+        let provider = lock(models_pin_for_test(&sessions, &id).unwrap().as_ref())
+            .clone()
+            .unwrap();
+        assert_eq!(provider.model, "test-model", "the startup model is back");
+
+        let err = sessions
+            .select_model(&id, "nope")
+            .expect_err("unknown refused");
+        assert!(err.contains("unknown model selection"), "{err}");
+        let err = sessions
+            .select_model("ghost0", "deep")
+            .expect_err("unknown session refused");
+        assert!(err.contains("unknown session"), "{err}");
+    }
+
+    /// `session/set_mode` persists pie's system marker — the mode
+    /// survives the process the way `/mode` always wrote it.
+    #[tokio::test]
+    async fn set_mode_persists_the_system_marker() {
+        let sessions = test_sessions().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let opened = SessionSource::open(
+            &sessions,
+            OpenSession {
+                cwd: tmp.path().to_path_buf(),
+                additional_directories: Vec::new(),
+                resume: None,
+            },
+        )
+        .await
+        .unwrap();
+        let id = opened.id;
+
+        sessions.set_mode(&id, "plan").expect("plan is a mode");
+        // The marker write is spawned — give it a beat, then reload.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let reloaded = Session::load(Arc::clone(&sessions.pool), PieSessionId::from(id))
+            .await
+            .unwrap();
+        let markers: Vec<String> = reloaded
+            .history_entries()
+            .iter()
+            .filter(|entry| entry.role() == Role::System)
+            .map(pie_core::session::HistoryEntry::content)
+            .collect();
+        assert!(
+            markers.contains(&"[mode:plan]".to_string()),
+            "the marker landed in the session history: {markers:?}"
+        );
+    }
+
+    /// Over the wire: a prompt carrying `_meta.model` that resolves
+    /// runs the turn (fails on the dead provider, NOT as an invalid
+    /// selection); an unresolvable one fails the send with `-32602`
+    /// naming the catalog — before the turn starts.
+    #[tokio::test]
+    async fn prompt_meta_model_resolves_or_refuses() {
+        let mut sessions = test_sessions().await;
+        sessions.model_tiers =
+            HashMap::from([("deep".to_string(), tier("deep", "opus", "http://deep"))]);
+        let tmp = tempfile::tempdir().unwrap();
+        let mut client = spawn_server(sessions);
+        send(
+            &mut client,
+            &json!({"jsonrpc":"2.0","id":30,"method":"session/new","params":{
+                "cwd": tmp.path().to_string_lossy(), "mcpServers": []
+            }}),
+        )
+        .await;
+        let (response, _) = recv_response(&mut client, 30).await;
+        let session_id = response["result"]["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // A resolvable selection: the turn runs (and dies on the dead
+        // provider — an internal error, never an invalid-params one).
+        send(
+            &mut client,
+            &json!({"jsonrpc":"2.0","id":31,"method":"session/prompt","params":{
+                "sessionId": session_id,
+                "prompt": [{"type": "text", "text": "hi"}],
+                "_meta": {"model": "deep"}
+            }}),
+        )
+        .await;
+        let (response, _) = recv_response(&mut client, 31).await;
+        assert_eq!(response["error"]["code"], -32603, "{response}");
+        assert!(
+            !response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("unknown model selection"),
+            "the selection resolved; only the provider died: {response}"
+        );
+
+        // An unresolvable selection: the send itself is refused.
+        send(
+            &mut client,
+            &json!({"jsonrpc":"2.0","id":32,"method":"session/prompt","params":{
+                "sessionId": session_id,
+                "prompt": [{"type": "text", "text": "hi"}],
+                "_meta": {"model": "gibberish"}
+            }}),
+        )
+        .await;
+        let (response, _) = recv_response(&mut client, 32).await;
+        assert_eq!(response["error"]["code"], -32602, "{response}");
+        let message = response["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("unknown model selection 'gibberish'"),
+            "{response}"
+        );
+        assert!(
+            message.contains("default"),
+            "the catalog is named: {message}"
+        );
     }
 }

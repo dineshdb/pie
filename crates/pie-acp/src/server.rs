@@ -15,7 +15,7 @@
 //!
 //! | bridge                              | ACP                                                    |
 //! |------------------------------------|--------------------------------------------------------|
-//! | `Prompt` (via the server loop)     | `session/prompt` (content blocks flattened to text)     |
+//! | `Prompt` (via the server loop)     | `session/prompt` (content blocks flattened to text; a `_meta.model` selection resolves and pins the session's provider first) |
 //! | `Delta`                            | `session/update`: `agent_message_chunk`                |
 //! | `Error` (mid-turn, non-fatal)      | `session/update`: `agent_message_chunk` "error: …"     |
 //! | `ToolCall` pre-execution half      | `tool_call` (title = `display`, kind from the name, `pending`) |
@@ -148,6 +148,21 @@ pub trait SessionSource: Send + Sync + 'static {
     /// Fails for an unknown session or an unknown mode (JSON-RPC
     /// `-32602`).
     fn set_mode(&self, session_id: &str, mode_id: &str) -> Result<String, String>;
+
+    /// Resolve and pin a model selection for the session (the selection
+    /// extension's model leg, riding `_meta.model` on every
+    /// `session/prompt`). Refused selections fail the prompt before the
+    /// turn starts — JSON-RPC `-32602`, the extension's error semantics
+    /// for a fresh selection the agent rejects.
+    ///
+    /// # Errors
+    ///
+    /// Fails for an unknown session or a selection the assembly cannot
+    /// resolve (naming what it does accept).
+    fn select_model(&self, session_id: &str, model: &str) -> Result<(), String> {
+        let _ = (session_id, model);
+        Err("model selection is not supported by this agent".into())
+    }
 }
 
 // ── connection state ───────────────────────────────────────────────
@@ -502,6 +517,25 @@ fn start_prompt_turn<S: SessionSource>(
             cancel_rx,
         )
     };
+
+    // The selection extension's model leg rides `_meta.model` on every
+    // prompt (the ACP extensibility point; the gateway re-sends the
+    // conversation's selection each turn). Refuse an unresolvable
+    // selection before the turn starts — nothing runs, nothing to undo.
+    // After the slot claim: a refused turn must not leave state behind,
+    // and a busy-conflict must not pin anything either.
+    if let Some(model) = req
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("model"))
+        .and_then(|model| model.as_str())
+    {
+        let result = connection.source.select_model(session_id.0.as_ref(), model);
+        if let Err(message) = result {
+            release_turn(connection, &req.session_id);
+            return Err(invalid_params(message));
+        }
+    }
 
     let cancellation = responder.cancellation();
     let task_cx = cx.clone();

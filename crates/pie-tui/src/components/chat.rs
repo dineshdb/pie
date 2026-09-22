@@ -2,6 +2,7 @@
 //!
 //! Owns the message list, render cache, scroll state, and streaming response tracking.
 
+use crate::door::CatalogEntry;
 use crate::realm::{AskId, Msg, StreamEvent};
 use crate::state::ChatMessage;
 use crate::widgets::chat::{self, ChatState, ChatView};
@@ -22,8 +23,12 @@ const MAX_MESSAGES: usize = 1_000;
 #[derive(Debug, PartialEq)]
 pub enum ActiveDialog {
     None,
-    Help { scroll_offset: u16 },
+    Help {
+        scroll_offset: u16,
+    },
     PermissionPrompt(PermissionPromptState),
+    /// The `/model` picker over the startup catalog.
+    ModelSelector(ModelSelectorState),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,6 +36,15 @@ pub struct PermissionPromptState {
     pub id: AskId,
     pub skill: String,
     pub permissions: Vec<String>,
+}
+
+/// The `/model` picker's state: the catalog and the navigated entry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelSelectorState {
+    pub entries: Vec<CatalogEntry>,
+    /// The id the next turn carries (pending or confirmed), if any.
+    pub current_id: Option<String>,
+    pub selected_idx: usize,
 }
 
 pub struct ChatComponent {
@@ -252,6 +266,20 @@ impl Component for ChatComponent {
                     area,
                 );
             }
+            ActiveDialog::ModelSelector(state) => {
+                frame.render_widget(
+                    super::super::widgets::dialog::Dialog::new(
+                        " Model (Enter select · Esc close) ",
+                        super::super::widgets::model_selector::ModelSelectorOverlay {
+                            entries: &state.entries,
+                            current_id: state.current_id.as_deref(),
+                            selected_idx: state.selected_idx,
+                        },
+                    )
+                    .with_size(60, 40),
+                    area,
+                );
+            }
         }
     }
 
@@ -385,6 +413,7 @@ impl ChatComponent {
             ActiveDialog::PermissionPrompt(_) => {
                 Some(self.handle_permission_prompt_keyboard_event(key))
             }
+            ActiveDialog::ModelSelector(state) => Some(Self::model_selector_key(key, state)),
         };
 
         if let Some(m) = msg {
@@ -396,6 +425,13 @@ impl ChatComponent {
             }
             if let Key::Enter | Key::Char('n') = key.code
                 && matches!(self.active_dialog, ActiveDialog::PermissionPrompt(_))
+            {
+                self.active_dialog = ActiveDialog::None;
+            }
+            // The model picker closes on confirm and cancel alike — the
+            // confirmed id rides `Msg::SelectModel` out.
+            if let Key::Enter | Key::Esc = key.code
+                && matches!(self.active_dialog, ActiveDialog::ModelSelector(_))
             {
                 self.active_dialog = ActiveDialog::None;
             }
@@ -412,6 +448,31 @@ impl ChatComponent {
                 Msg::Redraw
             }
             _ => Msg::KeyboardToInput(*key),
+        }
+    }
+
+    /// The `/model` picker's keys: Up/Down navigate, Enter confirms the
+    /// navigated entry (the realm loop turns it into a pending
+    /// selection), Esc closes. Closing the dialog is the caller's —
+    /// the state borrows it for the match.
+    fn model_selector_key(key: &tuirealm::event::KeyEvent, state: &mut ModelSelectorState) -> Msg {
+        let last = state.entries.len().saturating_sub(1);
+        match (&key.code, key.modifiers) {
+            (Key::Up, KeyModifiers::NONE) => {
+                state.selected_idx = state.selected_idx.saturating_sub(1).min(last);
+                Msg::Redraw
+            }
+            (Key::Down, KeyModifiers::NONE) => {
+                state.selected_idx = (state.selected_idx + 1).min(last);
+                Msg::Redraw
+            }
+            (Key::Enter, _) => {
+                let Some(entry) = state.entries.get(state.selected_idx) else {
+                    return Msg::Redraw;
+                };
+                Msg::SelectModel(entry.id.clone())
+            }
+            _ => Msg::Redraw,
         }
     }
 

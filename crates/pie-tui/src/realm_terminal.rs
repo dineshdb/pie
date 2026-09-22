@@ -7,16 +7,20 @@
 //! events through tuirealm's event system — all interaction goes through direct calls.
 //!
 //! Each frame: drain all events, merge them, then render once. Everything
-//! agent-shaped flows through the door client; pie-specific wants with no
-//! A2A counterpart answer with a "not available over the bridge" notice
-//! rather than fake success (see the gap list in `door`'s docs).
+//! agent-shaped flows through the door client; `/model` and `/mode`
+//! selections ride the selection extension onto the next outgoing message
+//! (the mode bar shows the pending or confirmed selection), and pie-specific
+//! wants with no A2A counterpart (`!shell` escapes) answer with a "not
+//! available over the bridge" notice rather than fake success (see the gap
+//! list in `door`'s docs).
 
 use crate::command::{Command, CommandAction};
-use crate::components::chat::{ActiveDialog, ChatComponent};
+use crate::components::chat::{ActiveDialog, ChatComponent, ModelSelectorState};
 use crate::components::input::InputComponent;
 
 pub use crate::components::input::ProviderView;
 use crate::door::Client;
+pub use crate::door::ModelCatalog;
 use crate::notify;
 use crate::realm::{App, Id, Msg, SessionId, StreamEvent, StreamPort};
 use crate::state::ChatMessage;
@@ -24,8 +28,6 @@ use crate::widgets::mode_bar::ModeBar;
 use crate::widgets::status_bar::StatusBar;
 use anyhow::{Context, Result};
 use arboard::Clipboard;
-use pie_core::plugin::AgentMode;
-use pie_core::plugin::modes::load_mode_file;
 use pie_core::registry::Registry;
 use pie_core::session::{HistoryEntry, Role};
 use std::io::stdout;
@@ -42,7 +44,9 @@ use tuirealm::ratatui::layout::{Constraint, Direction, Layout};
 type Terminal = tuirealm::ratatui::Terminal<CrosstermBackend<std::io::Stdout>>;
 
 /// What the TUI needs from the embedding process: the A2A door client,
-/// its event stream, and the leaf data for the first render.
+/// its event stream, the leaf data for the first render, and the
+/// provider/model catalog for `/model` (plain startup data — names and
+/// tiers, no live fetch).
 #[derive(Debug)]
 pub struct TuiDeps {
     /// Sends A2A requests through the front door.
@@ -55,6 +59,9 @@ pub struct TuiDeps {
     pub history: Vec<HistoryEntry>,
     /// Provider name/model for display.
     pub provider: ProviderView,
+    /// The selectable models: `"default"` plus one entry per configured
+    /// tier, in name order.
+    pub catalog: ModelCatalog,
     pub registry: Arc<Registry>,
 }
 
@@ -123,6 +130,7 @@ fn process_msg(msg: Msg, app: &mut App, input: &mut InputComponent) -> Option<Ms
             }
             let query = input.finish_stream();
             notify::turn_complete(query.as_deref());
+            input.sync_selection();
         }
 
         Msg::StreamError(err) => {
@@ -130,6 +138,7 @@ fn process_msg(msg: Msg, app: &mut App, input: &mut InputComponent) -> Option<Ms
                 chat.stream_error(&err);
             }
             let _ = input.finish_stream();
+            input.sync_selection();
         }
 
         Msg::SessionSwitched(session_id) => {
@@ -142,12 +151,28 @@ fn process_msg(msg: Msg, app: &mut App, input: &mut InputComponent) -> Option<Ms
             input.reset_session(session_id);
         }
 
-        Msg::ToggleMode => {
-            bridge_gap(app, "mode switching");
-        }
+        Msg::ToggleMode => match input.cycle_mode() {
+            Some(mode) => {
+                if let Some(chat) = chat_mut!(app) {
+                    chat.add_message(ChatMessage::system(&format!(
+                        "Next message will be in **{mode}** mode"
+                    )));
+                }
+            }
+            None => bridge_gap(app, "mode switching"),
+        },
 
         Msg::AnswerPermission(id, allow) => {
             input.client.answer_permission(&id, allow);
+        }
+
+        Msg::SelectModel(id) => {
+            input.pending.model = Some(id.clone());
+            if let Some(chat) = chat_mut!(app) {
+                chat.add_message(ChatMessage::system(&format!(
+                    "Next message will use model **{id}**"
+                )));
+            }
         }
 
         _ => {}
@@ -173,11 +198,11 @@ fn handle_submit(text: &str, app: &mut App, input: &mut InputComponent) -> Optio
                 chat.add_message(msg);
             }
         }
-        CommandAction::Model => {
-            bridge_gap(app, "model switching");
+        CommandAction::Model(name) => {
+            handle_model_command(name.as_deref(), app, input);
         }
         CommandAction::Mode(args) => {
-            handle_mode_command(args.as_deref(), app);
+            handle_mode_command(args.as_deref(), app, input);
         }
         CommandAction::Help => {
             if let Some(chat) = chat_mut!(app) {
@@ -209,33 +234,111 @@ fn handle_submit(text: &str, app: &mut App, input: &mut InputComponent) -> Optio
     None
 }
 
-/// `/mode` without arguments lists pie's modes (local knowledge);
-/// switching one is a bridge gap — A2A carries no mode method.
-fn handle_mode_command(args: Option<&str>, app: &mut App) {
-    let Some(mode_name) = args.filter(|a| !a.is_empty()) else {
-        let modes = AgentMode::all()
-            .iter()
-            .filter_map(|m| {
-                let desc = load_mode_file(*m).map(|f| f.description)?;
-                Some(format!("  /mode {} — {}", m.short_name(), desc))
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+/// The modes the driven agent advertises, as `/mode` list lines.
+fn mode_lines(input: &InputComponent) -> Vec<String> {
+    input
+        .client
+        .modes()
+        .iter()
+        .map(|mode| {
+            if mode.description.is_empty() {
+                format!("  /mode {}", mode.id)
+            } else {
+                format!("  /mode {} — {}", mode.id, mode.description)
+            }
+        })
+        .collect()
+}
+
+/// `/mode` without arguments lists the modes the agent advertises on
+/// the card — honestly empty before its first session reported them;
+/// with an id it becomes the pending selection riding the next turn
+/// (the selection extension's mode leg → `session/set_mode`).
+fn handle_mode_command(args: Option<&str>, app: &mut App, input: &mut InputComponent) {
+    let Some(mode_id) = args.filter(|a| !a.is_empty()) else {
+        let modes = mode_lines(input);
+        let body = if modes.is_empty() {
+            "Modes are available after the first message — the agent reports them when its session opens.".to_string()
+        } else {
+            format!("Available modes:\n{}", modes.join("\n"))
+        };
         if let Some(chat) = chat_mut!(app) {
-            chat.add_message(ChatMessage::system(&format!(
-                "Available modes (switching is not available over the bridge):\n{modes}"
-            )));
+            chat.add_message(ChatMessage::system(&body));
         }
         return;
     };
-    // Validate the name so typos are reported as such, not as bridge gaps.
-    match mode_name.parse::<AgentMode>() {
-        Ok(_) => bridge_gap(app, "mode switching"),
-        Err(e) => {
+    // Validate against what the agent advertises — a typo is a typo,
+    // and an unknown id would fail the next turn's send.
+    let known = input.client.modes();
+    match known.iter().find(|mode| mode.id == mode_id) {
+        Some(mode) => {
+            input.pending.mode = Some(mode.id.clone());
+            let note = if mode.description.is_empty() {
+                String::new()
+            } else {
+                format!(" — {}", mode.description)
+            };
             if let Some(chat) = chat_mut!(app) {
-                chat.add_message(ChatMessage::system(&format!("Error: {e}")));
+                chat.add_message(ChatMessage::system(&format!(
+                    "Next message will be in **{}** mode{note}",
+                    mode.id
+                )));
             }
         }
+        None if known.is_empty() => bridge_gap(app, "mode switching"),
+        None => {
+            if let Some(chat) = chat_mut!(app) {
+                chat.add_message(ChatMessage::system(&format!(
+                    "Error: unknown mode '{mode_id}' — pick one of: {}",
+                    known
+                        .iter()
+                        .map(|m| m.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
+        }
+    }
+}
+
+/// `/model` without arguments opens the picker over the startup
+/// catalog; with an id it becomes the pending selection riding the next
+/// turn (the selection extension's model leg → `_meta.model` on the
+/// prompt, resolved agent-side the way the roster resolves an agent's
+/// `model:`).
+fn handle_model_command(name: Option<&str>, app: &mut App, input: &mut InputComponent) {
+    if let Some(id) = name.filter(|a| !a.is_empty()) {
+        if !input.catalog.contains(id) {
+            if let Some(chat) = chat_mut!(app) {
+                chat.add_message(ChatMessage::system(&format!(
+                    "Error: unknown model '{id}' — /model lists the catalog"
+                )));
+            }
+            return;
+        }
+        input.pending.model = Some(id.to_string());
+        if let Some(chat) = chat_mut!(app) {
+            chat.add_message(ChatMessage::system(&format!(
+                "Next message will use model **{id}**"
+            )));
+        }
+        return;
+    }
+    if input.catalog.entries.is_empty() {
+        bridge_gap(app, "model switching");
+        return;
+    }
+    let current_id = input
+        .pending
+        .model
+        .clone()
+        .or_else(|| input.current.model.clone());
+    if let Some(chat) = chat_mut!(app) {
+        chat.active_dialog = ActiveDialog::ModelSelector(ModelSelectorState {
+            entries: input.catalog.entries.clone(),
+            current_id,
+            selected_idx: 0,
+        });
     }
 }
 
@@ -344,6 +447,7 @@ fn setup_tui(deps: TuiDeps) -> Result<(Terminal, App, InputComponent)> {
         deps.provider,
         deps.session_id,
         deps.registry.clone(),
+        deps.catalog,
     );
 
     app.mount(
@@ -398,7 +502,7 @@ fn render(app: &mut App, input: &mut InputComponent, terminal: &mut Terminal) ->
         let status_bar = StatusBar::new(active_steps, is_streaming, input.spinner_frame);
         f.render_widget(status_bar, status_bar_area);
 
-        let mode_bar = ModeBar::new(input.mode, input.provider.model.clone());
+        let mode_bar = ModeBar::new(input.effective_mode(), input.effective_model());
         f.render_widget(mode_bar, mode_bar_area);
 
         input.render(f, input_area, is_streaming);

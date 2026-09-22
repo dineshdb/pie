@@ -1,8 +1,10 @@
 //! The TUI-facing flow over a real gateway: `pie_tui`'s door client
 //! drives an in-process scripted agent through `FrontDoor` — prompt →
 //! streamed events → done, the `INPUT_REQUIRED` permission ask → answer,
-//! cancel, and `/new`. This is the exact path interactive `pie` runs,
-//! minus only the process: the frontend cannot tell the difference.
+//! cancel, `/new`, and the selection extension (mode + model riding a
+//! turn, the door's read-back). This is the exact path interactive
+//! `pie` runs, minus only the process: the frontend cannot tell the
+//! difference.
 //!
 //! One test function on purpose: the gateway's task store location is
 //! redirected through `A2A_ACP_HOME`, and environment variables cannot
@@ -22,17 +24,20 @@ use acp::schema::v1::{
     AgentCapabilities, CancelNotification, ContentBlock, ContentChunk, InitializeRequest,
     InitializeResponse, NewSessionRequest, NewSessionResponse, PermissionOption,
     PermissionOptionKind, PromptRequest, PromptResponse, RequestPermissionOutcome,
-    RequestPermissionRequest, SessionId, SessionNotification, SessionUpdate, StopReason,
+    RequestPermissionRequest, SessionId, SessionMode, SessionModeId, SessionModeState,
+    SessionNotification, SessionUpdate, SetSessionModeRequest, SetSessionModeResponse, StopReason,
     TextContent, ToolCallId, ToolCallUpdate, ToolCallUpdateFields,
 };
 use agent_client_protocol as acp;
+use pie_tui::SELECTION_EXTENSION_URI;
 use pie_tui::StreamEvent;
-use pie_tui::door;
+use pie_tui::door::{self, Selection};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -41,6 +46,19 @@ use tokio::sync::mpsc;
 static SESSIONS: AtomicU64 = AtomicU64::new(0);
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// What the scripted agent saw — the assertions' eyes on the agent side.
+#[derive(Debug, Default, Clone)]
+struct Recorder {
+    /// The `_meta.model` of every prompt, in order.
+    prompt_models: Arc<Mutex<Vec<Option<String>>>>,
+    /// Every `session/set_mode`, in order.
+    set_modes: Arc<Mutex<Vec<String>>>,
+}
+
+fn lock<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    lock.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 // ── the scripted agent ─────────────────────────────────────────────
 
@@ -56,10 +74,11 @@ enum Script {
 }
 
 /// The scripted agent as an in-process a2acp agent: one connection per
-/// conversation, each served by the same script.
+/// conversation, each served by the same script and the same recorder.
 #[derive(Debug, Clone)]
 struct ScriptedAgent {
     script: Script,
+    recorder: Recorder,
 }
 
 impl a2acp::InProcessAgent for ScriptedAgent {
@@ -68,13 +87,27 @@ impl a2acp::InProcessAgent for ScriptedAgent {
         transport: acp::Channel,
     ) -> Pin<Box<dyn Future<Output = Result<(), acp::Error>> + Send>> {
         let script = self.script.clone();
-        Box::pin(scripted_agent(transport, script))
+        let recorder = self.recorder.clone();
+        Box::pin(scripted_agent(transport, script, recorder))
     }
+}
+
+/// The modes the scripted agent reports on `session/new` — the ACP
+/// `SessionModeState` shape the gateway relays onto the card.
+fn scripted_modes() -> SessionModeState {
+    SessionModeState::new(
+        SessionModeId::from("build"),
+        ["build", "plan", "review"]
+            .into_iter()
+            .map(|id| SessionMode::new(id, id))
+            .collect(),
+    )
 }
 
 async fn scripted_agent(
     transport: impl acp::ConnectTo<acp::Agent> + 'static,
     script: Script,
+    recorder: Recorder,
 ) -> Result<(), acp::Error> {
     let cancel = Arc::new(tokio::sync::Notify::new());
     let prompt_cancel = Arc::clone(&cancel);
@@ -94,18 +127,41 @@ async fn scripted_agent(
         .on_receive_request(
             async |_req: NewSessionRequest, responder: Responder<NewSessionResponse>, _cx| {
                 let id = format!("s-{}", SESSIONS.fetch_add(1, Ordering::Relaxed));
-                let _ = responder.respond(NewSessionResponse::new(SessionId::from(id)));
+                let _ = responder.respond(
+                    NewSessionResponse::new(SessionId::from(id)).modes(Some(scripted_modes())),
+                );
                 Ok(())
             },
             acp::on_receive_request!(),
         )
         .on_receive_request(
             {
+                let recorder = recorder.clone();
+                async move |req: SetSessionModeRequest,
+                            responder: Responder<SetSessionModeResponse>,
+                            _cx| {
+                    lock(&recorder.set_modes).push(req.mode_id.to_string());
+                    let _ = responder.respond(SetSessionModeResponse::new());
+                    Ok(())
+                }
+            },
+            acp::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
                 let cancel = Arc::clone(&prompt_cancel);
+                let recorder = recorder.clone();
                 async move |req: PromptRequest,
                             responder: Responder<PromptResponse>,
                             cx: acp::ConnectionTo<acp::Client>| {
                     let session_id = req.session_id.clone();
+                    let model = req
+                        .meta
+                        .as_ref()
+                        .and_then(|meta| meta.get("model"))
+                        .and_then(|model| model.as_str())
+                        .map(str::to_string);
+                    lock(&recorder.prompt_models).push(model);
                     let task_cx = cx.clone();
                     let notify = Arc::clone(&cancel);
                     let task_script = script.clone();
@@ -210,11 +266,13 @@ fn tui_config() -> a2acp::Config {
     }
 }
 
-fn gateway(agents: &[(&str, Script)]) -> a2acp::FrontDoor {
+fn gateway(agents: &[(&str, Script)]) -> (a2acp::FrontDoor, Recorder) {
+    let recorder = Recorder::default();
     let mut in_process = BTreeMap::new();
     for (name, script) in agents {
         let agent: Arc<dyn a2acp::InProcessAgent> = Arc::new(ScriptedAgent {
             script: script.clone(),
+            recorder: recorder.clone(),
         });
         in_process.insert((*name).to_string(), agent);
     }
@@ -223,7 +281,7 @@ fn gateway(agents: &[(&str, Script)]) -> a2acp::FrontDoor {
         .first()
         .map_or_else(String::new, |(name, _)| (*name).into());
     let gateway = a2acp::a2a::gateway_from_config(&config, &in_process).expect("gateway assembles");
-    gateway.connect()
+    (gateway.connect(), recorder)
 }
 
 type Events = mpsc::UnboundedReceiver<StreamEvent>;
@@ -264,7 +322,7 @@ async fn the_tui_flow_over_the_gateway() {
     let store = tempfile::tempdir().unwrap();
     unsafe { std::env::set_var("A2A_ACP_HOME", store.path()) };
 
-    let door = gateway(&[
+    let (door, recorder) = gateway(&[
         ("echo", Script::Echo(vec!["hello", " world"])),
         ("ask", Script::Ask),
         ("hang", Script::Hang),
@@ -273,7 +331,7 @@ async fn the_tui_flow_over_the_gateway() {
     // Prompt → deltas → done, with the final artifact as the done text.
     {
         let (client, mut events) = client_for(&door, "echo");
-        client.prompt("hi");
+        client.prompt("hi", &Selection::default());
         let seen = events_until(&mut events, |ev| matches!(ev, StreamEvent::Done(_))).await;
         let deltas: Vec<&str> = seen
             .iter()
@@ -294,7 +352,7 @@ async fn the_tui_flow_over_the_gateway() {
     // it and the turn completes with the granted path.
     {
         let (client, mut events) = client_for(&door, "ask");
-        client.prompt("run it");
+        client.prompt("run it", &Selection::default());
         let seen = events_until(&mut events, |ev| {
             matches!(ev, StreamEvent::PermissionAsk { .. })
         })
@@ -326,7 +384,7 @@ async fn the_tui_flow_over_the_gateway() {
     // A denied ask runs the turn on the denied path.
     {
         let (client, mut events) = client_for(&door, "ask");
-        client.prompt("run it");
+        client.prompt("run it", &Selection::default());
         let seen = events_until(&mut events, |ev| {
             matches!(ev, StreamEvent::PermissionAsk { .. })
         })
@@ -348,7 +406,7 @@ async fn the_tui_flow_over_the_gateway() {
     // same event the pre-bridge TUI rendered.
     {
         let (client, mut events) = client_for(&door, "hang");
-        client.prompt("hang");
+        client.prompt("hang", &Selection::default());
         // Wait for the turn to actually be running so CancelTask
         // addresses a live task.
         events_until(
@@ -380,7 +438,7 @@ async fn the_tui_flow_over_the_gateway() {
         };
         assert!(!id.0.is_empty(), "the switch carries a display id");
 
-        client.prompt("after reset");
+        client.prompt("after reset", &Selection::default());
         let seen = events_until(&mut events, |ev| matches!(ev, StreamEvent::Done(_))).await;
         assert_eq!(
             seen.last(),
@@ -397,11 +455,11 @@ async fn the_tui_flow_over_the_gateway() {
     // agent keeps its memory): no session switch between turns.
     {
         let (client, mut events) = client_for(&door, "echo");
-        client.prompt("first");
+        client.prompt("first", &Selection::default());
         let seen = events_until(&mut events, |ev| matches!(ev, StreamEvent::Done(_))).await;
         assert_eq!(seen.last(), Some(&StreamEvent::Done("hello world".into())));
 
-        client.prompt("second");
+        client.prompt("second", &Selection::default());
         let seen = events_until(&mut events, |ev| matches!(ev, StreamEvent::Done(_))).await;
         assert_eq!(
             seen.last(),
@@ -415,4 +473,114 @@ async fn the_tui_flow_over_the_gateway() {
             "no session switch between turns of one conversation: {seen:?}"
         );
     }
+
+    // ── the selection extension: /mode + /model riding a turn ────────
+    // A pending selection composes onto the outgoing message (the
+    // extension opt-in plus the typed payload), the agent side honors
+    // both legs (set_mode reaches the session; the model rides
+    // `_meta.model` on every prompt of the conversation), and the door's
+    // read-back reports what the conversation now runs under.
+    {
+        let (client, mut events) = client_for(&door, "echo");
+        // No selection yet: the read-back is the default and the first
+        // prompt carries no model meta.
+        assert_eq!(client.selection(), Selection::default());
+        client.prompt("plain", &Selection::default());
+        events_until(&mut events, |ev| matches!(ev, StreamEvent::Done(_))).await;
+        assert_eq!(
+            lock(&recorder.prompt_models).last(),
+            Some(&None),
+            "an unselected conversation sends no model meta"
+        );
+
+        // Mode + model on one turn — exactly what a TUI user picking
+        // both between messages produces.
+        client.prompt(
+            "selected",
+            &Selection {
+                mode: Some("plan".into()),
+                model: Some("deep".into()),
+            },
+        );
+        let seen = events_until(&mut events, |ev| matches!(ev, StreamEvent::Done(_))).await;
+        assert_eq!(
+            seen.last(),
+            Some(&StreamEvent::Done("hello world".into())),
+            "the selected turn runs to completion"
+        );
+        assert_eq!(
+            lock(&recorder.set_modes).last(),
+            Some(&"plan".to_string()),
+            "the mode leg forwarded to session/set_mode"
+        );
+        assert_eq!(
+            lock(&recorder.prompt_models).last(),
+            Some(&Some("deep".to_string())),
+            "the model leg rode _meta.model on the prompt"
+        );
+        assert_eq!(
+            client.selection(),
+            Selection {
+                mode: Some("plan".into()),
+                model: Some("deep".into()),
+            },
+            "the door read-back reports the conversation's selection"
+        );
+
+        // The conversation remembers: the NEXT turn carries the model
+        // meta again (no re-selection needed) and stays in its mode.
+        client.prompt("follow-up", &Selection::default());
+        events_until(&mut events, |ev| matches!(ev, StreamEvent::Done(_))).await;
+        assert_eq!(
+            lock(&recorder.prompt_models).last(),
+            Some(&Some("deep".to_string())),
+            "the remembered model rides every later prompt"
+        );
+        assert_eq!(
+            client.selection().mode,
+            Some("plan".into()),
+            "the remembered mode persists"
+        );
+
+        // The mode list fills in after the first session: the card the
+        // pickers read now advertises the scripted agent's modes.
+        client.refresh_card();
+        let modes = client.modes();
+        let ids: Vec<&str> = modes.iter().map(|mode| mode.id.as_str()).collect();
+        assert_eq!(ids, vec!["build", "plan", "review"]);
+    }
+
+    // A selection with an unadvertised mode id is refused before the
+    // turn runs — the extension's error semantics, surfaced as the
+    // turn's error event.
+    {
+        let (client, mut events) = client_for(&door, "echo");
+        client.prompt(
+            "bad mode",
+            &Selection {
+                mode: Some("vibes".into()),
+                model: None,
+            },
+        );
+        let seen = events_until(&mut events, |ev| matches!(ev, StreamEvent::Error(_))).await;
+        let StreamEvent::Error(message) = seen.last().unwrap() else {
+            unreachable!("stopped on the error");
+        };
+        assert!(
+            message.contains("does not advertise mode 'vibes'"),
+            "the rejection names the mode and the fix: {message}"
+        );
+        assert_eq!(
+            client.selection(),
+            Selection::default(),
+            "a refused selection leaves the conversation untouched"
+        );
+    }
+
+    // The extension uri the client opts into is the documented one —
+    // the wire contract this whole flow hangs off.
+    assert_eq!(
+        SELECTION_EXTENSION_URI,
+        "https://qreta.io/a2acp/extensions/selection/v1"
+    );
 }

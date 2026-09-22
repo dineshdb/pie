@@ -423,6 +423,29 @@ fn tui_roster(
     roster::install(config, deps, default)
 }
 
+/// The startup model catalog for the TUI's `/model` picker: the
+/// `"default"` entry (the startup provider and model) plus one entry
+/// per configured `[model.<name>]` tier in name order — plain data,
+/// matching what the agent-side resolver accepts.
+fn model_catalog(
+    startup: &config::ResolvedProvider,
+    tiers: &std::collections::HashMap<String, config::ResolvedProvider>,
+) -> pie_tui::ModelCatalog {
+    let mut names: Vec<&String> = tiers.keys().collect();
+    names.sort_unstable();
+    pie_tui::ModelCatalog {
+        entries: std::iter::once(pie_tui::CatalogEntry {
+            id: pie_acp::DEFAULT_MODEL_SELECTION.to_string(),
+            model: startup.model.clone(),
+        })
+        .chain(names.into_iter().map(|name| pie_tui::CatalogEntry {
+            id: name.clone(),
+            model: tiers[name].model.clone(),
+        }))
+        .collect(),
+    }
+}
+
 /// Interactive mode: assemble an a2acp gateway in process — pie's agent
 /// roster hosted as the gateway's in-process agents by default (the
 /// TUI's own session on the default entry), an external ACP agent's
@@ -457,6 +480,7 @@ async fn run_interactive(setup: Interactive<'_>) -> anyhow::Result<()> {
         name: startup_provider.name.clone(),
         model: startup_provider.model.clone(),
     };
+    let catalog = model_catalog(&startup_provider, &resolved.model_tiers);
 
     let mut config = tui_gateway_config();
     let in_process = if acp_agent.is_empty() {
@@ -484,6 +508,7 @@ async fn run_interactive(setup: Interactive<'_>) -> anyhow::Result<()> {
         session_id,
         history,
         provider,
+        catalog,
         registry,
     })
     .await

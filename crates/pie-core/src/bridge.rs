@@ -93,17 +93,25 @@ pub trait Engine: Send + Sync + 'static {
 /// turn and the assembly that writes it.
 pub type ModeCell = Arc<StdMutex<Option<AgentMode>>>;
 
-/// The remote-client door profile: the client owns the mode selector and
-/// the workspace, so every turn pins the session's mode (the model gets
-/// no `switch_mode` tool), runs in the session's `cwd`, and gates
-/// Write/Edit/Bash behind the engine's [`Ask`] channel instead of the
-/// skill permission channel. The serving loop records "always allow"
-/// grants on its side, so the engine-side grant set stays empty and every
-/// gated call asks.
+/// The pinned provider a remote client controls through the selection
+/// extension's model leg (`_meta.model` on `session/prompt`, resolved by
+/// the assembly): shared between the engine that reads it per turn and
+/// the assembly that writes it. `None` is the engine's startup provider.
+pub type ProviderCell = Arc<StdMutex<Option<ResolvedProvider>>>;
+
+/// The remote-client door profile: the client owns the mode selector,
+/// the model selection, and the workspace, so every turn pins the
+/// session's mode (the model gets no `switch_mode` tool), resolves the
+/// pinned provider selection (none is the startup provider), runs in the
+/// session's `cwd`, and gates Write/Edit/Bash behind the engine's [`Ask`]
+/// channel instead of the skill permission channel. The serving loop
+/// records "always allow" grants on its side, so the engine-side grant
+/// set stays empty and every gated call asks.
 #[derive(Debug)]
 pub struct RemoteDoor {
     pub cwd: PathBuf,
     pub mode: ModeCell,
+    pub model: ProviderCell,
 }
 
 /// Everything the pie engine needs to drive turns.
@@ -126,7 +134,7 @@ pub struct PieEngine {
     pool: Arc<DbPool>,
     registry: Arc<Registry>,
     sandbox: Arc<SandboxConfig>,
-    provider: StdMutex<ResolvedProvider>,
+    provider: ResolvedProvider,
     retry: RetryConfig,
     agent_name: Option<String>,
     door: RemoteDoor,
@@ -140,7 +148,7 @@ impl PieEngine {
             pool: deps.pool,
             registry: deps.registry,
             sandbox: deps.sandbox,
-            provider: StdMutex::new(deps.provider),
+            provider: deps.provider,
             retry: deps.retry,
             agent_name: deps.agent_name,
             door: deps.door,
@@ -174,8 +182,13 @@ impl PieEngine {
             }
         });
         let mode = lock(&self.door.mode).unwrap_or_default();
+        // The selection extension's model leg: the assembly resolved the
+        // selection into a full provider; none is the startup one.
+        let provider = lock(&self.door.model)
+            .clone()
+            .unwrap_or_else(|| self.provider.clone());
         PieAgent::new(
-            lock(&self.provider).build_client(),
+            provider.build_client(),
             Arc::clone(&self.registry),
             Arc::clone(&self.sandbox),
             session,
@@ -442,6 +455,7 @@ mod tests {
         RemoteDoor {
             cwd: PathBuf::from(cwd),
             mode: Arc::new(StdMutex::new(None)),
+            model: Arc::new(StdMutex::new(None)),
         }
     }
 

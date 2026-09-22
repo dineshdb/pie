@@ -1,4 +1,7 @@
-use pie_core::plugin::AgentMode;
+//! The mode bar: the live selection state — the mode and model the next
+//! turn runs under (pending selection, the conversation's confirmed
+//! selection, or the startup defaults).
+
 use tuirealm::ratatui::buffer::Buffer;
 use tuirealm::ratatui::layout::Rect;
 use tuirealm::ratatui::style::{Color, Modifier, Style};
@@ -6,12 +9,12 @@ use tuirealm::ratatui::text::Span;
 use tuirealm::ratatui::widgets::Widget;
 
 pub struct ModeBar {
-    pub mode: AgentMode,
+    pub mode: String,
     pub model: String,
 }
 
 impl ModeBar {
-    pub fn new(mode: AgentMode, model: String) -> Self {
+    pub fn new(mode: String, model: String) -> Self {
         Self { mode, model }
     }
 }
@@ -26,7 +29,7 @@ impl Widget for ModeBar {
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD);
         let dim_style = Style::default().fg(Color::DarkGray);
-        let mode_tag = Span::styled(format!(" {} ", self.mode.short_name()), mode_style);
+        let mode_tag = Span::styled(format!(" {} ", self.mode), mode_style);
         let mdl_tag = Span::styled(format!(" {}", self.model), dim_style);
 
         mode_tag.render(Rect::new(area.x, area.y, 6, 1), buf);

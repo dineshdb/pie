@@ -60,7 +60,7 @@ impl Command {
             Self::Builtin(builtin, args) => match builtin {
                 BuiltinCommand::Help => CommandAction::Help,
                 BuiltinCommand::Quit => CommandAction::Quit,
-                BuiltinCommand::Model => CommandAction::Model,
+                BuiltinCommand::Model => CommandAction::Model(args),
                 BuiltinCommand::Mode => CommandAction::Mode(args),
                 BuiltinCommand::Skills => {
                     let text = build_skills_list(registry);
@@ -81,8 +81,9 @@ pub enum CommandAction {
     NewSession,
     Stream(String),
     Shell(String),
-    /// `/model` — a bridge gap; the app answers with the notice.
-    Model,
+    /// `/model [id]` — no id opens the picker, an id selects directly.
+    Model(Option<String>),
+    /// `/mode [id]` — no id lists the advertised modes, an id selects.
     Mode(Option<String>),
     Help,
     Quit,

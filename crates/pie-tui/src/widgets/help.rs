@@ -23,8 +23,12 @@ impl HelpOverlay<'_> {
         let commands = [
             ("/help, /h", "          Show this help"),
             (
-                "/model",
-                "             Model switch (not available over the bridge)",
+                "/model [id]",
+                "        Model picker (or select id) — rides the next message",
+            ),
+            (
+                "/mode [id]",
+                "          Mode list (or select id) — rides the next message",
             ),
             ("/skills, /ls", "       List agents and skills"),
             ("/clear", "             Clear conversation"),
@@ -52,10 +56,7 @@ impl HelpOverlay<'_> {
             ("Up/Down", "           Navigate history"),
             ("Page Up/Down", "     Scroll messages"),
             ("Ctrl-T", "             Toggle plan list (Full / Compact)"),
-            (
-                "Ctrl-K",
-                "             Mode switch (not available over the bridge)",
-            ),
+            ("Ctrl-K", "             Cycle mode (rides the next message)"),
             ("Esc", "               Close dialog / Cancel"),
         ];
         for (key, desc) in keys {

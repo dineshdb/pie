@@ -8,7 +8,7 @@
 //!
 //! | TUI action                  | A2A                                                              |
 //! |-----------------------------|------------------------------------------------------------------|
-//! | submit / prompt             | `SendStreamingMessage` (client-minted `taskId` + `contextId`, `metadata.agent`, `metadata.cwd` on a fresh conversation) |
+//! | submit / prompt             | `SendStreamingMessage` (client-minted `taskId` + `contextId`, `metadata.agent`, `metadata.cwd` on a fresh conversation; the selection extension's opt-in + payload when a selection is pending) |
 //! | cancel (Esc/Ctrl-C)         | `CancelTask` on the running task                                 |
 //! | permission answer           | `SendMessage` on the parked task with `metadata.permissionOptionId` |
 //! | `/new`                      | nothing on the wire — drop the `contextId`, so the next prompt starts a fresh conversation |
@@ -25,10 +25,10 @@
 //!
 //! Deliberate gaps over the bridge (TODO(a2acp)): usage totals and
 //! fine-grained tool-call output have no A2A shape (status lines are the
-//! documented flattening), and pie-specific wants — `!shell` escapes,
-//! model switching/listing, mode markers — are answered by the caller
-//! with a "not available over the bridge" notice instead of fake
-//! success.
+//! documented flattening), and pie-specific wants — `!shell` escapes —
+//! are answered by the caller with a "not available over the bridge"
+//! notice instead of fake success. Model and mode selection go through
+//! the selection extension (below) — no side channels.
 
 use crate::realm::{AskId, SessionId, StreamEvent};
 use a2acp::FrontDoor;
@@ -40,6 +40,82 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::mpsc;
+
+/// URI of the **selection extension** — the spec-sanctioned A2A
+/// `AgentExtension` this client opts into per message when a selection
+/// is pending (mode and/or model), with the payload under the same key
+/// in the message's metadata.
+pub const SELECTION_EXTENSION_URI: &str = "https://qreta.io/a2acp/extensions/selection/v1";
+
+/// A selection the next outgoing message carries: the mode and/or model
+/// leg of the selection extension, either optional. Composed onto the
+/// turn that applies it; the conversation on the agent side remembers.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Selection {
+    pub mode: Option<String>,
+    pub model: Option<String>,
+}
+
+impl Selection {
+    /// Whether any leg is set — the gate for the extension opt-in (an
+    /// empty selection must leave the wire untouched).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.mode.is_none() && self.model.is_none()
+    }
+
+    /// The extension's typed payload for this selection.
+    fn payload(&self) -> Value {
+        let mut payload = serde_json::Map::new();
+        if let Some(mode) = &self.mode {
+            payload.insert("mode".into(), json!(mode));
+        }
+        if let Some(model) = &self.model {
+            payload.insert("model".into(), json!(model));
+        }
+        Value::Object(payload)
+    }
+}
+
+/// One mode the agent advertises on the card (the selection extension's
+/// per-agent report — empty until the agent's first session on the
+/// gateway reported its modes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModeOption {
+    pub id: String,
+    pub description: String,
+}
+
+/// One selectable model: the id the selection extension carries and the
+/// model it resolves to. `id` is `"default"` (the startup provider) or a
+/// configured tier name; the agent resolves it the same way the roster
+/// resolves an agent's `model:` — a tier name wins wholesale, a literal
+/// model id rides the current provider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogEntry {
+    pub id: String,
+    pub model: String,
+}
+
+/// The provider/model catalog pie passes the TUI as plain startup data:
+/// the default entry first, then one per configured `[model.<name>]`
+/// tier in name order. What the picker offers is what the agent accepts
+/// (plus the catalog's model ids as literals).
+#[derive(Debug, Clone, Default)]
+pub struct ModelCatalog {
+    pub entries: Vec<CatalogEntry>,
+}
+
+impl ModelCatalog {
+    /// Whether `id` is selectable — an entry id or one of the catalog's
+    /// model ids (accepted as a literal on the current provider).
+    #[must_use]
+    pub fn contains(&self, id: &str) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.id == id || entry.model == id)
+    }
+}
 
 /// Mints every wire id this client sends (tasks, contexts, messages).
 /// Process-global on purpose: two clients on one door must never mint
@@ -72,6 +148,10 @@ pub struct Client {
     /// Parked permission asks keyed by their task id, shared with the
     /// stream pumps that park them.
     asks: Arc<StdMutex<HashMap<String, Vec<AskOption>>>>,
+    /// The cached agent card — the mode list for the pickers, refreshed
+    /// by [`Client::refresh_card`] (the card is live state: an agent
+    /// appears in it only after its first session reported modes).
+    card: StdMutex<Value>,
 }
 
 impl std::fmt::Debug for Client {
@@ -92,6 +172,7 @@ pub fn open(
     cwd: PathBuf,
 ) -> (Client, mpsc::UnboundedReceiver<StreamEvent>) {
     let (events, stream) = mpsc::unbounded_channel();
+    let card = StdMutex::new(door.card());
     (
         Client {
             door,
@@ -101,6 +182,7 @@ pub fn open(
             context: StdMutex::new(None),
             task: StdMutex::new(None),
             asks: Arc::new(StdMutex::new(HashMap::new())),
+            card,
         },
         stream,
     )
@@ -124,8 +206,11 @@ impl Client {
     /// with a client-minted task id (so `cancel` can address the turn
     /// before the first frame arrives) and the conversation's context
     /// id, minting both the conversation and its `metadata.cwd` when
-    /// this is the first prompt after `/new` (or launch).
-    pub fn prompt(&self, query: &str) {
+    /// this is the first prompt after `/new` (or launch). A pending
+    /// selection rides the message: the extension opt-in plus the typed
+    /// payload under the extension uri (strictly additive — an empty
+    /// selection leaves the body exactly as it is today).
+    pub fn prompt(&self, query: &str, selection: &Selection) {
         let n = Self::next_id();
         let task_id = format!("t-{n}");
         // Bind the cloned context out of the guard before branching:
@@ -141,29 +226,16 @@ impl Client {
         };
         *lock(&self.task) = Some(task_id.clone());
 
-        let mut metadata = json!({"agent": self.agent});
-        if fresh {
-            let cwd = json!(self.cwd.display().to_string());
-            if let Some(object) = metadata.as_object_mut() {
-                object.insert("cwd".into(), cwd);
-            }
-        }
-        let body = json!({
-            "jsonrpc": "2.0",
-            "id": n,
-            "method": "SendStreamingMessage",
-            "params": {
-                "message": {
-                    "role": "ROLE_USER",
-                    "parts": [{"text": query}],
-                    "messageId": format!("m-{n}"),
-                    "taskId": task_id.clone(),
-                    "contextId": context,
-                    "metadata": metadata,
-                },
-                "configuration": {"historyLength": 0},
-            },
-        });
+        let body = turn_body(
+            n,
+            &task_id,
+            &context,
+            &self.agent,
+            fresh,
+            &self.cwd,
+            query,
+            selection,
+        );
         let door = self.door.clone();
         let events = self.events.clone();
         let asks = Arc::clone(&self.asks);
@@ -178,6 +250,85 @@ impl Client {
                 }
             }
         });
+    }
+
+    /// The conversation's current selection, as the gateway holds it —
+    /// the read-back for the pickers and the mode bar. `None` legs mean
+    /// "not selected" (the agent's own default); before the first turn
+    /// there is no conversation to ask.
+    pub fn selection(&self) -> Selection {
+        let Some(context) = lock(&self.context).clone() else {
+            return Selection::default();
+        };
+        self.door
+            .selection(&context)
+            .map_or_else(Selection::default, |held| Selection {
+                mode: held.mode,
+                model: held.model,
+            })
+    }
+
+    /// The modes the driven agent advertises on the card — empty until
+    /// its first session on the gateway reported them (an honest empty:
+    /// the picker says "available after the first message").
+    pub fn modes(&self) -> Vec<ModeOption> {
+        let card = lock(&self.card).clone();
+        let Some(report) = card
+            .pointer("/capabilities/extensions")
+            .and_then(Value::as_array)
+            .and_then(|extensions| {
+                extensions.iter().find(|extension| {
+                    extension.get("uri").and_then(Value::as_str) == Some(SELECTION_EXTENSION_URI)
+                })
+            })
+            .and_then(|extension| extension.pointer("/params/agents"))
+            .and_then(|agents| agents.get(&self.agent))
+        else {
+            return Vec::new();
+        };
+        report
+            .get("availableModes")
+            .and_then(Value::as_array)
+            .map(|modes| {
+                modes
+                    .iter()
+                    .filter_map(|mode| {
+                        Some(ModeOption {
+                            id: mode.get("id").and_then(Value::as_str)?.to_owned(),
+                            description: mode
+                                .get("description")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_owned(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The mode a fresh session of the driven agent starts in, per the
+    /// card's report — what the mode bar shows before any selection.
+    pub fn default_mode(&self) -> Option<String> {
+        let card = lock(&self.card).clone();
+        card.pointer("/capabilities/extensions")
+            .and_then(Value::as_array)
+            .and_then(|extensions| {
+                extensions.iter().find(|extension| {
+                    extension.get("uri").and_then(Value::as_str) == Some(SELECTION_EXTENSION_URI)
+                })
+            })
+            .and_then(|extension| extension.pointer("/params/agents"))
+            .and_then(|agents| agents.get(&self.agent))
+            .and_then(|report| report.get("currentModeId"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    }
+
+    /// Re-read the card — live state: after the first turn the driven
+    /// agent's session has reported its modes, so the mode list fills in.
+    pub fn refresh_card(&self) {
+        *lock(&self.card) = self.door.card();
     }
 
     /// Cancel the in-flight turn; the stream delivers the terminal
@@ -253,6 +404,58 @@ impl Client {
                 "new-{n}"
             ))));
     }
+}
+
+/// The `SendStreamingMessage` body for one turn: the client-minted ids,
+/// `metadata.agent` always, `metadata.cwd` on a fresh conversation, and
+/// — only when a selection is pending — the extension opt-in plus the
+/// typed payload under the extension uri. With no selection the body is
+/// byte-identical to the pre-extension shape: the extension is strictly
+/// additive on the wire.
+#[allow(clippy::too_many_arguments)] // one wire body, all of it wire-shaped
+fn turn_body(
+    n: u64,
+    task_id: &str,
+    context: &str,
+    agent: &str,
+    fresh: bool,
+    cwd: &std::path::Path,
+    query: &str,
+    selection: &Selection,
+) -> Value {
+    let mut metadata = json!({"agent": agent});
+    if fresh {
+        let cwd = json!(cwd.display().to_string());
+        if let Some(object) = metadata.as_object_mut() {
+            object.insert("cwd".into(), cwd);
+        }
+    }
+    let mut message = json!({
+        "role": "ROLE_USER",
+        "parts": [{"text": query}],
+        "messageId": format!("m-{n}"),
+        "taskId": task_id,
+        "contextId": context,
+        "metadata": metadata,
+    });
+    if !selection.is_empty() {
+        if let Some(object) = message.as_object_mut() {
+            object.insert("extensions".into(), json!([SELECTION_EXTENSION_URI]));
+        }
+        let payload = selection.payload();
+        if let Some(metadata) = message.get_mut("metadata").and_then(Value::as_object_mut) {
+            metadata.insert(SELECTION_EXTENSION_URI.into(), payload);
+        }
+    }
+    json!({
+        "jsonrpc": "2.0",
+        "id": n,
+        "method": "SendStreamingMessage",
+        "params": {
+            "message": message,
+            "configuration": {"historyLength": 0},
+        },
+    })
 }
 
 /// The option the boolean answer maps onto: allow picks the first
@@ -438,4 +641,128 @@ fn permission_ask(status: &Value) -> Option<ParkedAsk> {
         names,
         options,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    fn body(selection: &Selection) -> Value {
+        turn_body(
+            7,
+            "t-7",
+            "c-7",
+            "pie",
+            true,
+            std::path::Path::new("/repo"),
+            "hello",
+            selection,
+        )
+    }
+
+    fn message(body: &Value) -> &Value {
+        &body["params"]["message"]
+    }
+
+    /// With no selection the body carries no extension opt-in and no
+    /// metadata key under the uri — byte-identical to the shape the TUI
+    /// sent before the extension existed.
+    #[test]
+    fn no_selection_leaves_the_wire_untouched() {
+        let bare = body(&Selection::default());
+        assert!(message(&bare).get("extensions").is_none());
+        assert!(
+            !message(&bare)["metadata"]
+                .as_object()
+                .unwrap()
+                .contains_key(SELECTION_EXTENSION_URI)
+        );
+        assert_eq!(message(&bare)["metadata"]["agent"], "pie");
+        assert_eq!(message(&bare)["metadata"]["cwd"], "/repo");
+    }
+
+    #[test]
+    fn both_legs_ride_the_extension_payload() {
+        let selected = body(&Selection {
+            mode: Some("plan".into()),
+            model: Some("deep".into()),
+        });
+        assert_eq!(
+            message(&selected)["extensions"],
+            json!([SELECTION_EXTENSION_URI]),
+            "the opt-in lists the uri"
+        );
+        assert_eq!(
+            message(&selected)["metadata"][SELECTION_EXTENSION_URI],
+            json!({"mode": "plan", "model": "deep"}),
+        );
+    }
+
+    #[test]
+    fn either_leg_is_optional() {
+        let mode_only = body(&Selection {
+            mode: Some("review".into()),
+            model: None,
+        });
+        let payload = &message(&mode_only)["metadata"][SELECTION_EXTENSION_URI];
+        assert_eq!(payload["mode"], "review");
+        assert!(payload.get("model").is_none());
+
+        let with_model = body(&Selection {
+            mode: None,
+            model: Some("default".into()),
+        });
+        let payload = &message(&with_model)["metadata"][SELECTION_EXTENSION_URI];
+        assert_eq!(payload["model"], "default");
+        assert!(payload.get("mode").is_none());
+    }
+
+    /// A pure selection (the mode leg alone, no query to run) may carry
+    /// a single empty text part — the extension's consumption note.
+    #[test]
+    fn a_pure_selection_may_carry_an_empty_text_part() {
+        let pure = turn_body(
+            9,
+            "t-9",
+            "c-9",
+            "pie",
+            true,
+            std::path::Path::new("/repo"),
+            "",
+            &Selection {
+                mode: Some("plan".into()),
+                model: None,
+            },
+        );
+        assert_eq!(
+            message(&pure)["parts"],
+            json!([{ "text": "" }]),
+            "one empty text part, nothing to run"
+        );
+        assert_eq!(
+            message(&pure)["metadata"][SELECTION_EXTENSION_URI],
+            json!({"mode": "plan"})
+        );
+    }
+
+    #[test]
+    fn a_continued_conversation_omits_the_cwd() {
+        let continued = turn_body(
+            11,
+            "t-11",
+            "c-7",
+            "pie",
+            false,
+            std::path::Path::new("/repo"),
+            "again",
+            &Selection::default(),
+        );
+        assert!(
+            !message(&continued)["metadata"]
+                .as_object()
+                .unwrap()
+                .contains_key("cwd")
+        );
+    }
 }
