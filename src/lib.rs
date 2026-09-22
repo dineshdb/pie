@@ -27,6 +27,7 @@ use std::sync::Arc;
 use tracing::trace;
 use tracing_subscriber::EnvFilter;
 
+mod roster;
 mod server;
 mod server_service;
 
@@ -188,15 +189,6 @@ pub async fn run() -> anyhow::Result<()> {
     // `pie <agent> [query...]`: a first token matching an agent name selects
     // that agent; the rest (or piped stdin) is the query.
     let agent = extract_agent(&registry, &mut cli);
-    let provider = resolve_agent_provider(agent.as_ref(), &config.provider, &config.model_tiers);
-    let model = provider.build_client();
-
-    // The agent's sandbox config layers on top of the configured one.
-    let mut sandbox = (*build_sandbox(&pie_config)).clone();
-    if let Some(agent_sandbox) = agent.as_ref().and_then(|a| a.sandbox.as_ref()) {
-        sandbox.merge(agent_sandbox);
-    }
-    let sandbox = Arc::new(sandbox);
 
     let t = std::time::Instant::now();
     let session = resolve_session(pool.clone(), cli.resume).await?;
@@ -213,11 +205,14 @@ pub async fn run() -> anyhow::Result<()> {
                 "timing: startup phase"
             );
         }
+        let provider =
+            resolve_agent_provider(agent.as_ref(), &config.provider, &config.model_tiers);
         let engine = RunEngine {
             registry,
+            model: provider.build_client(),
+            // The agent's sandbox config layers on top of the base one.
+            sandbox_settings: merged_sandbox(&base_sandbox, agent.as_ref()),
             agent,
-            model,
-            sandbox_settings: sandbox,
         };
         run_single_shot(cli, config, session, format, engine).await
     } else {
@@ -225,15 +220,23 @@ pub async fn run() -> anyhow::Result<()> {
         let setup = Interactive {
             pool,
             registry,
-            sandbox,
-            provider,
-            retry: config.retry.clone(),
+            base_sandbox,
+            config,
             agent_name: agent.map(|a| a.name),
             session,
             acp_agent: cli.acp_agent.clone(),
         };
         run_interactive(setup).await
     }
+}
+
+/// The agent's sandbox config layered on top of the base one.
+fn merged_sandbox(base: &Arc<SandboxConfig>, agent: Option<&Agent>) -> Arc<SandboxConfig> {
+    let mut sandbox = (**base).clone();
+    if let Some(agent_sandbox) = agent.and_then(|a| a.sandbox.as_ref()) {
+        sandbox.merge(agent_sandbox);
+    }
+    Arc::new(sandbox)
 }
 
 /// Peel the first query token off if it names an agent.
@@ -371,12 +374,13 @@ async fn run_single_shot(
 }
 
 /// Everything interactive mode needs to open its A2A door.
-struct Interactive {
+struct Interactive<'a> {
     pool: Arc<DbPool>,
     registry: Arc<Registry>,
-    sandbox: Arc<SandboxConfig>,
-    provider: config::ResolvedProvider,
-    retry: config::RetryConfig,
+    /// The base sandbox, BEFORE any agent's merge — the roster factory
+    /// merges each entry's own agent sandbox onto it.
+    base_sandbox: Arc<SandboxConfig>,
+    config: &'a ResolvedConfig,
     agent_name: Option<String>,
     session: Session,
     /// External ACP agent to run instead of the in-process engine
@@ -403,41 +407,63 @@ fn tui_gateway_config() -> a2acp::Config {
     }
 }
 
-/// Interactive mode: assemble an a2acp gateway in process — pie hosted
-/// as its in-process agent by default, an external ACP agent's process
-/// spec with `--acp-agent` — and hand the front door to the TUI. The
-/// TUI's code path is identical either way; to the gateway the two
-/// hosting modes are indistinguishable.
-async fn run_interactive(setup: Interactive) -> anyhow::Result<()> {
-    let registry = setup.registry.clone();
+/// The interactive door's in-process roster: the default `pie` entry —
+/// the startup-selected agent, resuming the startup conversation — plus
+/// the addressable registry roster ([`roster::install`]). The TUI keeps
+/// driving the default entry; only the gateway's addressable roster
+/// grows.
+fn tui_roster(
+    config: &mut a2acp::Config,
+    deps: &roster::RosterDeps<'_>,
+    startup: Option<&Agent>,
+    startup_session: pie_core::session::SessionId,
+) -> std::collections::BTreeMap<String, Arc<dyn a2acp::InProcessAgent>> {
+    let mut default = deps.host_deps(startup);
+    default.resume = Some(startup_session);
+    roster::install(config, deps, default)
+}
+
+/// Interactive mode: assemble an a2acp gateway in process — pie's agent
+/// roster hosted as the gateway's in-process agents by default (the
+/// TUI's own session on the default entry), an external ACP agent's
+/// process spec with `--acp-agent` — and hand the front door to the
+/// TUI. The TUI's code path is identical either way; to the gateway the
+/// two hosting modes are indistinguishable.
+async fn run_interactive(setup: Interactive<'_>) -> anyhow::Result<()> {
+    let Interactive {
+        pool,
+        registry,
+        base_sandbox,
+        config: resolved,
+        agent_name,
+        session,
+        acp_agent,
+    } = setup;
     let cwd = std::env::current_dir().context("cannot determine working directory")?;
-    let history = setup.session.history_entries().to_vec();
-    let session_id = pie_tui::SessionId::new(setup.session.id.to_string());
+    let history = session.history_entries().to_vec();
+    let session_id = pie_tui::SessionId::new(session.id.to_string());
+    let deps = roster::RosterDeps {
+        pool,
+        registry: Arc::clone(&registry),
+        sandbox: base_sandbox,
+        config: resolved,
+    };
+    let startup = agent_name
+        .as_deref()
+        .and_then(|name| registry.agents.iter().find(|a| a.name == name));
+    let startup_provider =
+        resolve_agent_provider(startup, &resolved.provider, &resolved.model_tiers);
     let provider = pie_tui::ProviderView {
-        name: setup.provider.name.clone(),
-        model: setup.provider.model.clone(),
+        name: startup_provider.name.clone(),
+        model: startup_provider.model.clone(),
     };
 
     let mut config = tui_gateway_config();
-    let mut in_process = std::collections::BTreeMap::new();
-    if setup.acp_agent.is_empty() {
-        let host: Arc<dyn a2acp::InProcessAgent> =
-            Arc::new(pie_acp::PieHost::new(pie_acp::HostDeps {
-                pool: setup.pool,
-                registry: setup.registry,
-                sandbox: setup.sandbox,
-                provider: setup.provider,
-                retry: setup.retry,
-                agent_name: setup.agent_name,
-                // The first turn continues the session pie resolved at
-                // launch (so `--resume` and fresh starts both behave like
-                // the pre-bridge TUI).
-                resume: Some(setup.session.id),
-            }));
-        config.a2a.default_agent = "pie".into();
-        in_process.insert("pie".to_string(), host);
+    let in_process = if acp_agent.is_empty() {
+        config.a2a.default_agent = roster::PIE_AGENT.into();
+        tui_roster(&mut config, &deps, startup, session.id)
     } else {
-        let Some((program, args)) = setup.acp_agent.split_first() else {
+        let Some((program, args)) = acp_agent.split_first() else {
             anyhow::bail!("--acp-agent needs a command to run");
         };
         let spec = a2acp::AgentSpec {
@@ -447,7 +473,8 @@ async fn run_interactive(setup: Interactive) -> anyhow::Result<()> {
         };
         config.a2a.default_agent = "agent".into();
         config.agents.insert("agent".to_string(), spec);
-    }
+        std::collections::BTreeMap::new()
+    };
     let gateway = a2acp::a2a::gateway_from_config(&config, &in_process)?;
     let (client, events) = pie_tui::door::open(gateway.connect(), &config.a2a.default_agent, cwd);
 
@@ -517,9 +544,6 @@ fn read_piped_stdin() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Only the fixtures below need it, so it lives here rather than at the
-    // top, where it would read as an unused import in a non-test build.
-    use pie_core::agent::OutputMode;
 
     #[test]
     fn rmcp_handshake_logs_are_capped_below_info() {
@@ -540,22 +564,7 @@ mod tests {
         Registry {
             agents: names
                 .iter()
-                .map(|n| Agent {
-                    name: (*n).to_string(),
-                    description: String::new(),
-                    output_mode: OutputMode::default(),
-                    model: None,
-                    temperature: None,
-                    content: String::new(),
-                    needs: Vec::new(),
-                    tools: Vec::new(),
-                    sandbox: None,
-                    grants: Vec::new(),
-                    readonly: false,
-                    plugins: None,
-                    skills_paths: Vec::new(),
-                    max_steps: None,
-                })
+                .map(|n| roster::tests::minimal_agent(n))
                 .collect(),
             skills: Vec::new(),
             completions: Vec::new(),
@@ -641,5 +650,54 @@ mod tests {
 
         let resolved = resolve_agent_provider(None, &default, &tiers);
         assert_eq!(resolved.model, "gpt");
+    }
+
+    #[tokio::test]
+    async fn the_interactive_door_assembles_the_addressable_roster() {
+        let registry = registry_with(&["review", "explore"]);
+        let pool = Arc::new(db::create_test_pool().await.unwrap());
+        let session = Session::create(pool.clone(), std::path::Path::new("/tmp/roster-tui"))
+            .await
+            .unwrap();
+        let resolved = ResolvedConfig {
+            provider: config::ResolvedProvider {
+                name: "default".into(),
+                model: "gpt".into(),
+                anthropic_url: None,
+                openai_url: "http://127.0.0.1:9/v1".parse().unwrap(),
+                api_key: redact::Secret::new("k".into()),
+                temperature: None,
+            },
+            retry: config::RetryConfig::default(),
+            model_tiers: std::collections::HashMap::new(),
+            mcp: std::collections::HashMap::new(),
+            pricing: std::collections::HashMap::new(),
+            output_format: OutputFormat::default(),
+            log_level: "warn".to_string(),
+            debug: false,
+        };
+        let deps = roster::RosterDeps {
+            pool,
+            registry: Arc::new(registry),
+            sandbox: Arc::new(SandboxConfig::default()),
+            config: &resolved,
+        };
+
+        // The TUI's own default: the startup-selected agent (here
+        // `review`), resuming the startup session.
+        let startup = deps.registry.agents.iter().find(|a| a.name == "review");
+        let mut config = tui_gateway_config();
+        let hosts = tui_roster(&mut config, &deps, startup, session.id);
+
+        // The TUI drives the default entry; the crate's own default
+        // agrees with pie's.
+        assert_eq!(config.a2a.default_agent, roster::PIE_AGENT);
+        let mut names: Vec<&str> = hosts.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        assert_eq!(names, vec!["explore", "pie", "review"]);
+        assert!(
+            config.agents.contains_key("review") && config.agents.contains_key("pie"),
+            "the card's display specs ride the config"
+        );
     }
 }

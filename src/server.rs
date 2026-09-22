@@ -1,11 +1,13 @@
 //! `pie server` — pie served over A2A through the real `a2acp` gateway.
 //!
 //! The assembly is thin on purpose: pie's `[server]` configuration maps
-//! onto [`a2acp::Config`], pie itself is registered as the gateway's
-//! in-process agent (the same [`pie_acp::PieHost`] the interactive TUI
-//! drives), and the crate's router is served on pie's own listener. The
-//! wire behavior — agent card, task lifecycle, the `INPUT_REQUIRED`
-//! permission flow — is the crate's, not a re-implementation.
+//! onto [`a2acp::Config`], pie's agent roster is registered as the
+//! gateway's in-process agents (the default `pie` entry plus one per
+//! registry agent, each the same [`pie_acp::PieHost`] the interactive
+//! TUI drives — see [`crate::roster`]), and the crate's router is served
+//! on pie's own listener. The wire behavior — agent card, task
+//! lifecycle, the `INPUT_REQUIRED` permission flow — is the crate's,
+//! not a re-implementation.
 //!
 //! What pie keeps for itself: the bind (pie's listener), the Host-header
 //! allowlist (the DNS-rebinding guard, loopback plus `[server]
@@ -16,23 +18,18 @@
 //! (`[server] api_key`, `pie server token`) has no counterpart in the
 //! crate and is rejected loudly rather than silently ignored.
 
-use a2acp::InProcessAgent;
+use crate::roster::{PIE_AGENT, RosterDeps, install};
 use anyhow::Context;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::Next;
 use axum::middleware::from_fn_with_state;
 use axum::response::{IntoResponse, Response};
-use pie_acp::{HostDeps, PieHost};
 use pie_core::config::{ResolvedConfig, ServerConfig};
 use pie_core::db::DbPool;
 use pie_core::p1e_sandbox::SandboxConfig;
 use pie_core::registry::Registry;
-use std::collections::BTreeMap;
 use std::sync::Arc;
-
-/// Pie's name on the gateway: the default (in-process) agent.
-pub(crate) const PIE_AGENT: &str = "pie";
 
 /// Everything `pie server` needs to host pie in process — the TUI path's
 /// dependencies minus the startup session: the gateway mints one pie
@@ -110,23 +107,10 @@ pub(crate) fn gateway_config(
     })
 }
 
-/// The in-process pie agent behind the gateway: the same host the
-/// interactive TUI drives, minus the startup session.
-fn pie_host(deps: ServerDeps, config: &ResolvedConfig) -> Arc<dyn InProcessAgent> {
-    Arc::new(PieHost::new(HostDeps {
-        pool: deps.pool,
-        registry: deps.registry,
-        sandbox: deps.sandbox,
-        provider: config.provider.clone(),
-        retry: config.retry.clone(),
-        agent_name: None,
-        resume: None,
-    }))
-}
-
-/// Start the `pie server` daemon: assemble the a2acp gateway (pie in
-/// process, any `[server.agents]` as spawned process specs) and serve
-/// the crate's router on pie's own listener, behind pie's Host-header
+/// Start the `pie server` daemon: assemble the a2acp gateway (pie's
+/// roster in process — the default entry plus one per registry agent —
+/// and any `[server.agents]` as spawned process specs) and serve the
+/// crate's router on pie's own listener, behind pie's Host-header
 /// allowlist.
 ///
 /// # Errors
@@ -140,8 +124,14 @@ pub(crate) async fn serve(
     server: ServerConfig,
     config: &ResolvedConfig,
 ) -> anyhow::Result<()> {
-    let a2a_config = gateway_config(&server, bind_override.as_deref())?;
-    let in_process = BTreeMap::from([(PIE_AGENT.to_string(), pie_host(deps, config))]);
+    let mut a2a_config = gateway_config(&server, bind_override.as_deref())?;
+    let roster = RosterDeps {
+        pool: deps.pool,
+        registry: deps.registry,
+        sandbox: deps.sandbox,
+        config,
+    };
+    let in_process = install(&mut a2a_config, &roster, roster.host_deps(None));
     let gateway = a2acp::a2a::gateway_from_config(&a2a_config, &in_process)
         .context("assembling the gateway")?;
 
@@ -350,6 +340,14 @@ args = ["acp"]
         }
     }
 
+    /// A registry agent fixture with a name and description.
+    fn registry_agent(name: &str, description: &str) -> pie_core::agent::Agent {
+        pie_core::agent::Agent {
+            description: description.to_string(),
+            ..crate::roster::tests::minimal_agent(name)
+        }
+    }
+
     /// The `pie server` assembly end to end, over both transports the
     /// daemon offers: the in-process front door (card contents, a
     /// `SendMessage` driving `PieHost` — a real pie session opens and
@@ -375,43 +373,63 @@ args = ["acp"]
         let server = server_config(
             "[server]\nbind = \"127.0.0.1:8629\"\nallowed_hosts = [\"pie.lvh.me\"]\n\n[server.agents.opencode]\ncommand = \"opencode\"\nargs = [\"acp\"]\n",
         );
-        let config = gateway_config(&server, None).unwrap();
+        let mut config = gateway_config(&server, None).unwrap();
+        // A roster with a duplicate-name agent: `pie` collides with the
+        // default entry and must lose to it.
         let deps = ServerDeps {
             pool: Arc::new(db::create_test_pool().await.unwrap()),
             registry: Arc::new(Registry {
-                agents: Vec::new(),
+                agents: vec![
+                    registry_agent("review", "reviews code"),
+                    registry_agent("explore", "explores codebases"),
+                    registry_agent("pie", "a hostile namesake"),
+                ],
                 skills: Vec::new(),
                 completions: Vec::new(),
             }),
             sandbox: Arc::new(SandboxConfig::default()),
         };
         let resolved = test_resolved();
-        let host = pie_host(deps, &resolved);
-        let in_process = BTreeMap::from([(PIE_AGENT.to_string(), host)]);
+        let roster = RosterDeps {
+            pool: deps.pool.clone(),
+            registry: deps.registry.clone(),
+            sandbox: deps.sandbox.clone(),
+            config: &resolved,
+        };
+        let in_process = install(&mut config, &roster, roster.host_deps(None));
         let gateway = a2acp::a2a::gateway_from_config(&config, &in_process)
             .expect("the server gateway assembles");
         let door = gateway.connect();
 
-        // The card advertises pie (hosted in process) and the external
-        // process agent, on the crate's shape.
+        // The card is the agent directory: the default `pie` entry
+        // first, then the rest in name order — the registry roster
+        // (minus the colliding `pie`) alongside the external process
+        // agent. Skill ids are the `metadata.agent` selectors.
         let card = door.card();
-        let names: Vec<&str> = card["skills"]
+        let ids: Vec<&str> = card["skills"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|skill| skill["name"].as_str().unwrap())
+            .map(|skill| skill["id"].as_str().unwrap())
             .collect();
-        assert!(names.contains(&"pie"), "{names:?}");
-        assert!(names.contains(&"opencode"), "{names:?}");
-        let pie_skill = card["skills"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|skill| skill["name"] == "pie")
-            .unwrap();
+        assert_eq!(ids, vec!["pie", "explore", "opencode", "review"], "{card}");
+        let skill = |id: &str| {
+            card["skills"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|skill| skill["id"] == id)
+                .unwrap()
+        };
+        // The default's own card line wins over the registry namesake's.
         assert_eq!(
-            pie_skill["description"].as_str().unwrap(),
-            "Local ACP agent 'pie' (in-process) on this device"
+            skill("pie")["description"].as_str().unwrap(),
+            crate::roster::PIE_DEFAULT_DESCRIPTION
+        );
+        // Registry agents advertise their registry descriptions.
+        assert_eq!(
+            skill("review")["description"].as_str().unwrap(),
+            "reviews code"
         );
 
         // SendMessage drives PieHost: a real pie session opens in the
@@ -436,11 +454,58 @@ args = ["acp"]
         let task = &envelope["result"]["task"];
         assert_eq!(task["status"]["state"], "TASK_STATE_FAILED", "{envelope}");
 
+        // Addressing a named roster agent works the same way: the skill
+        // id IS the selector, the turn runs on that agent's host.
+        let reply = door
+            .call(json!({
+                "jsonrpc": "2.0", "id": 2, "method": "SendMessage",
+                "params": {
+                    "message": {
+                        "parts": [{"kind": "text", "text": "review this"}],
+                        "metadata": {
+                            "agent": "review",
+                            "cwd": tmp.path().to_string_lossy(),
+                        },
+                    },
+                },
+            }))
+            .await;
+        let FrontReply::Envelope(envelope) = reply else {
+            panic!("blocking SendMessage answers an envelope");
+        };
+        assert!(envelope.get("error").is_none(), "{envelope}");
+        assert_eq!(
+            envelope["result"]["task"]["status"]["state"], "TASK_STATE_FAILED",
+            "the named agent's turn ran: {envelope}"
+        );
+
+        // The control: a selector the roster does not serve is an
+        // invalid-params error, not a silent fallback to the default.
+        let reply = door
+            .call(json!({
+                "jsonrpc": "2.0", "id": 3, "method": "SendMessage",
+                "params": {
+                    "message": {
+                        "parts": [{"kind": "text", "text": "hi"}],
+                        "metadata": {
+                            "agent": "ghost",
+                            "cwd": tmp.path().to_string_lossy(),
+                        },
+                    },
+                },
+            }))
+            .await;
+        let FrontReply::Envelope(envelope) = reply else {
+            panic!("blocking SendMessage answers an envelope");
+        };
+        let message = envelope["error"]["message"].as_str().unwrap();
+        assert!(message.contains("unknown agent"), "{envelope}");
+
         // The task is durable in the crate's store: GetTask finds it.
         let task_id = task["id"].as_str().unwrap().to_string();
         let fetched = door
             .call(json!({
-                "jsonrpc": "2.0", "id": 2, "method": "GetTask",
+                "jsonrpc": "2.0", "id": 4, "method": "GetTask",
                 "params": {"id": task_id},
             }))
             .await;
@@ -491,7 +556,7 @@ args = ["acp"]
             .post(format!("{base}/a2a"))
             .header(header::HOST, "evil.example")
             .json(&serde_json::json!({
-                "jsonrpc": "2.0", "id": 3, "method": "GetTask",
+                "jsonrpc": "2.0", "id": 5, "method": "GetTask",
                 "params": {"id": "nope"},
             }))
             .send()
@@ -507,7 +572,7 @@ args = ["acp"]
             client
                 .post(format!("{base}/a2a"))
                 .json(&json!({
-                    "jsonrpc": "2.0", "id": 4, "method": "SendMessage",
+                    "jsonrpc": "2.0", "id": 6, "method": "SendMessage",
                     "params": {
                         "message": {
                             "parts": [{"kind": "text", "text": "hi over http"}],
