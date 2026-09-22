@@ -88,6 +88,7 @@ dependencies = [
 [[package]]
 name = "agentsdk"
 version = "0.11.0"
+source = "git+https://github.com/dineshdb/agentsdk?branch=main#804584f189f21e518f8a43f6d635244e0512658c"
 dependencies = [
  "agentsdk-macros",
  "async-stream",
@@ -110,6 +111,7 @@ dependencies = [
 [[package]]
 name = "agentsdk-macros"
 version = "0.9.0"
+source = "git+https://github.com/dineshdb/agentsdk?branch=main#804584f189f21e518f8a43f6d635244e0512658c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -119,6 +121,7 @@ dependencies = [
 [[package]]
 name = "agentsdk-plugin-agentsmd"
 version = "0.1.0"
+source = "git+https://github.com/dineshdb/agentsdk?branch=main#804584f189f21e518f8a43f6d635244e0512658c"
 dependencies = [
  "agentsdk",
  "async-trait",
@@ -131,6 +134,7 @@ dependencies = [
 [[package]]
 name = "agentsdk-plugin-fs"
 version = "0.1.0"
+source = "git+https://github.com/dineshdb/agentsdk?branch=main#804584f189f21e518f8a43f6d635244e0512658c"
 dependencies = [
  "agentsdk",
  "async-trait",
@@ -146,6 +150,7 @@ dependencies = [
 [[package]]
 name = "agentsdk-plugin-jewels"
 version = "0.1.0"
+source = "git+https://github.com/dineshdb/agentsdk?branch=main#804584f189f21e518f8a43f6d635244e0512658c"
 dependencies = [
  "agentsdk",
  "async-trait",
@@ -157,6 +162,7 @@ dependencies = [
 [[package]]
 name = "agentsdk-plugin-mcp"
 version = "0.2.0"
+source = "git+https://github.com/dineshdb/agentsdk?branch=main#804584f189f21e518f8a43f6d635244e0512658c"
 dependencies = [
  "agentsdk",
  "async-trait",
@@ -172,6 +178,7 @@ dependencies = [
 [[package]]
 name = "agentsdk-plugin-shell"
 version = "0.1.0"
+source = "git+https://github.com/dineshdb/agentsdk?branch=main#804584f189f21e518f8a43f6d635244e0512658c"
 dependencies = [
  "agentsdk",
  "async-trait",
@@ -183,6 +190,7 @@ dependencies = [
 [[package]]
 name = "agentsdk-plugin-skills"
 version = "0.1.0"
+source = "git+https://github.com/dineshdb/agentsdk?branch=main#804584f189f21e518f8a43f6d635244e0512658c"
 dependencies = [
  "agentsdk",
  "async-trait",
@@ -194,7 +202,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "shell-words",
- "stop-words 0.10.0",
+ "stop-words 0.10.1",
  "thiserror 2.0.20",
  "tracing",
 ]
@@ -2396,6 +2404,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 [[package]]
 name = "jewels"
 version = "0.1.0"
+source = "git+https://github.com/dineshdb/agentsdk?branch=main#804584f189f21e518f8a43f6d635244e0512658c"
 dependencies = [
  "anyhow",
  "clap",
@@ -2906,6 +2915,7 @@ checksum = "6aa2c4e539b869820a2b82e1aef6ff40aa85e65decdd5185e83fb4b1249cd00f"
 [[package]]
 name = "o3gen"
 version = "0.8.0"
+source = "git+https://github.com/dineshdb/agentsdk?branch=main#804584f189f21e518f8a43f6d635244e0512658c"
 dependencies = [
  "heck",
  "http",
@@ -2922,6 +2932,7 @@ dependencies = [
 [[package]]
 name = "o3gen-openai"
 version = "0.4.0"
+source = "git+https://github.com/dineshdb/agentsdk?branch=main#804584f189f21e518f8a43f6d635244e0512658c"
 dependencies = [
  "derive_builder",
  "derive_more",
@@ -4703,9 +4714,9 @@ dependencies = [
 
 [[package]]
 name = "stop-words"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d68df56303396bcfb639455b3c166804aeb7994005010aab5e9e8a1277b8871d"
+checksum = "c1ed527ae13a020ac2404e32746ecee62d632aafe64f8e0df2bb3545ae96f6d1"
 dependencies = [
  "serde_json",
 ]
@@ -4860,7 +4871,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
