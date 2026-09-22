@@ -62,8 +62,6 @@ pub fn load_config() -> Result<PieConfig> {
         server.resolve_secrets(&pie_config.secrets);
     }
 
-    pie_config.server.resolve_secrets(&pie_config.secrets);
-
     Ok(pie_config)
 }
 

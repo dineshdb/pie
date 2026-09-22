@@ -3045,20 +3045,21 @@ dependencies = [
  "agent-client-protocol",
  "agentsdk",
  "anyhow",
+ "axum",
  "clap",
  "dirs 7.0.0",
  "p1e-sandbox",
- "pie-a2a",
  "pie-acp",
  "pie-core",
  "pie-tui",
  "redact",
+ "reqwest 0.12.28",
  "serde_json",
  "tempfile",
  "tokio",
+ "toml 0.9.12+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]
@@ -3159,30 +3160,6 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
-
-[[package]]
-name = "pie-a2a"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytes",
- "chrono",
- "http-body-util",
- "hyper",
- "hyper-util",
- "pie-core",
- "redact",
- "reqwest 0.13.5",
- "serde",
- "serde_json",
- "sqlx",
- "tempfile",
- "tokio",
- "tokio-stream",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
 
 [[package]]
 name = "pie-acp"

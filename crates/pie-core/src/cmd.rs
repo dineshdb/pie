@@ -72,12 +72,13 @@ struct McpServerStatus {
     url: String,
 }
 
-/// The `pie server` daemon configuration. The api key is deliberately absent —
-/// `pie server token` reveals it.
+/// The `pie server` daemon configuration: how the A2A gateway is
+/// reachable and authenticated.
 #[derive(Serialize)]
 struct ServerStatus {
     bind: String,
     auth_required: bool,
+    auth: String,
 }
 
 #[derive(Serialize)]
@@ -104,6 +105,16 @@ fn mcp_server_status(config: &ResolvedConfig) -> Vec<McpServerStatus> {
     servers
 }
 
+/// One line describing how the A2A gateway authenticates RPCs: `OpenID`
+/// Connect when configured, else the loopback/tailnet trust model the
+/// a2acp gateway ships with.
+fn server_auth_summary(server: &crate::config::ServerConfig) -> String {
+    match &server.openid_connect_url {
+        Some(url) => format!("OpenID Connect ({url})"),
+        None => "none (loopback bind; tailscale is the authentication)".to_string(),
+    }
+}
+
 pub fn handle_status(
     config: &ResolvedConfig,
     registry: &Arc<Registry>,
@@ -111,7 +122,8 @@ pub fn handle_status(
 ) {
     let server_status = || ServerStatus {
         bind: server.bind.clone(),
-        auth_required: server.api_key.is_some(),
+        auth_required: server.openid_connect_url.is_some(),
+        auth: server_auth_summary(server),
     };
     if config.output_format.is_json() {
         let status = StatusOutput {
@@ -150,14 +162,13 @@ pub fn handle_status(
     let server_status = server_status();
     println!("\n--- MCP tasks server ---");
     println!("Bind:        {}", server_status.bind);
-    println!(
-        "Auth:        {}",
-        if server_status.auth_required {
-            "bearer token (reveal with `pie server token`)"
-        } else {
-            "none"
-        }
-    );
+    println!("Auth:        {}", server_status.auth);
+    if server.api_key.is_some() {
+        println!(
+            "Warning:     [server] api_key is obsolete (static bearer auth was removed); \
+             `pie server` will refuse to start until it is deleted"
+        );
+    }
 
     println!("\n--- Registry ---");
     println!("Skills: {}", registry.skills.len());

@@ -3,7 +3,7 @@ use clap::Args;
 use p1e_sandbox::SandboxConfig;
 use redact::Secret;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use url::Url;
 
 #[derive(Debug, Clone, Default, Args)]
@@ -161,24 +161,53 @@ pub struct PieConfig {
     pub log_level: Option<String>,
 }
 
-/// The `pie server` daemon (`[server]` in pie.toml). It exposes pie
-/// sessions as MCP tasks over streamable HTTP.
+/// The `pie server` daemon (`[server]` in pie.toml): the a2acp A2A
+/// gateway, hosted by pie with itself as the in-process agent.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct ServerConfig {
     /// Address to bind, e.g. `127.0.0.1:8629`.
     pub bind: String,
-    /// Bearer token clients must send as `Authorization: Bearer <value>`.
-    /// A value that exactly matches a `[secrets]` key is replaced by that
-    /// secret's value at load time. Required for non-loopback binds.
-    #[serde(default)]
+    /// Obsolete: static bearer auth died with the pie-a2a fork. The
+    /// gateway authenticates with `OpenID` Connect (`openid_connect_url`)
+    /// or trusts the loopback/tailnet (expose it through `tailscale
+    /// serve`). Kept parsed so a leftover key fails loudly at startup
+    /// instead of silently disabling auth.
     pub api_key: Option<Secret<String>>,
     /// Hostnames remote clients will use to reach the server (e.g.
     /// `"citadel.lvh.me"`). The transport rejects any non-loopback `Host`
     /// header that is not listed here — a DNS-rebinding guard — so remote
     /// access without this list fails with 403.
-    #[serde(default)]
     pub allowed_hosts: Vec<String>,
+    /// Public URL baked into the agent card's `supportedInterfaces` (what
+    /// clients dial) when the bind address is not it — e.g. the tailscale
+    /// HTTPS URL when the daemon sits behind `tailscale serve`.
+    pub url: Option<String>,
+    /// `OpenID` Connect discovery URL. When set, the agent card declares
+    /// the standard `openIdConnect` scheme and every RPC must carry a
+    /// provider-issued bearer JWT. Required for non-loopback binds;
+    /// unset = no auth in the application (loopback bind; tailscale is
+    /// the authentication).
+    pub openid_connect_url: Option<String>,
+    /// Expected token audience; validated against the token's `aud` when
+    /// set.
+    pub audience: Option<String>,
+    /// External ACP agents served alongside in-process pie
+    /// (`[server.agents.<name>]` with `command`/`args`) — the server
+    /// counterpart of the interactive `--acp-agent` flag.
+    pub agents: BTreeMap<String, ServerAgentConfig>,
+}
+
+/// One external ACP agent behind `pie server` (`[server.agents.<name>]`):
+/// an ACP-speaking command the gateway spawns per session.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ServerAgentConfig {
+    /// Command to run, e.g. `opencode`.
+    pub command: String,
+    /// Arguments, e.g. `["acp"]`.
+    #[serde(default)]
+    pub args: Vec<String>,
 }
 
 impl Default for ServerConfig {
@@ -187,19 +216,15 @@ impl Default for ServerConfig {
             bind: "127.0.0.1:8629".to_string(),
             api_key: None,
             allowed_hosts: Vec::new(),
+            url: None,
+            openid_connect_url: None,
+            audience: None,
+            agents: BTreeMap::new(),
         }
     }
 }
 
 impl ServerConfig {
-    pub fn resolve_secrets(&mut self, secrets: &HashMap<String, Secret<String>>) {
-        if let Some(key) = &mut self.api_key
-            && let Some(val) = secrets.get(key.expose_secret())
-        {
-            *key = val.clone();
-        }
-    }
-
     /// Whether the bind address is a loopback interface.
     pub fn is_loopback_bind(&self) -> bool {
         use std::net::ToSocketAddrs as _;
@@ -451,13 +476,14 @@ api_key = "MEM_KEY"
         let pie = parse("log_level = \"info\"");
         assert_eq!(pie.server.bind, "127.0.0.1:8629");
         assert!(pie.server.api_key.is_none());
+        assert!(pie.server.openid_connect_url.is_none());
+        assert!(pie.server.agents.is_empty());
         assert!(pie.server.is_loopback_bind());
 
         let pie = parse(
             r#"
 [server]
 bind = "0.0.0.0:8629"
-api_key = "PIE_SERVER_KEY"
 "#,
         );
         assert_eq!(pie.server.bind, "0.0.0.0:8629");
@@ -465,18 +491,54 @@ api_key = "PIE_SERVER_KEY"
     }
 
     #[test]
-    fn server_api_key_resolves_through_secrets() {
-        let mut pie = parse(
+    fn server_section_parses_auth_hosts_and_agents() {
+        let pie = parse(
             r#"
 [server]
-api_key = "MY_KEY"
+allowed_hosts = ["citadel.lvh.me"]
+url = "https://pie.tailnet.example"
+openid_connect_url = "https://idp.example/.well-known/openid-configuration"
+audience = "pie"
 
-[secrets]
-MY_KEY = "real-key"
+[server.agents.opencode]
+command = "opencode"
+args = ["acp"]
 "#,
         );
-        pie.server.resolve_secrets(&pie.secrets);
-        assert_eq!(pie.server.api_key.unwrap().expose_secret(), "real-key");
+        let server = &pie.server;
+        assert_eq!(server.allowed_hosts, vec!["citadel.lvh.me".to_string()]);
+        assert_eq!(server.url.as_deref(), Some("https://pie.tailnet.example"));
+        assert_eq!(
+            server.openid_connect_url.as_deref(),
+            Some("https://idp.example/.well-known/openid-configuration")
+        );
+        assert_eq!(server.audience.as_deref(), Some("pie"));
+        assert_eq!(
+            server.agents.get("opencode"),
+            Some(&ServerAgentConfig {
+                command: "opencode".to_string(),
+                args: vec!["acp".to_string()],
+            })
+        );
+    }
+
+    #[test]
+    fn obsolete_server_api_key_is_still_parsed() {
+        // A leftover static key must not break config loading (pie refuses
+        // it loudly at server startup instead).
+        let pie = parse(
+            r#"
+[server]
+api_key = "old-key"
+"#,
+        );
+        assert_eq!(
+            pie.server
+                .api_key
+                .as_ref()
+                .map(|k| k.expose_secret().as_str()),
+            Some("old-key")
+        );
     }
 
     #[test]

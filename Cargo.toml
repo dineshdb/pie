@@ -8,7 +8,7 @@ license = "MIT"
 repository = "https://github.com/dineshdb/pie"
 
 [workspace]
-members = [".", "crates/p1e-sandbox", "crates/pie-core", "crates/pie-acp", "crates/pie-a2a", "crates/pie-tui"]
+members = [".", "crates/p1e-sandbox", "crates/pie-core", "crates/pie-acp", "crates/pie-tui"]
 
 [workspace.dependencies]
 dirs = "7"
@@ -21,16 +21,15 @@ a2acp = { git = "ssh://git@github.com/qretaio/a2acp.git", branch = "main" }
 [dependencies]
 pie-core = { path = "crates/pie-core", version = "0.3.0" }
 pie-acp = { path = "crates/pie-acp", version = "0.3.0" }
-pie-a2a = { path = "crates/pie-a2a", version = "0.1.0" }
 pie-tui = { path = "crates/pie-tui", version = "0.1.0" }
 a2acp.workspace = true
+axum = "0.8"
 agentsdk = { git = "https://github.com/dineshdb/agentsdk", branch = "main" }
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 p1e-sandbox = { path = "crates/p1e-sandbox", version = "0.2.0" }
-uuid = { version = "1", features = ["v4"] }
 dirs.workspace = true
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "io-util", "io-std", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "io-util", "io-std", "sync", "net"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 redact = { version = "0.1.11", features = ["serde"] }
@@ -42,6 +41,9 @@ workspace = true
 tempfile = "3"
 agent-client-protocol = "2.1.0"
 serde_json.workspace = true
+pie-core = { path = "crates/pie-core", version = "0.3.0", features = ["test-util"] }
+toml = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
 
 [profile.release]
 lto = true

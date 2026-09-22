@@ -1,10 +1,13 @@
-//! The `pie server` daemon (A2A) as a login service, and its credentials.
+//! The `pie server` daemon (A2A) as a login service.
 //!
-//! `pie server token` shows the bearer key clients must send; `pie server
-//! install` registers a launchd agent (macOS) or a systemd user unit
-//! (Linux) that keeps the daemon running, generating the api key first if
-//! the target bind needs one. Both are thin file-writers plus the platform
-//! service-manager CLI — no daemonization logic of our own.
+//! `pie server install` registers a launchd agent (macOS) or a systemd
+//! user unit (Linux) that keeps the daemon running. Both are thin
+//! file-writers plus the platform service-manager CLI — no daemonization
+//! logic of our own. The unit carries the bind address only, never a
+//! credential: the a2acp gateway authenticates with `OpenID` Connect
+//! (`[server] openid_connect_url`) or trusts the loopback/tailnet —
+//! there is no static token anymore, and an obsolete `[server] api_key`
+//! is refused rather than ignored.
 
 use anyhow::{Context, anyhow};
 use pie_core::config::{ServerConfig, pie_home};
@@ -16,69 +19,52 @@ const LABEL: &str = "io.github.dineshdb.pie.server";
 const SERVICE: &str = "pie-server";
 const DEFAULT_PATH_ENV: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
-/// Print the bearer token clients must send. Intended for scripting:
-/// `PIE_TOKEN=$(pie server token)`.
-pub fn show_token(server: &ServerConfig) {
-    if let Some(key) = &server.api_key {
-        println!("{}", key.expose_secret());
-    } else {
-        println!("no api key configured ([server] api_key in pie.toml).");
-        println!(
-            "Loopback binds work without one; for remote access, \
-             `pie server install --bind <addr>` generates a key automatically."
+/// Refuse installs whose serve would refuse: an obsolete api key, or a
+/// non-loopback bind without `OpenID` Connect (the a2acp security model).
+fn validate(server: &ServerConfig, bind: &str) -> anyhow::Result<()> {
+    if server.api_key.is_some() {
+        anyhow::bail!(
+            "[server] api_key is obsolete: static bearer auth was removed with the a2acp \
+             gateway — delete it and authenticate with [server] openid_connect_url (OIDC) \
+             or expose the loopback bind through tailscale"
         );
     }
+    let effective = ServerConfig {
+        bind: bind.to_string(),
+        ..ServerConfig::default()
+    };
+    if !effective.is_loopback_bind() && server.openid_connect_url.is_none() {
+        anyhow::bail!(
+            "refusing non-loopback bind '{bind}' without auth: set [server] \
+             openid_connect_url, or keep the bind loopback and expose it through \
+             tailscale serve (the tailnet is the authentication)"
+        );
+    }
+    Ok(())
 }
 
 /// Register the daemon with the platform's service manager so it starts at
-/// login and restarts on failure. A non-loopback bind requires an api key;
-/// one is generated and persisted into `~/.pie/pie.toml` when missing.
-/// `hosts` are the hostnames remote clients will use — persisted as
-/// `[server] allowed_hosts`, the transport's Host-header allowlist.
+/// login and restarts on failure. `hosts` are the hostnames remote clients
+/// will use — persisted as `[server] allowed_hosts`, the transport's
+/// Host-header allowlist.
 pub fn install(
     bind_override: Option<String>,
     hosts: &[String],
     server: &ServerConfig,
 ) -> anyhow::Result<()> {
     let bind = bind_override.unwrap_or_else(|| server.bind.clone());
-    let loopback_bind = ServerConfig {
-        bind: bind.clone(),
-        ..ServerConfig::default()
-    }
-    .is_loopback_bind();
+    validate(server, &bind)?;
 
-    // Values to persist into [server]: a generated api key and/or the
-    // remote hostnames. Already-configured values are left untouched.
-    let mut persist: Vec<(&str, String)> = Vec::new();
-    let token = if loopback_bind {
-        server.api_key.as_ref().map(|k| k.expose_secret().clone())
-    } else if let Some(k) = &server.api_key {
-        Some(k.expose_secret().clone())
-    } else {
-        let generated = uuid::Uuid::new_v4().to_string();
-        persist.push(("api_key", format!("\"{generated}\"")));
-        Some(generated)
-    };
     if !hosts.is_empty() {
         let listed = hosts
             .iter()
             .map(|host| format!("\"{host}\""))
             .collect::<Vec<_>>()
             .join(", ");
-        persist.push(("allowed_hosts", format!("[{listed}]")));
-    }
-    if !persist.is_empty() {
-        let path = write_server_config_values(&config_path(), &persist)
-            .context("persisting [server] settings")?;
-        println!(
-            "stored {} in {}",
-            persist
-                .iter()
-                .map(|(name, _)| *name)
-                .collect::<Vec<_>>()
-                .join(", "),
-            path.display()
-        );
+        let path =
+            write_server_config_values(&config_path(), &[("allowed_hosts", format!("[{listed}]"))])
+                .context("persisting [server] settings")?;
+        println!("stored allowed_hosts in {}", path.display());
     }
 
     let binary = std::env::current_exe().context("resolving the pie binary")?;
@@ -99,12 +85,14 @@ pub fn install(
     }
 
     println!("\npie server service installed: http://{bind}");
-    match token {
-        Some(token) => {
-            println!("  api key:   {token}");
-            println!("  client header: \"Authorization\": \"Bearer {token}\"");
-        }
-        None => println!("  api key:   none required (loopback bind)"),
+    match &server.openid_connect_url {
+        Some(url) => println!(
+            "  auth:      OpenID Connect ({url}) — RPCs need a provider-issued bearer token"
+        ),
+        None => println!(
+            "  auth:      none in the application — keep the bind behind \
+             tailscale serve; the tailnet is the authentication"
+        ),
     }
     Ok(())
 }
@@ -295,7 +283,7 @@ fn uninstall_systemd() -> anyhow::Result<()> {
     Ok(())
 }
 
-// ── api key persistence ────────────────────────────────────────────
+// ── [server] persistence ───────────────────────────────────────────
 
 fn config_path() -> PathBuf {
     pie_home().join("pie.toml")
@@ -380,7 +368,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn api_key_upsert_appends_section_to_config_without_one() {
+    fn upsert_appends_section_to_config_without_one() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("pie.toml");
         std::fs::write(
@@ -390,57 +378,58 @@ mod tests {
         .unwrap();
 
         let written =
-            write_server_config_values(&path, &[("api_key", "\"key-1\"".into())]).unwrap();
+            write_server_config_values(&path, &[("allowed_hosts", "[\"pie.lvh.me\"]".into())])
+                .unwrap();
         assert_eq!(written, path);
         let contents = std::fs::read_to_string(&path).unwrap();
-        assert!(contents.contains("[server]\napi_key = \"key-1\""));
+        assert!(contents.contains("[server]\nallowed_hosts = [\"pie.lvh.me\"]"));
         // Existing sections are preserved verbatim, before the new one.
         assert!(contents.contains("[sandbox]\nallow_write = [\".\"]"));
     }
 
     #[test]
-    fn api_key_upsert_inserts_into_existing_empty_section() {
+    fn upsert_inserts_into_existing_empty_section() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("pie.toml");
         std::fs::write(&path, "[server]\nbind = \"127.0.0.1:1\"\n\n[sandbox]\n").unwrap();
 
-        write_server_config_values(&path, &[("api_key", "\"key-2\"".into())]).unwrap();
+        write_server_config_values(&path, &[("allowed_hosts", "[\"pie.lvh.me\"]".into())]).unwrap();
         let contents = std::fs::read_to_string(&path).unwrap();
         // The key joins the existing server section, before the next header.
-        assert!(
-            contents.contains("[server]\nbind = \"127.0.0.1:1\"\napi_key = \"key-2\"\n\n[sandbox]")
-        );
+        assert!(contents.contains(
+            "[server]\nbind = \"127.0.0.1:1\"\nallowed_hosts = [\"pie.lvh.me\"]\n\n[sandbox]"
+        ));
     }
 
     #[test]
-    fn api_key_upsert_replaces_existing_key_only() {
+    fn upsert_replaces_existing_key_only() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("pie.toml");
         std::fs::write(
             &path,
-            "[server]\nbind = \"127.0.0.1:1\"\napi_key = \"old\"\n\n[sandbox]\n",
+            "[server]\nbind = \"127.0.0.1:1\"\nallowed_hosts = [\"old.host\"]\n\n[sandbox]\n",
         )
         .unwrap();
 
-        write_server_config_values(&path, &[("api_key", "\"new-key\"".into())]).unwrap();
+        write_server_config_values(&path, &[("allowed_hosts", "[\"new.host\"]".into())]).unwrap();
         let contents = std::fs::read_to_string(&path).unwrap();
-        assert!(contents.contains("api_key = \"new-key\""));
-        assert!(!contents.contains("old"));
+        assert!(contents.contains("allowed_hosts = [\"new.host\"]"));
+        assert!(!contents.contains("old.host"));
         assert!(contents.contains("bind = \"127.0.0.1:1\""));
-        assert_eq!(contents.matches("api_key").count(), 1);
+        assert_eq!(contents.matches("allowed_hosts").count(), 1);
     }
 
     #[test]
-    fn api_key_upsert_replaces_key_before_next_section() {
+    fn upsert_replaces_key_before_next_section() {
         // [server] followed by another section: the new key must land in
         // the server section, not at the end of the file.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("pie.toml");
         std::fs::write(&path, "[server]\n\n[sandbox]\n").unwrap();
 
-        write_server_config_values(&path, &[("api_key", "\"key-3\"".into())]).unwrap();
+        write_server_config_values(&path, &[("allowed_hosts", "[\"pie.lvh.me\"]".into())]).unwrap();
         let contents = std::fs::read_to_string(&path).unwrap();
-        assert!(contents.contains("[server]\napi_key = \"key-3\"\n\n[sandbox]"));
+        assert!(contents.contains("[server]\nallowed_hosts = [\"pie.lvh.me\"]\n\n[sandbox]"));
     }
 
     #[test]
@@ -452,7 +441,7 @@ mod tests {
         write_server_config_values(
             &path,
             &[
-                ("api_key", "\"tok\"".into()),
+                ("url", "\"https://pie.tailnet.example\"".into()),
                 ("allowed_hosts", "[\"citadel.lvh.me\"]".into()),
             ],
         )
@@ -460,7 +449,7 @@ mod tests {
         let contents = std::fs::read_to_string(&path).unwrap();
         assert!(
             contents.contains(
-                "[server]\nbind = \"127.0.0.1:1\"\napi_key = \"tok\"\nallowed_hosts = [\"citadel.lvh.me\"]"
+                "[server]\nbind = \"127.0.0.1:1\"\nurl = \"https://pie.tailnet.example\"\nallowed_hosts = [\"citadel.lvh.me\"]"
             ),
             "{contents}"
         );
@@ -489,5 +478,34 @@ mod tests {
         assert!(unit.contains("ExecStart=/usr/local/bin/pie server --bind 0.0.0.0:8629"));
         assert!(unit.contains("Restart=always"));
         assert!(unit.contains(DEFAULT_PATH_ENV));
+        // The unit never carries a credential: the gateway's auth lives in
+        // the config, not the service definition.
+        assert!(!unit.to_lowercase().contains("token"));
+        assert!(!plist.to_lowercase().contains("token"));
+    }
+
+    fn config_from(toml: &str) -> ServerConfig {
+        let pie: pie_core::config::PieConfig = toml::from_str(toml).unwrap();
+        pie.server
+    }
+
+    #[test]
+    fn install_refuses_obsolete_api_key() {
+        let server = config_from("[server]\napi_key = \"leftover\"\n");
+        let err = validate(&server, "127.0.0.1:8629").unwrap_err().to_string();
+        assert!(err.contains("api_key is obsolete"), "{err}");
+    }
+
+    #[test]
+    fn install_refuses_non_loopback_without_oidc() {
+        let server = config_from("[server]\nbind = \"127.0.0.1:8629\"\n");
+        let err = validate(&server, "0.0.0.0:8629").unwrap_err().to_string();
+        assert!(err.contains("openid_connect_url"), "{err}");
+
+        let oidc = config_from(
+            "[server]\nopenid_connect_url = \"https://idp.example\"\nbind = \"127.0.0.1:8629\"\n",
+        );
+        assert!(validate(&oidc, "0.0.0.0:8629").is_ok());
+        assert!(validate(&server, "127.0.0.1:8629").is_ok());
     }
 }

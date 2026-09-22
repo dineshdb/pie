@@ -27,6 +27,7 @@ use std::sync::Arc;
 use tracing::trace;
 use tracing_subscriber::EnvFilter;
 
+mod server;
 mod server_service;
 
 #[derive(Parser, Clone)]
@@ -113,8 +114,6 @@ enum Commands {
 
 #[derive(clap::Subcommand, Clone, Debug)]
 enum ServerCommand {
-    /// Print the api key clients must send as the bearer token
-    Token,
     /// Install the daemon as a login service (launchd / systemd user unit)
     Install,
     /// Remove the installed service
@@ -296,17 +295,16 @@ async fn handle_command(
             host,
             command,
         } => match command {
-            Some(ServerCommand::Token) => {
-                server_service::show_token(server_config);
-                Ok(())
-            }
             Some(ServerCommand::Install) => server_service::install(bind, &host, server_config),
             Some(ServerCommand::Uninstall) => server_service::uninstall(),
             None => {
-                pie_a2a::serve(
+                server::serve(
                     bind,
-                    pool,
-                    base_sandbox.clone(),
+                    server::ServerDeps {
+                        pool,
+                        registry: registry.clone(),
+                        sandbox: base_sandbox.clone(),
+                    },
                     server_config.clone(),
                     config,
                 )
