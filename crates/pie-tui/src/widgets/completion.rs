@@ -1,26 +1,18 @@
-use pie_core::registry::{CompletionItem, CompletionKind, Registry};
+use crate::theme::Theme;
+use pie_core::registry::{CompletionItem, Registry};
 use std::sync::Arc;
 use tuirealm::ratatui::buffer::Buffer;
 use tuirealm::ratatui::layout::Rect;
-use tuirealm::ratatui::style::{Color, Modifier, Style};
+use tuirealm::ratatui::style::{Modifier, Style};
 use tuirealm::ratatui::text::{Line, Span};
 use tuirealm::ratatui::widgets::{Block, Borders, Paragraph, Widget};
-
-/// Completion-kind → color, mapped here in the frontend: pie-core stays
-/// frontend-agnostic.
-fn kind_color(kind: CompletionKind) -> Color {
-    match kind {
-        CompletionKind::Builtin => Color::Yellow,
-        CompletionKind::Skill => Color::Cyan,
-        CompletionKind::Agent => Color::Green,
-    }
-}
 
 pub struct CompletionPopup<'a> {
     pub candidates: &'a [CompletionItem],
     pub selected: usize,
     /// Maximum height the popup can occupy (from input top to screen top).
     pub max_height: u16,
+    pub theme: &'static Theme,
 }
 
 impl CompletionPopup<'_> {
@@ -81,22 +73,22 @@ impl Widget for CompletionPopup<'_> {
             .enumerate()
             .map(|(i, item)| {
                 let is_selected = scroll_offset + i == self.selected;
-                completion_line(item, is_selected, name_col_width, area.width)
+                completion_line(item, is_selected, name_col_width, area.width, self.theme)
             })
             .collect();
 
         // Overflow indicator
         let hidden_after = total.saturating_sub(scroll_offset + visible);
         if hidden_after > 0 {
-            items.push(overflow_line(hidden_after, area.width));
+            items.push(overflow_line(hidden_after, area.width, self.theme));
         }
 
         Paragraph::new(items)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray))
-                    .style(Style::default().bg(Color::Black)),
+                    .border_style(Style::default().fg(self.theme.text_dim))
+                    .style(Style::default().bg(self.theme.surface)),
             )
             .render(area, buf);
     }
@@ -243,22 +235,25 @@ fn completion_line(
     is_selected: bool,
     name_width: usize,
     area_width: u16,
+    theme: &Theme,
 ) -> Line<'static> {
     let name_style = if is_selected {
         Style::default()
-            .fg(Color::Black)
-            .bg(Color::Cyan)
+            .fg(theme.selection_fg)
+            .bg(theme.selection_bg)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
-            .fg(kind_color(item.kind))
+            .fg(theme.completion_kind_color(item.kind))
             .add_modifier(Modifier::BOLD)
     };
 
     let desc_style = if is_selected {
-        Style::default().fg(Color::Black).bg(Color::Cyan)
+        Style::default()
+            .fg(theme.selection_fg)
+            .bg(theme.selection_bg)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(theme.text_dim)
     };
 
     let name = format!(" {:<width$}", item.label, width = name_width);
@@ -274,14 +269,14 @@ fn completion_line(
 }
 
 /// Overflow indicator line shown at the bottom of the popup when items are clipped.
-fn overflow_line(hidden: usize, area_width: u16) -> Line<'static> {
+fn overflow_line(hidden: usize, area_width: u16, theme: &Theme) -> Line<'static> {
     let inner = area_width.saturating_sub(2) as usize;
     let text = format!("  \u{25BE} {hidden} more");
     let truncated = truncate_str(&text, inner);
     Line::from(Span::styled(
         truncated,
         Style::default()
-            .fg(Color::DarkGray)
+            .fg(theme.text_dim)
             .add_modifier(Modifier::ITALIC),
     ))
 }
@@ -302,6 +297,7 @@ fn truncate_str(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::DARK;
     use pie_core::registry::CompletionKind;
 
     fn test_registry(items: Vec<(&str, &str, CompletionKind)>) -> Arc<Registry> {
@@ -511,8 +507,18 @@ mod tests {
 
     #[test]
     fn completion_kind_colors() {
-        assert_eq!(kind_color(CompletionKind::Builtin), Color::Yellow);
-        assert_eq!(kind_color(CompletionKind::Skill), Color::Cyan);
-        assert_eq!(kind_color(CompletionKind::Agent), Color::Green);
+        // The mapping moved onto the theme — same roles per kind.
+        assert_eq!(
+            DARK.completion_kind_color(CompletionKind::Builtin),
+            DARK.warning
+        );
+        assert_eq!(
+            DARK.completion_kind_color(CompletionKind::Skill),
+            DARK.accent
+        );
+        assert_eq!(
+            DARK.completion_kind_color(CompletionKind::Agent),
+            DARK.success
+        );
     }
 }

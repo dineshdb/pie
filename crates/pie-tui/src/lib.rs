@@ -27,6 +27,7 @@ mod notify;
 mod realm;
 mod realm_terminal;
 mod state;
+mod theme;
 mod widgets;
 
 pub use door::{CatalogEntry, ModeOption, ModelCatalog, SELECTION_EXTENSION_URI, Selection};

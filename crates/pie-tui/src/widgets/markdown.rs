@@ -1,16 +1,17 @@
+use crate::theme::Theme;
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
-use tuirealm::ratatui::style::{Color, Modifier, Style};
+use tuirealm::ratatui::style::{Modifier, Style};
 use tuirealm::ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 /// Render a markdown string into ratatui [`Line`]s with styled spans.
 /// This implementation wraps text while parsing and preserves styles.
-pub fn render_markdown(text: &str, width: usize, base_color: Color) -> Vec<Line<'static>> {
+pub fn render_markdown(text: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     if width == 0 {
         return Vec::new();
     }
 
-    let mut renderer = MarkdownRenderer::new(width, base_color);
+    let mut renderer = MarkdownRenderer::new(width, theme);
     let parser = Parser::new_ext(text, Options::all());
 
     for event in parser {
@@ -20,7 +21,8 @@ pub fn render_markdown(text: &str, width: usize, base_color: Color) -> Vec<Line<
     renderer.finish()
 }
 
-struct MarkdownRenderer {
+struct MarkdownRenderer<'t> {
+    theme: &'t Theme,
     width: usize,
     lines: Vec<Line<'static>>,
     current_line: Vec<Span<'static>>,
@@ -30,10 +32,11 @@ struct MarkdownRenderer {
     list_level: usize,
 }
 
-impl MarkdownRenderer {
-    fn new(width: usize, base_color: Color) -> Self {
-        let base_style = Style::default().fg(base_color);
+impl<'t> MarkdownRenderer<'t> {
+    fn new(width: usize, theme: &'t Theme) -> MarkdownRenderer<'t> {
+        let base_style = Style::default().fg(theme.text_secondary);
         Self {
+            theme,
             width,
             lines: Vec::new(),
             current_line: Vec::new(),
@@ -65,7 +68,10 @@ impl MarkdownRenderer {
             Event::End(tag) => self.end_tag(tag),
             Event::Text(text) => self.push_text(&text),
             Event::Code(code) => {
-                let code_style = self.current_style().fg(Color::Green).bg(Color::Black);
+                let code_style = self
+                    .current_style()
+                    .fg(self.theme.code_fg)
+                    .bg(self.theme.code_bg);
                 self.push_text_styled(&code, code_style);
             }
             Event::SoftBreak if self.current_width > 0 => {
@@ -78,7 +84,7 @@ impl MarkdownRenderer {
                 self.push_line();
                 self.push_text_styled(
                     &"─".repeat(self.width),
-                    self.current_style().fg(Color::DarkGray),
+                    self.current_style().fg(self.theme.text_dim),
                 );
                 self.push_line();
             }
@@ -92,14 +98,16 @@ impl MarkdownRenderer {
                 self.push_line();
                 let style = self
                     .current_style()
-                    .fg(Color::Cyan)
+                    .fg(self.theme.accent)
                     .add_modifier(Modifier::BOLD);
                 self.style_stack.push(style);
             }
             Tag::CodeBlock(_) => {
                 self.push_line();
                 self.in_code_block = true;
-                let style = Style::default().fg(Color::Green).bg(Color::Black);
+                let style = Style::default()
+                    .fg(self.theme.code_fg)
+                    .bg(self.theme.code_bg);
                 self.style_stack.push(style);
             }
             Tag::Strong => {
@@ -113,7 +121,7 @@ impl MarkdownRenderer {
             Tag::Link { .. } => {
                 let style = self
                     .current_style()
-                    .fg(Color::Blue)
+                    .fg(self.theme.link)
                     .add_modifier(Modifier::UNDERLINED);
                 self.style_stack.push(style);
             }
@@ -132,7 +140,7 @@ impl MarkdownRenderer {
                 self.push_line();
                 let style = self
                     .current_style()
-                    .fg(Color::DarkGray)
+                    .fg(self.theme.text_dim)
                     .add_modifier(Modifier::ITALIC);
                 self.style_stack.push(style);
                 self.push_text("│ ");
@@ -272,11 +280,12 @@ impl MarkdownRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::DARK;
 
     #[test]
     fn render_markdown_handles_nested_styles() {
         let input = "This is **bold** and *italic* text.";
-        let lines = render_markdown(input, 80, Color::Gray);
+        let lines = render_markdown(input, 80, &DARK);
         let first_line = lines.first().expect("Should have at least one line");
 
         let bold_span = first_line.spans.iter().find(|s| s.content.contains("bold"));
@@ -286,7 +295,7 @@ mod tests {
     #[test]
     fn render_markdown_wraps_correctly() {
         let input = "This is a long sentence that should be wrapped into multiple lines.";
-        let lines = render_markdown(input, 20, Color::Gray);
+        let lines = render_markdown(input, 20, &DARK);
         assert!(lines.len() > 1);
         for line in &lines {
             assert!(line.width() <= 20);
@@ -296,7 +305,7 @@ mod tests {
     #[test]
     fn render_markdown_preserves_style_across_wrap() {
         let input = "This is a **very long bold sentence that must wrap** somewhere.";
-        let lines = render_markdown(input, 20, Color::Gray);
+        let lines = render_markdown(input, 20, &DARK);
 
         let mut bold_found_on_multiple_lines = 0;
         for line in &lines {

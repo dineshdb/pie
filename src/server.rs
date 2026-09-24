@@ -102,7 +102,6 @@ pub(crate) fn gateway_config(
             default_agent: PIE_AGENT.to_string(),
             openid_connect_url: server.openid_connect_url.clone(),
             audience: server.audience.clone(),
-            ..a2acp::config::A2aConfig::default()
         },
     })
 }

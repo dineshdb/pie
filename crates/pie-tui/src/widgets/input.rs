@@ -1,20 +1,10 @@
-use pie_core::registry::{CompletionItem, CompletionKind};
+use crate::theme::Theme;
+use pie_core::registry::CompletionItem;
 use tuirealm::ratatui::buffer::Buffer;
 use tuirealm::ratatui::layout::Rect;
-use tuirealm::ratatui::style::{Color, Modifier, Style};
+use tuirealm::ratatui::style::{Modifier, Style};
 use tuirealm::ratatui::text::{Line, Span};
 use tuirealm::ratatui::widgets::{Paragraph, Widget};
-
-/// Completion-kind → color, mapped in the frontend: pie-core stays
-/// frontend-agnostic.
-fn kind_color(kind: CompletionKind) -> Color {
-    use tuirealm::ratatui::style::Color;
-    match kind {
-        CompletionKind::Builtin => Color::Yellow,
-        CompletionKind::Skill => Color::Cyan,
-        CompletionKind::Agent => Color::Green,
-    }
-}
 
 pub struct InputView<'a> {
     pub text_lines: &'a [String],
@@ -24,6 +14,7 @@ pub struct InputView<'a> {
     pub is_empty: bool,
     pub is_streaming: bool,
     pub completions: &'a [CompletionItem],
+    pub theme: &'static Theme,
 }
 
 impl Widget for InputView<'_> {
@@ -34,9 +25,9 @@ impl Widget for InputView<'_> {
 
         let prompt_style = Style::default()
             .fg(if self.is_streaming {
-                Color::Cyan
+                self.theme.accent
             } else {
-                Color::Green
+                self.theme.success
             })
             .add_modifier(Modifier::BOLD);
 
@@ -58,18 +49,18 @@ impl Widget for InputView<'_> {
                     spans.push(Span::styled("> ", prompt_style));
                 }
 
-                spans.extend(highlight_line(&segment, self.completions));
+                spans.extend(highlight_line(&segment, self.completions, self.theme));
                 if show_placeholder && show_prompt && j == 0 {
                     spans.push(Span::styled(
                         self.placeholder,
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(self.theme.text_dim),
                     ));
                 }
                 if show_hint && show_prompt && j == 0 {
                     spans.push(Span::styled(
                         self.hint,
                         Style::default()
-                            .fg(Color::DarkGray)
+                            .fg(self.theme.text_dim)
                             .add_modifier(Modifier::ITALIC),
                     ));
                 }
@@ -81,7 +72,7 @@ impl Widget for InputView<'_> {
     }
 }
 
-fn highlight_line(text: &str, completions: &[CompletionItem]) -> Vec<Span<'static>> {
+fn highlight_line(text: &str, completions: &[CompletionItem], theme: &Theme) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let mut last = 0;
 
@@ -107,7 +98,7 @@ fn highlight_line(text: &str, completions: &[CompletionItem]) -> Vec<Span<'stati
             spans.push(Span::styled(
                 token.to_string(),
                 Style::default()
-                    .fg(kind_color(item.kind))
+                    .fg(theme.completion_kind_color(item.kind))
                     .add_modifier(Modifier::BOLD),
             ));
             last = word_end;
@@ -135,6 +126,7 @@ pub fn cursor_position(area: Rect, cursor_row: usize, cursor_col: usize) -> (u16
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::DARK;
     use pie_core::registry::CompletionKind;
     use tuirealm::ratatui::Terminal;
     use tuirealm::ratatui::backend::TestBackend;
@@ -164,6 +156,7 @@ mod tests {
             is_empty: true,
             is_streaming: false,
             completions: &[],
+            theme: &DARK,
         };
         let buf = render_input(view, 30, 3);
         let content = row(&buf, 0);
@@ -191,7 +184,7 @@ mod tests {
             description: String::new(),
             kind: CompletionKind::Skill,
         }];
-        let spans = highlight_line("/review fix the bug", &completions);
+        let spans = highlight_line("/review fix the bug", &completions, &DARK);
         assert_eq!(spans.len(), 2, "should split into skill + rest");
         assert_eq!(spans[0].content, "/review");
         assert_eq!(spans[1].content, " fix the bug");
@@ -199,7 +192,7 @@ mod tests {
 
     #[test]
     fn highlight_unknown_slash_not_styled() {
-        let spans = highlight_line("/unknown thing", &[]);
+        let spans = highlight_line("/unknown thing", &[], &DARK);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].content, "/unknown thing");
     }
@@ -211,7 +204,7 @@ mod tests {
             description: String::new(),
             kind: CompletionKind::Agent,
         }];
-        let spans = highlight_line("use /debug now", &completions);
+        let spans = highlight_line("use /debug now", &completions, &DARK);
         assert_eq!(spans.len(), 3);
         assert_eq!(spans[0].content, "use ");
         assert_eq!(spans[1].content, "/debug");
@@ -225,7 +218,7 @@ mod tests {
             description: String::new(),
             kind: CompletionKind::Agent,
         }];
-        let spans = highlight_line("foo/debug", &completions);
+        let spans = highlight_line("foo/debug", &completions, &DARK);
         assert_eq!(spans.len(), 1, "embedded /debug should not match");
     }
 }

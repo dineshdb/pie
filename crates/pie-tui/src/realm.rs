@@ -96,6 +96,8 @@ pub enum Msg {
     AnswerPermission(AskId, bool),
     /// The model picker confirmed an entry (its selection id).
     SelectModel(String),
+    /// The theme picker confirmed a palette (its name).
+    SelectTheme(&'static str),
 }
 
 /// Bridges the A2A event stream into tuirealm's `SyncPort` system.

@@ -1,4 +1,5 @@
 use crate::state::ChatMessage;
+use crate::theme::Theme;
 use crate::widgets::render_cache::MessageRenderCache;
 use pie_core::session::Role;
 use tuirealm::ratatui::buffer::Buffer;
@@ -321,6 +322,7 @@ pub fn build_render_plan(
     messages: &[ChatMessage],
     cache: &mut MessageRenderCache,
     area_width: usize,
+    theme: &'static Theme,
 ) -> (Vec<ChatRenderItem>, usize) {
     let width = area_width.saturating_sub(PREFIX_WIDTH + RIGHT_PAD);
 
@@ -339,7 +341,8 @@ pub fn build_render_plan(
         }
 
         let is_latest = render_pos == last_rendered;
-        let rendered = cache.get_or_render(msg.role, &msg.content, is_latest, render_pos, width);
+        let rendered =
+            cache.get_or_render(msg.role, &msg.content, is_latest, render_pos, width, theme);
         let height = rendered.len();
         items.push(ChatRenderItem {
             kind: ChatRenderKind::Message(render_pos),
@@ -369,6 +372,7 @@ pub fn build_render_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::DARK;
     use tuirealm::ratatui::Terminal;
     use tuirealm::ratatui::backend::TestBackend;
 
@@ -379,7 +383,8 @@ mod tests {
         let mut state = ChatState::new();
         terminal
             .draw(|f| {
-                let (plan, total_height) = build_render_plan(messages, &mut cache, width as usize);
+                let (plan, total_height) =
+                    build_render_plan(messages, &mut cache, width as usize, &DARK);
                 let view = ChatView {
                     cache: &mut cache,
                     render_plan: &plan,
@@ -450,7 +455,7 @@ mod tests {
             ChatMessage::tool("Bash{command = two} → exit 0"),
         ];
         let mut cache = MessageRenderCache::new();
-        let (plan, _) = build_render_plan(&messages, &mut cache, 80);
+        let (plan, _) = build_render_plan(&messages, &mut cache, 80, &DARK);
 
         // Message 1 (index 1, the first tool call) then an EmptyLine, then
         // message 2 (index 2, the second tool call) — the blank now sits

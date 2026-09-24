@@ -1,7 +1,8 @@
+use crate::theme::Theme;
 use crate::widgets::spinner::Spinner;
 use tuirealm::ratatui::buffer::Buffer;
 use tuirealm::ratatui::layout::Rect;
-use tuirealm::ratatui::style::{Color, Modifier, Style};
+use tuirealm::ratatui::style::{Modifier, Style};
 use tuirealm::ratatui::text::Span;
 use tuirealm::ratatui::widgets::Widget;
 
@@ -9,14 +10,21 @@ pub struct StatusBar {
     pub active_steps: Vec<String>,
     pub is_streaming: bool,
     pub spinner_frame: usize,
+    pub theme: &'static Theme,
 }
 
 impl StatusBar {
-    pub fn new(active_steps: Vec<String>, is_streaming: bool, spinner_frame: usize) -> Self {
+    pub fn new(
+        active_steps: Vec<String>,
+        is_streaming: bool,
+        spinner_frame: usize,
+        theme: &'static Theme,
+    ) -> Self {
         Self {
             active_steps,
             is_streaming,
             spinner_frame,
+            theme,
         }
     }
 }
@@ -25,12 +33,12 @@ impl Widget for StatusBar {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let style = if self.is_streaming {
             Style::default()
-                .fg(Color::Cyan)
+                .fg(self.theme.accent)
                 .add_modifier(Modifier::BOLD)
         } else if !self.active_steps.is_empty() {
-            Style::default().fg(Color::Green)
+            Style::default().fg(self.theme.success)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(self.theme.text_dim)
         };
 
         // 1. Render Spinner

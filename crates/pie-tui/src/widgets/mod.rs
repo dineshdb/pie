@@ -10,6 +10,7 @@ pub mod model_selector;
 pub mod render_cache;
 pub mod spinner;
 pub mod status_bar;
+pub mod theme_selector;
 pub mod tool_display;
 pub mod wrap;
 

@@ -5,6 +5,7 @@
 
 use crate::door::{Client, ModelCatalog, Selection};
 use crate::realm::{Msg, SessionId};
+use crate::theme;
 use crate::widgets::completion::{CompletionPopup, CompletionState, Direction, slash_token_range};
 use crate::widgets::history::InputHistory;
 use crate::widgets::input::{InputView, cursor_position};
@@ -17,7 +18,7 @@ use tui_textarea::{Input as TaInput, Key as TaKey, TextArea};
 use tuirealm::event::{Key, KeyModifiers};
 use tuirealm::ratatui::Frame;
 use tuirealm::ratatui::layout::Rect;
-use tuirealm::ratatui::style::{Color, Modifier, Style};
+use tuirealm::ratatui::style::{Modifier, Style};
 
 const PLACEHOLDER: &str = "Type a query or /help for commands";
 
@@ -474,6 +475,7 @@ impl InputComponent {
             is_empty,
             is_streaming,
             completions: &self.registry.completions,
+            theme: theme::current(),
         };
         frame.render_widget(input_view, area);
 
@@ -492,7 +494,7 @@ impl InputComponent {
                     [360.0, 0.0, 0.0],
                     (3000, tachyonfx::Interpolation::Linear),
                 ));
-                let title_fx = title_fx.with_filter(CellFilter::FgColor(Color::Cyan));
+                let title_fx = title_fx.with_filter(CellFilter::FgColor(theme::current().accent));
                 self.effects.add_unique_effect("stream_title", title_fx);
 
                 self.stream_effect_active = true;
@@ -522,6 +524,7 @@ impl InputComponent {
                 candidates,
                 selected: self.completion.index(),
                 max_height: area.y,
+                theme: theme::current(),
             };
             let popup_area = popup.popup_area(area);
             frame.render_widget(tuirealm::ratatui::widgets::Clear, popup_area);
@@ -565,5 +568,32 @@ impl From<KeyInput<'_>> for TaInput {
 fn apply_textarea_style(textarea: &mut TextArea<'static>) {
     textarea.set_cursor_line_style(Style::default());
     textarea.set_cursor_style(Style::default().add_modifier(Modifier::REVERSED));
-    textarea.set_style(Style::default().fg(Color::White));
+    textarea.set_style(Style::default().fg(theme::current().text));
+}
+
+impl InputComponent {
+    /// Re-apply the input styling under the current theme — called when
+    /// `/theme` switches the palette so the open input follows.
+    pub fn apply_theme(&mut self) {
+        apply_textarea_style(&mut self.textarea);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::{DARK, LIGHT};
+
+    #[test]
+    fn textarea_style_follows_the_current_theme() {
+        let mut ta = TextArea::default();
+        theme::set(&DARK);
+        apply_textarea_style(&mut ta);
+        assert_eq!(ta.style().fg, Some(DARK.text));
+
+        theme::set(&LIGHT);
+        apply_textarea_style(&mut ta);
+        assert_eq!(ta.style().fg, Some(LIGHT.text));
+        theme::set(&DARK);
+    }
 }

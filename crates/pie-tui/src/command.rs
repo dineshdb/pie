@@ -62,6 +62,8 @@ impl Command {
                 BuiltinCommand::Quit => CommandAction::Quit,
                 BuiltinCommand::Model => CommandAction::Model(args),
                 BuiltinCommand::Mode => CommandAction::Mode(args),
+                BuiltinCommand::Theme => CommandAction::Theme(args),
+                BuiltinCommand::Yolo => CommandAction::Yolo,
                 BuiltinCommand::Skills => {
                     let text = build_skills_list(registry);
                     CommandAction::AddMessage(ChatMessage::system(&text))
@@ -85,6 +87,10 @@ pub enum CommandAction {
     Model(Option<String>),
     /// `/mode [id]` — no id lists the advertised modes, an id selects.
     Mode(Option<String>),
+    /// `/theme [name]` — no name opens the picker, a name switches.
+    Theme(Option<String>),
+    /// `/yolo` — toggle auto-approving permission asks.
+    Yolo,
     Help,
     Quit,
 }
@@ -117,5 +123,35 @@ fn build_skills_list(registry: &pie_core::registry::Registry) -> String {
         "No agents or skills found.".to_string()
     } else {
         parts.join("\n")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_registry() -> pie_core::registry::Registry {
+        pie_core::registry::Registry {
+            agents: Vec::new(),
+            skills: Vec::new(),
+            completions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn theme_without_name_dispatches_the_picker() {
+        let action = Command::parse("/theme", &test_registry()).dispatch(&test_registry());
+        assert!(matches!(action, CommandAction::Theme(None)));
+    }
+    #[test]
+    fn theme_with_a_name_dispatches_a_direct_switch() {
+        let action = Command::parse("/theme light", &test_registry()).dispatch(&test_registry());
+        assert!(matches!(action, CommandAction::Theme(Some(ref name)) if name == "light"));
+    }
+
+    #[test]
+    fn yolo_dispatches_the_toggle() {
+        let action = Command::parse("/yolo", &test_registry()).dispatch(&test_registry());
+        assert!(matches!(action, CommandAction::Yolo));
     }
 }

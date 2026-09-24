@@ -1,3 +1,4 @@
+use crate::theme::Theme;
 use pie_core::session::Role;
 use tuirealm::ratatui::style::{Color, Style};
 use tuirealm::ratatui::text::Line;
@@ -6,6 +7,8 @@ struct RenderedCache {
     width: usize,
     content: String,
     is_latest: bool,
+    /// The theme the lines were rendered with — a switch re-renders.
+    theme_name: &'static str,
     lines: Vec<Line<'static>>,
     last_render: std::time::Instant,
 }
@@ -46,6 +49,7 @@ impl MessageRenderCache {
         is_latest: bool,
         index: usize,
         width: usize,
+        theme: &'static Theme,
     ) -> &[Line<'static>] {
         let now = std::time::Instant::now();
 
@@ -54,7 +58,7 @@ impl MessageRenderCache {
         let needs_rerender = match existing {
             None => true,
             Some(c) => {
-                if c.width != width || c.is_latest != is_latest {
+                if c.width != width || c.is_latest != is_latest || c.theme_name != theme.name {
                     true
                 } else if c.content != content {
                     // If content changed, throttle if it's the latest message
@@ -70,16 +74,16 @@ impl MessageRenderCache {
         };
 
         if needs_rerender {
-            let color = role_color(role);
-            let prefix = message_prefix(role, is_latest);
-            let cont_prefix = continuation_prefix();
+            let color = role_color(theme, role);
+            let prefix = message_prefix(theme, role, is_latest);
+            let cont_prefix = continuation_prefix(theme);
 
             let raw_lines = if role == Role::Tool {
-                render_tool_lines(content, width)
+                render_tool_lines(theme, content, width)
             } else if role == Role::System && content.starts_with("Welcome to") {
-                render_welcome_lines(content)
+                render_welcome_lines(theme, content)
             } else if role == Role::Assistant && !content.is_empty() {
-                super::markdown::render_markdown(content, width, color)
+                super::markdown::render_markdown(content, width, theme)
             } else {
                 content
                     .lines()
@@ -119,6 +123,7 @@ impl MessageRenderCache {
                     width,
                     content: content.to_string(),
                     is_latest,
+                    theme_name: theme.name,
                     lines,
                     last_render: now,
                 });
@@ -150,35 +155,39 @@ impl MessageRenderCache {
     }
 }
 
-fn role_color(role: Role) -> Color {
+fn role_color(theme: &Theme, role: Role) -> Color {
     match role {
-        Role::User => Color::White,
-        Role::Assistant => Color::Gray,
-        Role::System => Color::Yellow,
-        Role::Tool => Color::DarkGray,
+        Role::User => theme.text,
+        Role::Assistant => theme.text_secondary,
+        Role::System => theme.warning,
+        Role::Tool => theme.text_dim,
     }
 }
 
-fn message_prefix(role: Role, is_latest: bool) -> tuirealm::ratatui::text::Span<'static> {
+fn message_prefix(
+    theme: &Theme,
+    role: Role,
+    is_latest: bool,
+) -> tuirealm::ratatui::text::Span<'static> {
     use tuirealm::ratatui::style::Modifier;
     use tuirealm::ratatui::text::Span;
     match role {
         Role::User if is_latest => Span::styled(
             "> ",
             Style::default()
-                .fg(Color::Green)
+                .fg(theme.success)
                 .add_modifier(Modifier::BOLD),
         ),
-        Role::User => Span::styled("> ", Style::default().fg(Color::DarkGray)),
-        _ => Span::styled("  ", Style::default().fg(Color::DarkGray)),
+        Role::User => Span::styled("> ", Style::default().fg(theme.text_dim)),
+        _ => Span::styled("  ", Style::default().fg(theme.text_dim)),
     }
 }
 
-fn continuation_prefix() -> tuirealm::ratatui::text::Span<'static> {
-    tuirealm::ratatui::text::Span::styled("  ", Style::default().fg(Color::DarkGray))
+fn continuation_prefix(theme: &Theme) -> tuirealm::ratatui::text::Span<'static> {
+    tuirealm::ratatui::text::Span::styled("  ", Style::default().fg(theme.text_dim))
 }
 
-fn render_tool_lines(content: &str, width: usize) -> Vec<Line<'static>> {
+fn render_tool_lines(theme: &Theme, content: &str, width: usize) -> Vec<Line<'static>> {
     use tuirealm::ratatui::style::Modifier;
     use tuirealm::ratatui::text::Span;
 
@@ -188,13 +197,13 @@ fn render_tool_lines(content: &str, width: usize) -> Vec<Line<'static>> {
     let call_text = super::truncate_str(call, width);
     lines.push(Line::from(vec![Span::styled(
         call_text,
-        Style::default().fg(Color::Magenta),
+        Style::default().fg(theme.tool),
     )]));
 
     if !output.is_empty() {
         let output_text = super::truncate_str(output, width.saturating_sub(4));
         let dim = Style::default()
-            .fg(Color::DarkGray)
+            .fg(theme.text_dim)
             .add_modifier(Modifier::DIM);
         lines.push(Line::from(vec![
             Span::styled("└ ", dim),
@@ -204,31 +213,66 @@ fn render_tool_lines(content: &str, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
-fn render_welcome_lines(content: &str) -> Vec<Line<'static>> {
+fn render_welcome_lines(theme: &Theme, content: &str) -> Vec<Line<'static>> {
     use tuirealm::ratatui::text::Span;
 
-    let yellow = Style::default().fg(Color::Yellow);
-    let cyan = Style::default().fg(Color::Cyan);
-    let green = Style::default().fg(Color::Green);
+    let warning = Style::default().fg(theme.warning);
+    let accent = Style::default().fg(theme.accent);
+    let success = Style::default().fg(theme.success);
 
     let mut spans = Vec::new();
     let mut rest = content;
     while let Some(pos) = rest.find("pie") {
         if pos > 0 {
-            spans.push(Span::styled(rest[..pos].to_string(), yellow));
+            spans.push(Span::styled(rest[..pos].to_string(), warning));
         }
-        spans.push(Span::styled("pie", cyan));
+        spans.push(Span::styled("pie", accent));
         rest = &rest[pos + 3..];
     }
     if let Some(pos) = rest.find('?') {
         if pos > 0 {
-            spans.push(Span::styled(rest[..pos].to_string(), yellow));
+            spans.push(Span::styled(rest[..pos].to_string(), warning));
         }
-        spans.push(Span::styled("?", green));
+        spans.push(Span::styled("?", success));
         rest = &rest[pos + 1..];
     }
     if !rest.is_empty() {
-        spans.push(Span::styled(rest.to_string(), yellow));
+        spans.push(Span::styled(rest.to_string(), warning));
     }
     vec![Line::from(spans)]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::{DARK, LIGHT};
+
+    /// The message text's color — plain messages carry it on the
+    /// line-level style (spans only override for markdown/tool roles).
+    fn text_fg(lines: &[Line<'static>]) -> Option<Color> {
+        lines[0].style.fg
+    }
+
+    #[test]
+    fn user_message_renders_in_the_theme_text_color() {
+        let mut cache = MessageRenderCache::new();
+        let lines = cache.get_or_render(Role::User, "hello", false, 0, 40, &LIGHT);
+        assert_eq!(
+            text_fg(lines),
+            Some(LIGHT.text),
+            "text must follow the theme, not White"
+        );
+    }
+
+    /// The cache bakes colors into lines — a theme switch must re-render,
+    /// or the old palette would survive until the message text changed.
+    #[test]
+    fn theme_switch_re_renders_cached_lines() {
+        let mut cache = MessageRenderCache::new();
+        let dark = cache.get_or_render(Role::User, "hello", false, 0, 40, &DARK);
+        assert_eq!(text_fg(dark), Some(DARK.text));
+
+        let light = cache.get_or_render(Role::User, "hello", false, 0, 40, &LIGHT);
+        assert_eq!(text_fg(light), Some(LIGHT.text));
+    }
 }

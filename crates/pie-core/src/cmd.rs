@@ -39,6 +39,8 @@ define_builtin_commands! {
     Quit => ["/quit", "/exit", "/q"],
     Model => ["/model"],
     Mode => ["/mode"],
+    Theme => ["/theme"],
+    Yolo => ["/yolo"],
     Skills => ["/skills", "/ls"],
     Clear => ["/clear"],
     New => ["/new"],
@@ -48,6 +50,8 @@ const HELP_DESC: &str = "Show help and available commands";
 const QUIT_DESC: &str = "Exit the application";
 const MODEL_DESC: &str = "Switch or view the current model";
 const MODE_DESC: &str = "Switch mode: plan, build, debug, test, review, architect";
+const THEME_DESC: &str = "Switch the color theme: dark, light";
+const YOLO_DESC: &str = "Toggle yolo mode: auto-approve permission asks";
 const SKILLS_DESC: &str = "List available commands and skills";
 const CLEAR_DESC: &str = "Start a new session";
 const NEW_DESC: &str = "Start a new session";
@@ -59,6 +63,8 @@ impl BuiltinCommand {
             Self::Quit => QUIT_DESC,
             Self::Model => MODEL_DESC,
             Self::Mode => MODE_DESC,
+            Self::Theme => THEME_DESC,
+            Self::Yolo => YOLO_DESC,
             Self::Skills => SKILLS_DESC,
             Self::Clear => CLEAR_DESC,
             Self::New => NEW_DESC,

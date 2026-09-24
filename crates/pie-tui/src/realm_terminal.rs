@@ -15,7 +15,9 @@
 //! list in `door`'s docs).
 
 use crate::command::{Command, CommandAction};
-use crate::components::chat::{ActiveDialog, ChatComponent, ModelSelectorState};
+use crate::components::chat::{
+    ActiveDialog, ChatComponent, ModelSelectorState, ThemeSelectorState,
+};
 use crate::components::input::InputComponent;
 
 pub use crate::components::input::ProviderView;
@@ -24,6 +26,7 @@ pub use crate::door::ModelCatalog;
 use crate::notify;
 use crate::realm::{App, Id, Msg, SessionId, StreamEvent, StreamPort};
 use crate::state::ChatMessage;
+use crate::theme;
 use crate::widgets::mode_bar::ModeBar;
 use crate::widgets::status_bar::StatusBar;
 use anyhow::{Context, Result};
@@ -63,6 +66,9 @@ pub struct TuiDeps {
     /// tier, in name order.
     pub catalog: ModelCatalog,
     pub registry: Arc<Registry>,
+    /// Start in yolo mode: permission asks are auto-approved instead of
+    /// prompting (`--yolo`).
+    pub yolo: bool,
 }
 
 /// Helper to downcast `ChatComponent` mutably.
@@ -175,9 +181,28 @@ fn process_msg(msg: Msg, app: &mut App, input: &mut InputComponent) -> Option<Ms
             }
         }
 
+        Msg::SelectTheme(name) => apply_theme(name, app, input),
+
         _ => {}
     }
     None
+}
+
+/// Apply a theme switch: the global, the open input's styling, and the
+/// persisted choice; the next frame re-renders with it (the render
+/// cache keys its entries on the theme).
+fn apply_theme(name: &str, app: &mut App, input: &mut InputComponent) {
+    let Some(applied) = theme::set_by_name(name) else {
+        return;
+    };
+    input.apply_theme();
+    theme::save_current();
+    if let Some(chat) = chat_mut!(app) {
+        chat.add_message(ChatMessage::system(&format!(
+            "Theme set to **{}**",
+            applied.name
+        )));
+    }
 }
 
 fn handle_submit(text: &str, app: &mut App, input: &mut InputComponent) -> Option<Msg> {
@@ -203,6 +228,19 @@ fn handle_submit(text: &str, app: &mut App, input: &mut InputComponent) -> Optio
         }
         CommandAction::Mode(args) => {
             handle_mode_command(args.as_deref(), app, input);
+        }
+        CommandAction::Theme(args) => {
+            handle_theme_command(args.as_deref(), app, input);
+        }
+        CommandAction::Yolo => {
+            if let Some(chat) = chat_mut!(app) {
+                chat.yolo = !chat.yolo;
+                chat.add_message(ChatMessage::system(if chat.yolo {
+                    "yolo ON — permission asks are auto-approved (the mode bar shows yolo)"
+                } else {
+                    "yolo OFF — permission asks will prompt"
+                }));
+            }
         }
         CommandAction::Help => {
             if let Some(chat) = chat_mut!(app) {
@@ -342,6 +380,36 @@ fn handle_model_command(name: Option<&str>, app: &mut App, input: &mut InputComp
     }
 }
 
+/// `/theme` without arguments opens the picker over the built-in
+/// palettes; with a name it switches directly — a typo names the valid
+/// themes instead of failing silently.
+fn handle_theme_command(name: Option<&str>, app: &mut App, input: &mut InputComponent) {
+    let Some(name) = name.filter(|a| !a.is_empty()) else {
+        if let Some(chat) = chat_mut!(app) {
+            chat.active_dialog =
+                ActiveDialog::ThemeSelector(ThemeSelectorState::for_current_theme());
+        }
+        return;
+    };
+    match theme::set_by_name(name) {
+        Some(applied) => {
+            apply_theme(applied.name, app, input);
+        }
+        None => {
+            if let Some(chat) = chat_mut!(app) {
+                chat.add_message(ChatMessage::system(&format!(
+                    "Error: unknown theme '{name}' — pick one of: {}",
+                    theme::THEMES
+                        .iter()
+                        .map(|t| t.name)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
+        }
+    }
+}
+
 /// Run the TUI until the user quits.
 ///
 /// # Errors
@@ -349,6 +417,7 @@ fn handle_model_command(name: Option<&str>, app: &mut App, input: &mut InputComp
 /// Returns an error if the terminal cannot be initialized, an event
 /// poll fails, or a frame render fails.
 pub async fn run_tui(deps: TuiDeps) -> Result<()> {
+    theme::set(theme::load_saved());
     let (mut terminal, mut app, mut input) = setup_tui(deps)?;
 
     let mut last_frame;
@@ -420,7 +489,11 @@ fn setup_tui(deps: TuiDeps) -> Result<(Terminal, App, InputComponent)> {
 
     execute!(stdout(), EnableMouseCapture)?;
 
-    let mut messages = vec![ChatMessage::system("Welcome to pie! Type ? for help.")];
+    let mut messages = vec![ChatMessage::system(if deps.yolo {
+        "Welcome to pie! Type ? for help. — yolo mode is ON: permission asks are auto-approved"
+    } else {
+        "Welcome to pie! Type ? for help."
+    })];
     for entry in &deps.history {
         let msg = match entry.role() {
             Role::User => ChatMessage::user(&entry.content()),
@@ -452,7 +525,7 @@ fn setup_tui(deps: TuiDeps) -> Result<(Terminal, App, InputComponent)> {
 
     app.mount(
         Id::Chat,
-        Box::new(ChatComponent::new(messages, deps.registry)),
+        Box::new(ChatComponent::new(messages, deps.registry).with_yolo(deps.yolo)),
         vec![],
     )?;
     app.active(&Id::Chat)?;
@@ -499,10 +572,12 @@ fn render(app: &mut App, input: &mut InputComponent, terminal: &mut Terminal) ->
         // Status Bar rendering
         let is_streaming = chat_ref!(app).is_some_and(ChatComponent::is_streaming);
         let active_steps = InputComponent::active_steps(is_streaming);
-        let status_bar = StatusBar::new(active_steps, is_streaming, input.spinner_frame);
+        let theme = theme::current();
+        let status_bar = StatusBar::new(active_steps, is_streaming, input.spinner_frame, theme);
         f.render_widget(status_bar, status_bar_area);
 
-        let mode_bar = ModeBar::new(input.effective_mode(), input.effective_model());
+        let yolo = chat_ref!(app).is_some_and(|chat| chat.yolo);
+        let mode_bar = ModeBar::new(input.effective_mode(), input.effective_model(), yolo, theme);
         f.render_widget(mode_bar, mode_bar_area);
 
         input.render(f, input_area, is_streaming);

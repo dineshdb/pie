@@ -5,6 +5,7 @@
 use crate::door::CatalogEntry;
 use crate::realm::{AskId, Msg, StreamEvent};
 use crate::state::ChatMessage;
+use crate::theme;
 use crate::widgets::chat::{self, ChatState, ChatView};
 use crate::widgets::render_cache::MessageRenderCache;
 use crate::widgets::tool_display::ToolCallResult;
@@ -29,6 +30,8 @@ pub enum ActiveDialog {
     PermissionPrompt(PermissionPromptState),
     /// The `/model` picker over the startup catalog.
     ModelSelector(ModelSelectorState),
+    /// The `/theme` picker over the built-in palettes.
+    ThemeSelector(ThemeSelectorState),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -47,6 +50,26 @@ pub struct ModelSelectorState {
     pub selected_idx: usize,
 }
 
+/// The `/theme` picker's state — the palettes are statics, so only the
+/// navigation and the active name are state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThemeSelectorState {
+    pub current_name: &'static str,
+    pub selected_idx: usize,
+}
+
+impl ThemeSelectorState {
+    /// Open on the active theme's row: Enter without navigating
+    /// re-confirms what is already selected instead of silently
+    /// jumping to the first row.
+    pub fn for_current_theme() -> Self {
+        Self {
+            current_name: theme::current().name,
+            selected_idx: theme::current_index(),
+        }
+    }
+}
+
 pub struct ChatComponent {
     pub messages: Vec<ChatMessage>,
     pub render_cache: MessageRenderCache,
@@ -58,6 +81,10 @@ pub struct ChatComponent {
     pub total_height: usize,
     pub last_width: usize,
     pub registry: Arc<Registry>,
+    /// Yolo mode: permission asks are auto-allowed instead of
+    /// prompting. Opt-in (`--yolo`, `/yolo`), never persisted; every
+    /// auto-answer is audited into the transcript as a system message.
+    pub yolo: bool,
 }
 
 impl ChatComponent {
@@ -73,7 +100,14 @@ impl ChatComponent {
             total_height: 0,
             last_width: 0,
             registry,
+            yolo: false,
         }
+    }
+
+    /// Start with yolo mode on (`--yolo`).
+    pub fn with_yolo(mut self, yolo: bool) -> Self {
+        self.yolo = yolo;
+        self
     }
 
     pub fn set_help_dialog(&mut self) {
@@ -170,7 +204,7 @@ impl ChatComponent {
     }
 
     fn get_help_total_lines(registry: &Registry) -> u16 {
-        let mut total = 13; // Commands (7) + Keys (6)
+        let mut total = 15; // Commands (9) + Keys (6)
         if !registry.agents.is_empty() {
             #[allow(clippy::cast_possible_truncation)]
             {
@@ -211,12 +245,14 @@ impl Component for ChatComponent {
                 &self.messages,
                 &mut self.render_cache,
                 area.width as usize,
+                theme::current(),
             );
             self.render_plan = plan;
             self.total_height = height;
             self.last_width = area.width as usize;
         }
         self.last_area = area;
+        let theme = theme::current();
 
         // 2. Render visible part
         frame.render_stateful_widget(
@@ -239,7 +275,9 @@ impl Component for ChatComponent {
                             agents: &self.registry.agents,
                             skills: &self.registry.skills,
                             scroll_offset: *scroll_offset,
+                            theme,
                         },
+                        theme,
                     )
                     .with_size(70, 70),
                     area,
@@ -256,13 +294,15 @@ impl Component for ChatComponent {
                     state.skill,
                     perm_lines.join("\n")
                 );
-                let para = tuirealm::ratatui::widgets::Paragraph::new(body).style(
-                    tuirealm::ratatui::style::Style::default()
-                        .fg(tuirealm::ratatui::style::Color::Yellow),
-                );
+                let para = tuirealm::ratatui::widgets::Paragraph::new(body)
+                    .style(tuirealm::ratatui::style::Style::default().fg(theme.warning));
                 frame.render_widget(
-                    super::super::widgets::dialog::Dialog::new(" Permission Required ", para)
-                        .with_size(70, 35),
+                    super::super::widgets::dialog::Dialog::new(
+                        " Permission Required ",
+                        para,
+                        theme,
+                    )
+                    .with_size(70, 35),
                     area,
                 );
             }
@@ -274,9 +314,26 @@ impl Component for ChatComponent {
                             entries: &state.entries,
                             current_id: state.current_id.as_deref(),
                             selected_idx: state.selected_idx,
+                            theme,
                         },
+                        theme,
                     )
                     .with_size(60, 40),
+                    area,
+                );
+            }
+            ActiveDialog::ThemeSelector(state) => {
+                frame.render_widget(
+                    super::super::widgets::dialog::Dialog::new(
+                        " Theme (Enter select · Esc close) ",
+                        super::super::widgets::theme_selector::ThemeSelectorOverlay {
+                            current_name: state.current_name,
+                            selected_idx: state.selected_idx,
+                            theme,
+                        },
+                        theme,
+                    )
+                    .with_size(40, 40),
                     area,
                 );
             }
@@ -387,6 +444,12 @@ impl ChatComponent {
                 skill,
                 permissions,
             } => {
+                // Yolo answers allow on the spot — the dialog never
+                // opens and nothing is printed: the mode bar's yolo tag
+                // is the standing disclosure of what is happening.
+                if self.yolo {
+                    return Msg::AnswerPermission(id.clone(), true);
+                }
                 self.active_dialog = ActiveDialog::PermissionPrompt(PermissionPromptState {
                     id: id.clone(),
                     skill: skill.clone(),
@@ -414,6 +477,9 @@ impl ChatComponent {
                 Some(self.handle_permission_prompt_keyboard_event(key))
             }
             ActiveDialog::ModelSelector(state) => Some(Self::model_selector_key(key, state)),
+            ActiveDialog::ThemeSelector(state) => {
+                Some(ChatComponent::theme_selector_key(key, state))
+            }
         };
 
         if let Some(m) = msg {
@@ -432,6 +498,13 @@ impl ChatComponent {
             // confirmed id rides `Msg::SelectModel` out.
             if let Key::Enter | Key::Esc = key.code
                 && matches!(self.active_dialog, ActiveDialog::ModelSelector(_))
+            {
+                self.active_dialog = ActiveDialog::None;
+            }
+            // Same for the theme picker — the confirmed name rides
+            // `Msg::SelectTheme` out.
+            if let Key::Enter | Key::Esc = key.code
+                && matches!(self.active_dialog, ActiveDialog::ThemeSelector(_))
             {
                 self.active_dialog = ActiveDialog::None;
             }
@@ -471,6 +544,29 @@ impl ChatComponent {
                     return Msg::Redraw;
                 };
                 Msg::SelectModel(entry.id.clone())
+            }
+            _ => Msg::Redraw,
+        }
+    }
+
+    /// The `/theme` picker's keys, mirroring the model picker — Enter
+    /// confirms the navigated palette (the realm loop applies it).
+    fn theme_selector_key(key: &tuirealm::event::KeyEvent, state: &mut ThemeSelectorState) -> Msg {
+        let last = theme::THEMES.len().saturating_sub(1);
+        match (&key.code, key.modifiers) {
+            (Key::Up, KeyModifiers::NONE) => {
+                state.selected_idx = state.selected_idx.saturating_sub(1).min(last);
+                Msg::Redraw
+            }
+            (Key::Down, KeyModifiers::NONE) => {
+                state.selected_idx = (state.selected_idx + 1).min(last);
+                Msg::Redraw
+            }
+            (Key::Enter, _) => {
+                let Some(selected) = theme::THEMES.get(state.selected_idx) else {
+                    return Msg::Redraw;
+                };
+                Msg::SelectTheme(selected.name)
             }
             _ => Msg::Redraw,
         }
@@ -537,6 +633,60 @@ mod tests {
     use super::*;
     use pie_core::session::Role;
 
+    fn key(code: Key) -> tuirealm::event::KeyEvent {
+        tuirealm::event::KeyEvent {
+            code,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn theme_picker_navigates_and_confirms() {
+        let mut state = ThemeSelectorState {
+            current_name: theme::DARK.name,
+            selected_idx: 0,
+        };
+
+        assert_eq!(
+            ChatComponent::theme_selector_key(&key(Key::Down), &mut state),
+            Msg::Redraw
+        );
+        assert_eq!(state.selected_idx, 1);
+        assert_eq!(
+            ChatComponent::theme_selector_key(&key(Key::Up), &mut state),
+            Msg::Redraw
+        );
+        assert_eq!(state.selected_idx, 0);
+
+        // Enter confirms the navigated palette as a SelectTheme message.
+        assert_eq!(
+            ChatComponent::theme_selector_key(&key(Key::Down), &mut state),
+            Msg::Redraw
+        );
+        assert_eq!(
+            ChatComponent::theme_selector_key(&key(Key::Enter), &mut state),
+            Msg::SelectTheme(theme::LIGHT.name)
+        );
+    }
+
+    #[test]
+    fn theme_picker_navigation_clamps_at_the_ends() {
+        let mut state = ThemeSelectorState {
+            current_name: theme::DARK.name,
+            selected_idx: 0,
+        };
+        ChatComponent::theme_selector_key(&key(Key::Up), &mut state);
+        assert_eq!(state.selected_idx, 0, "Up at the top must not wrap");
+
+        state.selected_idx = theme::THEMES.len() - 1;
+        ChatComponent::theme_selector_key(&key(Key::Down), &mut state);
+        assert_eq!(
+            state.selected_idx,
+            theme::THEMES.len() - 1,
+            "Down at the bottom must not wrap"
+        );
+    }
+
     fn test_registry() -> Arc<Registry> {
         Arc::new(Registry {
             agents: Vec::new(),
@@ -552,6 +702,58 @@ mod tests {
         assert_eq!(chat.messages.len(), 1);
         assert_eq!(chat.messages[0].role, Role::System);
         assert!(chat.messages[0].content.contains("Welcome"));
+    }
+
+    fn permission_ask() -> StreamEvent {
+        StreamEvent::PermissionAsk {
+            id: AskId("t-1".to_string()),
+            skill: "Bash".to_string(),
+            permissions: vec!["network".to_string()],
+        }
+    }
+
+    /// Yolo answers allow on the spot: the reply rides out as
+    /// `Msg::AnswerPermission(…, true)`, no dialog opens, and the
+    /// transcript records the auto-approval.
+    #[tokio::test]
+    async fn yolo_auto_answers_permission_asks() {
+        let mut chat = ChatComponent::new(vec![], test_registry()).with_yolo(true);
+        let msg = chat.handle_user_event(&permission_ask());
+
+        assert_eq!(msg, Msg::AnswerPermission(AskId("t-1".to_string()), true));
+        assert_eq!(
+            chat.active_dialog,
+            ActiveDialog::None,
+            "yolo must not open the permission dialog"
+        );
+        assert!(
+            chat.messages.is_empty(),
+            "auto-approvals must not add transcript lines, got {:?}",
+            chat.messages
+        );
+    }
+
+    /// The control: without yolo the same ask parks in the dialog.
+    #[tokio::test]
+    async fn without_yolo_permission_asks_prompt() {
+        let mut chat = ChatComponent::new(vec![], test_registry());
+        let msg = chat.handle_user_event(&permission_ask());
+
+        assert_eq!(msg, Msg::Redraw);
+        match chat.active_dialog {
+            ActiveDialog::PermissionPrompt(state) => {
+                assert_eq!(state.id, AskId("t-1".to_string()));
+                assert_eq!(state.skill, "Bash");
+            }
+            other => panic!("expected the permission dialog, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn with_yolo_builder_sets_the_flag() {
+        let chat = ChatComponent::new(vec![], test_registry()).with_yolo(true);
+        assert!(chat.yolo);
+        assert!(!ChatComponent::new(vec![], test_registry()).yolo);
     }
 
     #[tokio::test]

@@ -1,5 +1,6 @@
+use crate::theme::Theme;
 use tuirealm::ratatui::layout::{Constraint, Direction, Layout, Rect};
-use tuirealm::ratatui::style::{Color, Style};
+use tuirealm::ratatui::style::Style;
 use tuirealm::ratatui::widgets::{Block, Borders, Clear, Widget};
 
 pub struct Dialog<'a, W: Widget> {
@@ -7,15 +8,17 @@ pub struct Dialog<'a, W: Widget> {
     pub inner: W,
     pub width_percent: u16,
     pub height_percent: u16,
+    pub theme: &'static Theme,
 }
 
 impl<'a, W: Widget> Dialog<'a, W> {
-    pub fn new(title: &'a str, inner: W) -> Self {
+    pub fn new(title: &'a str, inner: W, theme: &'static Theme) -> Self {
         Self {
             title,
             inner,
             width_percent: 60,
             height_percent: 40,
+            theme,
         }
     }
 
@@ -34,7 +37,7 @@ impl<W: Widget> Widget for Dialog<'_, W> {
         let block = Block::default()
             .borders(Borders::ALL)
             .title(format!(" {} ", self.title))
-            .border_style(Style::default().fg(Color::Cyan));
+            .border_style(Style::default().fg(self.theme.accent));
 
         self.inner.render(block.inner(popup_area), buf);
         block.render(popup_area, buf);

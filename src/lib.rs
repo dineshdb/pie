@@ -49,6 +49,11 @@ struct Cli {
     #[arg(short, long, global = true)]
     resume: bool,
 
+    /// Interactive mode only: auto-approve permission asks (yolo mode).
+    /// Toggleable at runtime with `/yolo`.
+    #[arg(long, global = true)]
+    yolo: bool,
+
     /// Run the TUI against an external ACP agent instead of the
     /// in-process engine: command and arguments, e.g. `pie --acp-agent
     /// pie acp`
@@ -230,6 +235,7 @@ pub async fn run() -> anyhow::Result<()> {
             agent_name: agent.map(|a| a.name),
             session,
             acp_agent: cli.acp_agent.clone(),
+            yolo: cli.yolo,
         };
         run_interactive(setup).await
     }
@@ -392,6 +398,8 @@ struct Interactive<'a> {
     /// External ACP agent to run instead of the in-process engine
     /// (`--acp-agent`); empty means in-process.
     acp_agent: Vec<String>,
+    /// Start the TUI in yolo mode: permission asks are auto-approved.
+    yolo: bool,
 }
 
 /// How long the interactive gateway keeps a conversation's agent session
@@ -467,6 +475,7 @@ async fn run_interactive(setup: Interactive<'_>) -> anyhow::Result<()> {
         agent_name,
         session,
         acp_agent,
+        yolo,
     } = setup;
     let cwd = std::env::current_dir().context("cannot determine working directory")?;
     let history = session.history_entries().to_vec();
@@ -516,6 +525,7 @@ async fn run_interactive(setup: Interactive<'_>) -> anyhow::Result<()> {
         provider,
         catalog,
         registry,
+        yolo,
     })
     .await
 }
@@ -608,6 +618,7 @@ mod tests {
             overrides: config::CliOverrides::default(),
             query: query.split_whitespace().map(ToString::to_string).collect(),
             resume: false,
+            yolo: false,
             acp_agent: Vec::new(),
         }
     }
