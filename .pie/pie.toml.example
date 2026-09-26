@@ -119,6 +119,9 @@ url = "https://mcp.context7.com/mcp"
 [sandbox]
 # Native OS-level isolation (sandbox-exec on macOS, bubblewrap on Linux)
 
+# Disabled by default; set true to run commands under the OS sandbox
+enabled = false
+
 # Paths that the agent is explicitly forbidden from reading
 deny_read = [
     "~/.ssh",

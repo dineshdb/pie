@@ -404,7 +404,8 @@ pie -p ollama "how are you?"
 
 ### Advanced Configuration
 
-- **Sandbox:** Configure restrictions in `pie.toml` under `[sandbox]`.
+- **Sandbox:** Configure restrictions in `pie.toml` under `[sandbox]`; set
+  `enabled = false` there to disable sandboxing entirely.
 - **Skills:** Add custom skills to `.pie/skills/<name>/SKILL.md`.
 - **Instructions:** Add project-level instructions to `AGENTS.md`.
 

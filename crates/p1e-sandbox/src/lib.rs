@@ -97,6 +97,9 @@ impl<'de> Deserialize<'de> for Permission {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SandboxConfig {
+    /// Master switch: `false` runs commands and file access unsandboxed,
+    /// regardless of the other rules.
+    pub enabled: bool,
     pub deny_read: Vec<String>,
     pub allow_read: Vec<String>,
     pub allow_write: Vec<String>,
@@ -112,6 +115,7 @@ pub struct SandboxConfig {
 impl Default for SandboxConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
             deny_read: vec!["~/.ssh".into(), "~/.gnupg".into()],
             allow_read: vec![
                 "/".into(),
@@ -184,6 +188,14 @@ impl SandboxConfig {
         } else {
             SecurityMode::Isolation
         };
+
+        if !self.enabled {
+            return SecurityReport {
+                is_safe: true,
+                errors: Vec::new(),
+                mode,
+            };
+        }
 
         let mut report = SecurityReport {
             is_safe: true,
@@ -331,6 +343,7 @@ impl SandboxConfig {
     /// Merge another `SandboxConfig` on top of this one.
     /// Fields from `other` override or extend this config's fields.
     pub fn merge(&mut self, other: &SandboxConfig) {
+        self.enabled &= other.enabled;
         self.deny_read.extend_from_slice(&other.deny_read);
         self.allow_read.extend_from_slice(&other.allow_read);
         self.allow_write.extend_from_slice(&other.allow_write);
@@ -355,6 +368,10 @@ impl SandboxConfig {
     /// run's sandbox is fully determined by `(config, base)` and never by
     /// the process cwd.
     pub fn is_within_allowed_paths(&self, candidate: &str, base: &Path) -> std::io::Result<bool> {
+        if !self.enabled {
+            return Ok(true);
+        }
+
         let candidate_path = Path::new(candidate);
 
         // If it's just a filename without path components, it's relative to the
@@ -420,6 +437,13 @@ fn find_duplicates(list: &[String], name: &str, warnings: &mut Vec<String>) {
 /// Falls back to unsandboxed command if the sandbox tool is unavailable.
 /// The child runs in `base` (the run's working directory).
 pub fn build_command(program: &str, args: &[String], cfg: &SandboxConfig, base: &Path) -> Command {
+    if !cfg.enabled {
+        let mut c = Command::new(program);
+        c.args(args);
+        c.current_dir(base);
+        return c;
+    }
+
     let should_sandbox = !cfg.permissions.iter().any(|p| {
         if let Permission::Unsandboxed(b) = p {
             b == program || program.ends_with(&format!("/{b}"))
@@ -829,6 +853,63 @@ mod tests {
     fn resolve_entry_leaves_absolute_unchanged() {
         let resolved = resolve_entry("/tmp", Path::new("/somewhere/else"));
         assert_eq!(resolved, Path::new("/tmp"));
+    }
+
+    #[test]
+    fn disabled_config_runs_commands_unsandboxed() {
+        let cfg = SandboxConfig {
+            enabled: false,
+            ..SandboxConfig::default()
+        };
+        let cmd = build_command("echo", &["hi".into()], &cfg, Path::new("/workspaces/proj"));
+        assert_eq!(cmd.get_program(), "echo");
+    }
+
+    #[test]
+    fn disabled_config_skips_command_safety_checks() {
+        let cfg = SandboxConfig {
+            enabled: false,
+            ..SandboxConfig::default()
+        };
+        let report = cfg.check_command_safety("sudo rm -rf /", Path::new("/"));
+        assert!(report.is_safe);
+    }
+
+    #[test]
+    fn disabled_config_allows_any_path() {
+        let cfg = SandboxConfig {
+            enabled: false,
+            allow_read: vec![],
+            allow_write: vec![],
+            ..SandboxConfig::default()
+        };
+        assert!(
+            cfg.is_within_allowed_paths("/etc/passwd", Path::new("/"))
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn enabled_defaults_to_true() {
+        let cfg: SandboxConfig = serde_json::from_str("{}").unwrap();
+        assert!(cfg.enabled);
+    }
+
+    #[test]
+    fn merge_can_disable_but_not_reenable() {
+        let mut merged = SandboxConfig::default();
+        merged.merge(&SandboxConfig {
+            enabled: false,
+            ..SandboxConfig::default()
+        });
+        assert!(!merged.enabled);
+
+        let mut disabled = SandboxConfig {
+            enabled: false,
+            ..SandboxConfig::default()
+        };
+        disabled.merge(&SandboxConfig::default());
+        assert!(!disabled.enabled);
     }
 
     #[test]
