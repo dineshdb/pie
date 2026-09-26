@@ -1,0 +1,31 @@
+[package]
+name = "agentsdk-plugin-agentfs"
+version = "0.1.0"
+edition = "2024"
+description = "Agent filesystem plugin: the agentsdk fs tool surface (Read/Write/Edit/Ls/Glob) backed by agentfs, with every mutation tracked as per-session file history"
+license = "MIT"
+repository = "https://github.com/dineshdb/pie"
+
+[dependencies]
+# All agentsdk crates must move together (same comment as pie-core):
+# git-sourced plugins would otherwise pull in a second, conflicting
+# agentsdk instance.
+agentsdk = { git = "https://github.com/dineshdb/agentsdk", branch = "main" }
+agentfs-sdk = "0.6.4"
+p1e-sandbox = { path = "../p1e-sandbox", version = "0.2.0" }
+anyhow = "1"
+async-trait = "0.1"
+glob = "0.3"
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "macros", "sync"] }
+tracing = "0.1"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+hecs = "0.11"
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

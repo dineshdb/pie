@@ -1,12 +1,20 @@
-use crate::db::DbPool;
+//! The in-process agent's conversation memory. Stateless pie: the
+//! durable transcript lives in the gateway's agent filesystem (a2acp
+//! `context_history`); this is the engine's working set for the
+//! process's lifetime — hydrated from the gateway at startup, held on
+//! `Arc` so every clone (the persistence plugin, per-turn agents)
+//! shares one history.
+
 use crate::error::{AppError, Result};
 use agentsdk::core::messages::{self, Messages};
 use serde::{Deserialize, Serialize};
-use sqlx::Row as _;
-use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use strum::{AsRefStr, EnumString, IntoStaticStr};
 use uuid::Uuid;
+
+fn lock<T>(guard: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    guard.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 #[derive(
     Debug,
@@ -40,7 +48,8 @@ pub struct ToolCall {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HistoryEntry {
-    /// Row id — strictly increasing, the exact cursor for partial reads.
+    /// Arrival order within the session — the exact cursor for
+    /// partial reads.
     pub id: i64,
     /// Write time in microseconds since the epoch.
     pub ts: i64,
@@ -84,47 +93,7 @@ impl Role {
     }
 }
 
-impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for HistoryEntry {
-    fn from_row(row: &'r sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
-        let id: i64 = row.try_get("id")?;
-        let ts: i64 = row.try_get("ts")?;
-        let role_str: &str = row.try_get("role")?;
-        let role: Role = Role::from_str(role_str)
-            .map_err(|e| sqlx::Error::Decode(format!("unknown role: {e}").into()))?;
-        let content: String = row.try_get("content")?;
-        Ok(Self {
-            id,
-            ts,
-            role,
-            content,
-        })
-    }
-}
-
-/// Filters for a partial history read — [`Session::history_page`].
-#[derive(Debug, Clone, Default)]
-pub struct HistoryFilter {
-    /// Only messages written in a strictly later millisecond than this
-    /// epoch value. Convenient for "what changed since"; for exact
-    /// incremental sync prefer [`HistoryFilter::after_id`].
-    pub since_ms: Option<i64>,
-    /// Only messages with a row id strictly greater than this. Exact and
-    /// race-free: pass the last `id` you have already seen.
-    pub after_id: Option<i64>,
-    /// Cap the result at this many messages, oldest first; `HistoryPage::
-    /// truncated` says whether more exist (continue with `after_id`).
-    pub limit: Option<u32>,
-}
-
-/// A page of history read through [`Session::history_page`].
-#[derive(Debug, Clone)]
-pub struct HistoryPage {
-    pub entries: Vec<HistoryEntry>,
-    /// The filter's `limit` cut a longer history short.
-    pub truncated: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SessionId(String);
 
 impl SessionId {
@@ -140,6 +109,12 @@ impl SessionId {
     }
 }
 
+impl Default for SessionId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl std::fmt::Display for SessionId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
@@ -152,258 +127,106 @@ impl From<String> for SessionId {
     }
 }
 
-// ── Session ────────────────────────────────────────────────────────
-
-/// A session summary row for listings.
-#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
-pub struct SessionSummary {
-    pub id: String,
-    pub cwd: String,
-    pub title: String,
-    /// Last activity, milliseconds since the epoch.
-    pub updated_at: i64,
+impl From<&str> for SessionId {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
 }
 
-#[derive(Clone)]
+/// The history behind an [`Arc`]: clones of a [`Session`] share one
+/// transcript, the way the database used to be the shared truth.
+#[derive(Debug, Default)]
+struct SharedHistory {
+    entries: Vec<HistoryEntry>,
+    next_id: i64,
+}
+
+/// A conversation's in-memory memory.
+#[derive(Debug, Clone)]
 pub struct Session {
     pub id: SessionId,
-    pub pool: Arc<DbPool>,
-    #[allow(dead_code)]
-    pub parent_id: Option<String>,
     /// The workspace this session runs in.
     pub cwd: String,
-    cache: Vec<HistoryEntry>,
+    history: Arc<Mutex<SharedHistory>>,
 }
 
 impl Session {
-    /// Create a session rooted at `cwd`. Explicit by design: the process
-    /// working directory means nothing once one process serves concurrent
-    /// runs in different directories.
-    pub async fn create(pool: Arc<DbPool>, cwd: &std::path::Path) -> Result<Self> {
-        Self::create_with_parent(pool, cwd, None).await
-    }
-
-    pub async fn create_with_parent(
-        pool: Arc<DbPool>,
-        cwd: &std::path::Path,
-        parent_id: Option<&str>,
-    ) -> Result<Self> {
-        let id = SessionId::new();
-        let id_str = id.to_string();
-        sqlx::query("INSERT OR IGNORE INTO sessions (id, cwd, parent_id) VALUES (?, ?, ?)")
-            .bind(&id_str)
-            .bind(cwd.to_string_lossy().to_string())
-            .bind(parent_id)
-            .execute(&*pool)
-            .await?;
-        let mut session = Self::load(pool, id).await?;
-        session.cwd = cwd.to_string_lossy().to_string();
-        Ok(session)
-    }
-
-    pub async fn load(pool: Arc<DbPool>, session_id: SessionId) -> Result<Self> {
-        let sid = session_id.to_string();
-        let row = sqlx::query("SELECT parent_id, cwd FROM sessions WHERE id = ?")
-            .bind(&sid)
-            .fetch_optional(&*pool)
-            .await?;
-        let Some(row) = row else {
-            return Err(AppError::NotFound(session_id.to_string()));
-        };
-        let parent_id: Option<String> = row.try_get("parent_id")?;
-        let cwd: String = row.try_get("cwd")?;
-        let mut session = Self {
-            id: session_id,
-            pool,
-            parent_id,
-            cwd,
-            cache: Vec::new(),
-        };
-        session.rebuild_cache().await?;
-        Ok(session)
-    }
-
-    pub async fn find_latest_for_cwd(pool: Arc<DbPool>, cwd: &str) -> Result<Option<Self>> {
-        let id_str: Option<String> = sqlx::query_scalar(
-            "SELECT id FROM sessions WHERE cwd = ? ORDER BY updated_at DESC LIMIT 1",
-        )
-        .bind(cwd)
-        .fetch_optional(&*pool)
-        .await?;
-        match id_str {
-            Some(sid) => Ok(Some(Self::load(pool, SessionId::from(sid)).await?)),
-            None => Ok(None),
+    /// A fresh session rooted at `cwd`. Explicit by design: the process
+    /// working directory means nothing once one process serves
+    /// concurrent runs in different directories.
+    pub fn new(cwd: &std::path::Path) -> Self {
+        Self {
+            id: SessionId::new(),
+            cwd: cwd.to_string_lossy().to_string(),
+            history: Arc::new(Mutex::new(SharedHistory::default())),
         }
     }
 
-    /// Most recently active sessions, newest first.
-    pub async fn list(pool: Arc<DbPool>, limit: u32) -> Result<Vec<SessionSummary>> {
-        let rows = sqlx::query_as::<_, SessionSummary>(
-            "SELECT id, cwd, title, updated_at FROM sessions ORDER BY updated_at DESC LIMIT ?",
-        )
-        .bind(i64::from(limit))
-        .fetch_all(&*pool)
-        .await?;
-        Ok(rows)
+    /// A session pre-seeded with a transcript — the stateless startup
+    /// hydration from the gateway's `context_history`.
+    pub fn with_history(id: SessionId, cwd: &std::path::Path, entries: Vec<HistoryEntry>) -> Self {
+        let session = Self::new(cwd).with_id(id);
+        session.hydrate(entries);
+        session
     }
 
-    /// Set the human-readable title (first prompt, task listings).
-    pub async fn set_title(&self, title: &str) -> Result<()> {
-        let sid = self.id.to_string();
-        sqlx::query("UPDATE sessions SET title = ? WHERE id = ?")
-            .bind(title)
-            .bind(&sid)
-            .execute(&*self.pool)
-            .await?;
-        Ok(())
+    /// Keep this session's id (the gateway's resume handle).
+    #[must_use]
+    pub fn with_id(mut self, id: SessionId) -> Self {
+        self.id = id;
+        self
     }
 
-    pub fn history_entries(&self) -> &[HistoryEntry] {
-        &self.cache
+    /// Replace the shared history with a hydrated transcript — the
+    /// stateless startup: every clone (engine, plugin) sees it.
+    pub fn hydrate(&self, entries: Vec<HistoryEntry>) {
+        let mut history = lock(&self.history);
+        history.next_id = entries.iter().map(|entry| entry.id).max().unwrap_or(0) + 1;
+        history.entries = entries;
     }
 
-    pub fn pool(&self) -> &Arc<DbPool> {
-        &self.pool
+    pub fn history_entries(&self) -> Vec<HistoryEntry> {
+        lock(&self.history).entries.clone()
     }
 
-    async fn add_entry(&mut self, role: Role, content: String) -> Result<i64> {
+    fn add_entry(&self, role: Role, content: String) -> i64 {
         // True microseconds, not ms*1000: two messages written within the
         // same millisecond must still carry distinct timestamps, or a
         // `since` cursor would skip one of them.
         let ts = chrono::Utc::now().timestamp_micros();
-        let sid = self.id.to_string();
-        let role_str = role.as_str();
-
-        let row: (i64,) = sqlx::query_as(
-            "INSERT INTO messages (session_id, ts, role, content) VALUES (?, ?, ?, ?) RETURNING id",
-        )
-        .bind(&sid)
-        .bind(ts)
-        .bind(role_str)
-        .bind(&content)
-        .fetch_one(&*self.pool)
-        .await?;
-        let id = row.0;
-
-        sqlx::query("UPDATE sessions SET updated_at = unixepoch('subsec') * 1000 WHERE id = ?")
-            .bind(&sid)
-            .execute(&*self.pool)
-            .await?;
-
-        self.cache.push(HistoryEntry {
+        let mut history = lock(&self.history);
+        let id = history.next_id;
+        history.next_id += 1;
+        history.entries.push(HistoryEntry {
             id,
             ts,
             role,
             content,
         });
-        Ok(id)
+        id
     }
 
-    pub async fn add_user(&mut self, content: &str) -> Result<i64> {
-        self.add_entry(Role::User, content.to_string()).await
+    pub fn add_user(&self, content: &str) -> i64 {
+        self.add_entry(Role::User, content.to_string())
     }
 
-    pub async fn add_assistant(&mut self, content: &str) -> Result<i64> {
-        self.add_entry(Role::Assistant, content.to_string()).await
+    pub fn add_assistant(&self, content: &str) -> i64 {
+        self.add_entry(Role::Assistant, content.to_string())
     }
 
-    pub async fn add_system(&mut self, content: &str) -> Result<i64> {
-        self.add_entry(Role::System, content.to_string()).await
+    pub fn add_system(&self, content: &str) -> i64 {
+        self.add_entry(Role::System, content.to_string())
     }
 
-    pub async fn add_tool_call(&mut self, tc: &ToolCall) -> Result<i64> {
+    pub fn add_tool_call(&self, tc: &ToolCall) -> i64 {
         let content = serde_json::to_string(tc).unwrap_or_default();
-        self.add_entry(Role::Tool, content).await
-    }
-
-    /// Persist one run's LLM usage for bookkeeping. `cost_usd` is `None`
-    /// when the model has no configured pricing.
-    pub async fn record_usage(
-        &self,
-        usage: &crate::usage::RunUsage,
-        model: &str,
-        agent: Option<&str>,
-        cost_usd: Option<f64>,
-    ) -> Result<()> {
-        let now_ms = chrono::Utc::now().timestamp_millis();
-        let sid = self.id.to_string();
-        sqlx::query(
-            "INSERT INTO llm_usage (session_id, ts, model, agent, requests, prompt_tokens, \
-             completion_tokens, cached_tokens, reasoning_tokens, total_tokens, cost_usd) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&sid)
-        .bind(now_ms)
-        .bind(model)
-        .bind(agent)
-        .bind(i64::from(usage.requests))
-        .bind(usage.prompt_tokens)
-        .bind(usage.completion_tokens)
-        .bind(usage.cached_tokens)
-        .bind(usage.reasoning_tokens)
-        .bind(usage.total_tokens)
-        .bind(cost_usd)
-        .execute(&*self.pool)
-        .await?;
-        Ok(())
-    }
-
-    pub async fn rebuild_cache(&mut self) -> Result<()> {
-        let sid = self.id.to_string();
-        let rows = sqlx::query_as::<_, HistoryEntry>(
-            "SELECT id, ts, role, content FROM messages WHERE session_id = ? AND compacted = 0 ORDER BY id",
-        )
-        .bind(&sid)
-        .fetch_all(&*self.pool)
-        .await?;
-
-        self.cache = rows;
-        Ok(())
-    }
-
-    /// Read a filtered slice of the transcript: `since`/`after_id` cut the
-    /// head, `limit` caps the length. Oldest first, so an incremental
-    /// reader paginates forward with `HistoryFilter::after_id` set to the
-    /// last id it processed.
-    pub async fn history_page(&self, filter: &HistoryFilter) -> Result<HistoryPage> {
-        let sid = self.id.to_string();
-        // SQLite: a negative LIMIT means no limit; `/` on integers is
-        // floor division, so `ts / 1000 > since_ms` is "written in a
-        // strictly later millisecond".
-        let fetch = filter.limit.map_or(-1, |limit| i64::from(limit) + 1);
-        let mut rows = sqlx::query_as::<_, HistoryEntry>(
-            "SELECT id, ts, role, content FROM messages \
-             WHERE session_id = ? AND compacted = 0 \
-             AND (? IS NULL OR ts / 1000 > ?) \
-             AND (? IS NULL OR id > ?) \
-             ORDER BY id \
-             LIMIT ?",
-        )
-        .bind(&sid)
-        .bind(filter.since_ms)
-        .bind(filter.since_ms)
-        .bind(filter.after_id)
-        .bind(filter.after_id)
-        .bind(fetch)
-        .fetch_all(&*self.pool)
-        .await?;
-
-        let truncated = match filter.limit {
-            Some(limit) if rows.len() > limit as usize => {
-                rows.truncate(limit as usize);
-                true
-            }
-            _ => false,
-        };
-        Ok(HistoryPage {
-            entries: rows,
-            truncated,
-        })
+        self.add_entry(Role::Tool, content)
     }
 
     /// Convert this session's history entries into agentsdk `Message`s.
     pub fn to_messages(&self) -> Messages {
-        self.cache
+        lock(&self.history)
+            .entries
             .iter()
             .flat_map(|entry| match entry.to_history_content() {
                 Ok(HistoryContent::User(c)) => vec![messages::user(c)],
@@ -437,18 +260,12 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db;
 
-    async fn pool() -> anyhow::Result<Arc<DbPool>> {
-        Ok(Arc::new(db::create_test_pool().await?))
-    }
-
-    #[tokio::test]
-    async fn add_user_and_assistant() -> anyhow::Result<()> {
-        let pool = pool().await?;
-        let mut session = Session::create(pool.clone(), std::path::Path::new("/test")).await?;
-        session.add_user("hello").await?;
-        session.add_assistant("hi there").await?;
+    #[test]
+    fn entries_append_in_order_and_read_back() {
+        let session = Session::new(std::path::Path::new("/test"));
+        session.add_user("hello");
+        session.add_assistant("hi there");
 
         let entries = session.history_entries();
         assert_eq!(entries.len(), 2);
@@ -456,130 +273,62 @@ mod tests {
         assert_eq!(entries[0].content(), "hello");
         assert_eq!(entries[1].role(), Role::Assistant);
         assert_eq!(entries[1].content(), "hi there");
-        Ok(())
     }
 
-    /// Seed three entries several milliseconds apart so their millisecond
-    /// fields are distinct (the `since` cursor granularity).
-    async fn spaced_session(pool: Arc<DbPool>) -> anyhow::Result<Session> {
-        let mut session = Session::create(pool, std::path::Path::new("/test")).await?;
-        for text in ["first", "second", "third"] {
-            tokio::time::sleep(std::time::Duration::from_millis(3)).await;
-            session.add_user(text).await?;
-        }
-        Ok(session)
+    /// The persistence plugin and the engine hold different clones —
+    /// they must see one shared transcript, or the engine's memory
+    /// loses what the plugin wrote.
+    #[test]
+    fn clones_share_one_history() {
+        let session = Session::new(std::path::Path::new("/test"));
+        let plugin_copy = session.clone();
+        plugin_copy.add_assistant("from the plugin");
+
+        let entries = session.history_entries();
+        assert_eq!(entries.len(), 1, "the clone wrote into the shared history");
+        assert_eq!(entries[0].content(), "from the plugin");
     }
 
-    #[tokio::test]
-    async fn history_page_since_keeps_only_later_milliseconds() -> anyhow::Result<()> {
-        let session = spaced_session(pool().await?).await?;
-        let full = session
-            .history_page(&HistoryFilter::default())
-            .await?
-            .entries;
-        assert_eq!(full.len(), 3);
-        assert!(full.windows(2).all(|w| w[0].ts < w[1].ts), "ts must grow");
+    #[test]
+    fn tool_calls_round_trip_into_messages() {
+        let session = Session::new(std::path::Path::new("/test"));
+        session.add_tool_call(&ToolCall {
+            call_id: "c-1".into(),
+            tool_name: "bash".into(),
+            params: serde_json::json!({ "cmd": "ls" }),
+            output: Some(Ok(serde_json::json!({ "files": 3 }))),
+        });
 
-        // Cursor = the millisecond of the second message: the first two
-        // must be gone, including the exact one the cursor came from.
-        let since_ms = full[1].ts / 1000;
-        let page = session
-            .history_page(&HistoryFilter {
-                since_ms: Some(since_ms),
-                ..HistoryFilter::default()
-            })
-            .await?;
-        assert_eq!(
-            page.entries.iter().map(|e| e.id).collect::<Vec<_>>(),
-            vec![full[2].id]
+        let messages = session.to_messages();
+        assert_eq!(messages.len(), 2, "tool call + tool result");
+    }
+
+    #[test]
+    fn with_history_hydrates_and_continues_the_sequence() {
+        let seeded = vec![
+            HistoryEntry {
+                id: 1,
+                ts: 1,
+                role: Role::User,
+                content: "old question".into(),
+            },
+            HistoryEntry {
+                id: 2,
+                ts: 2,
+                role: Role::Assistant,
+                content: "old answer".into(),
+            },
+        ];
+        let session = Session::with_history(
+            SessionId::from("c-1".to_string()),
+            std::path::Path::new("/test"),
+            seeded,
         );
-        Ok(())
-    }
+        session.add_user("new question");
 
-    #[tokio::test]
-    async fn history_page_after_id_is_exact_cursor() -> anyhow::Result<()> {
-        let session = spaced_session(pool().await?).await?;
-        let full = session
-            .history_page(&HistoryFilter::default())
-            .await?
-            .entries;
-
-        // No sleeps needed here: row ids are strictly increasing, so the
-        // cursor is exact even for same-millisecond writes.
-        let page = session
-            .history_page(&HistoryFilter {
-                after_id: Some(full[0].id),
-                ..HistoryFilter::default()
-            })
-            .await?;
-        assert_eq!(
-            page.entries.iter().map(|e| e.id).collect::<Vec<_>>(),
-            vec![full[1].id, full[2].id]
-        );
-        assert!(!page.truncated);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn history_page_limit_truncates_and_paginates_forward() -> anyhow::Result<()> {
-        let session = spaced_session(pool().await?).await?;
-
-        let page = session
-            .history_page(&HistoryFilter {
-                limit: Some(2),
-                ..HistoryFilter::default()
-            })
-            .await?;
-        assert_eq!(page.entries.len(), 2);
-        assert!(page.truncated, "a longer history must be flagged");
-
-        // Continue from the last id: the remainder comes next, untruncated.
-        let cursor = page.entries.last().expect("entries exist").id;
-        let rest = session
-            .history_page(&HistoryFilter {
-                after_id: Some(cursor),
-                ..HistoryFilter::default()
-            })
-            .await?;
-        assert_eq!(rest.entries.len(), 1);
-        assert!(!rest.truncated);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn record_usage_persists_and_aggregates() -> anyhow::Result<()> {
-        use sqlx::Row as _;
-
-        let pool = pool().await?;
-        let session = Session::create(pool.clone(), std::path::Path::new("/test")).await?;
-
-        let run = crate::usage::RunUsage {
-            requests: 2,
-            prompt_tokens: 100,
-            completion_tokens: 50,
-            total_tokens: 150,
-            cached_tokens: 80,
-            reasoning_tokens: 20,
-        };
-        session
-            .record_usage(&run, "test-model", None, Some(0.01))
-            .await?;
-        session
-            .record_usage(&run, "test-model", Some("reviewer"), None)
-            .await?;
-
-        let row = sqlx::query(
-            "SELECT COUNT(*) AS rows, SUM(requests) AS requests, SUM(total_tokens) AS total, \
-             SUM(cached_tokens) AS cached, SUM(cost_usd) AS cost FROM llm_usage WHERE session_id = ?",
-        )
-        .bind(session.id.to_string())
-        .fetch_one(&*pool)
-        .await?;
-        assert_eq!(row.try_get::<i64, _>("rows")?, 2);
-        assert_eq!(row.try_get::<i64, _>("requests")?, 4);
-        assert_eq!(row.try_get::<i64, _>("total")?, 300);
-        assert_eq!(row.try_get::<i64, _>("cached")?, 160);
-        assert!((row.try_get::<f64, _>("cost")? - 0.01).abs() < 1e-9);
-        Ok(())
+        let entries = session.history_entries();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[2].id, 3, "the sequence continues past the seed");
+        assert_eq!(entries[2].content(), "new question");
     }
 }

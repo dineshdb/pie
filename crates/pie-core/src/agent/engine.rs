@@ -1,7 +1,6 @@
 use crate::agent::AgentEvent;
 use crate::config::CONFIG;
 use crate::config::McpServerConfig;
-use crate::db::DbPool;
 use crate::error::{AppError, Result};
 use crate::plugin::{
     AgentMode, GateAsk, HelperBinariesPlugin, ModePlugin, PermissionRequest, PersistencePlugin,
@@ -10,6 +9,7 @@ use crate::plugin::{
 use crate::prompt::SystemPrompt;
 use crate::registry::Registry;
 use crate::session::Session;
+use crate::store::{TokenStore, UsageEntry, UsageStore};
 use crate::usage::RunUsage;
 use agentsdk::core::Sandbox;
 use agentsdk::{Agent as SdkAgent, MemoryHistoryPlugin, Message};
@@ -30,7 +30,13 @@ use super::definition::Agent;
 /// Which filesystem plugin variant a run gets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum FsMode {
+    /// The agentfs-journalled variant: the same tool surface as host-direct
+    /// [`FsMode::Full`], with writes landing on the host immediately and
+    /// every mutation journalled as file history (`~/.pie/agentfs/{session}.db`).
+    /// The default — hosts that want unjournalled writes name `fs` explicitly.
     #[default]
+    AgentFs,
+    /// Direct host writes, ungated by history. Explicit opt-in (`fs`).
     Full,
     Readonly,
     Off,
@@ -108,7 +114,7 @@ impl std::ops::Index<PluginFlags> for PluginSelection {
 impl Default for PluginSelection {
     fn default() -> Self {
         Self {
-            fs: FsMode::Full,
+            fs: FsMode::AgentFs,
             flags: PluginFlags::all(),
             mcp: McpSelection::Available,
         }
@@ -131,6 +137,10 @@ pub struct PieAgent {
     pub registry: Arc<Registry>,
     pub sandbox: Arc<SandboxConfig>,
     pub session: Session,
+    /// Usage bookkeeping — one row per run behind `pie usage`.
+    pub usage: Arc<dyn UsageStore>,
+    /// MCP OAuth grants — `pie mcp login` writes, runs authorize from.
+    pub tokens: Arc<dyn TokenStore>,
     pub config: AgentConfig,
     permission_tx: Option<UnboundedSender<PermissionRequest>>,
     /// Approval channel for the gated tools + the "always allow" memory
@@ -213,6 +223,8 @@ impl PieAgent {
         registry: Arc<Registry>,
         sandbox: Arc<SandboxConfig>,
         session: Session,
+        usage: Arc<dyn UsageStore>,
+        tokens: Arc<dyn TokenStore>,
         config: AgentConfig,
     ) -> Self {
         Self {
@@ -220,6 +232,8 @@ impl PieAgent {
             registry,
             sandbox,
             session,
+            usage,
+            tokens,
             config,
             permission_tx: None,
             tool_gate: None,
@@ -305,6 +319,7 @@ impl PieAgent {
             match name.trim() {
                 "fs" => sel.fs = FsMode::Full,
                 "fs-readonly" => sel.fs = FsMode::Readonly,
+                "fs-agentfs" => sel.fs = FsMode::AgentFs,
                 "shell" => sel.flags = sel.flags.set(PluginFlags::SHELL, true),
                 "websearch" => sel.flags = sel.flags.set(PluginFlags::WEBSEARCH, true),
                 "skills" => sel.flags = sel.flags.set(PluginFlags::SKILLS, true),
@@ -314,7 +329,7 @@ impl PieAgent {
                     Some(server) if !server.is_empty() => mcp_servers.push(server.to_string()),
                     _ => {
                         return Err(AppError::Config(format!(
-                            "agent '{}' lists unknown plugin '{other}' (known: fs, fs-readonly, shell, websearch, skills, agentsmd, mcp, mcp:<server>)",
+                            "agent '{}' lists unknown plugin '{other}' (known: fs, fs-readonly, fs-agentfs, shell, websearch, skills, agentsmd, mcp, mcp:<server>)",
                             agent.map_or("?", |a| a.name.as_str())
                         )));
                     }
@@ -328,7 +343,8 @@ impl PieAgent {
         } else {
             McpSelection::Only(mcp_servers)
         };
-        if sel.fs == FsMode::Full && Self::wants_readonly(agent, sandbox) {
+        if matches!(sel.fs, FsMode::Full | FsMode::AgentFs) && Self::wants_readonly(agent, sandbox)
+        {
             sel.fs = FsMode::Readonly;
         }
         Ok(sel)
@@ -428,17 +444,67 @@ impl PieAgent {
         (filtered, selection)
     }
 
+    /// Open this run's agent filesystem: one agentfs file per session
+    /// (`~/.pie/agentfs/{session}.db`), mirroring the run directory, so
+    /// the session's file history is tracked in isolation without
+    /// cross-process lock contention. Explicit selection is strict — a
+    /// run that asked for tracked files fails loudly instead of
+    /// silently writing to the host.
+    async fn open_session_fs(
+        &self,
+        cwd: &std::path::Path,
+    ) -> Result<agentsdk_plugin_agentfs::AgentFsHandle> {
+        let db_path = crate::config::pie_home()
+            .join("agentfs")
+            .join(format!("{}.db", self.session.id));
+        let policy = p1e_sandbox::PlatformSandbox::new((*self.sandbox).clone(), cwd.to_path_buf());
+        agentsdk_plugin_agentfs::AgentFsHandle::open(
+            &db_path,
+            cwd,
+            &self.session.id.to_string(),
+            policy,
+        )
+        .await
+        .map_err(|e| {
+            AppError::Plugin(format!(
+                "session '{}' agentfs unavailable: {e}",
+                self.session.id
+            ))
+        })
+    }
+
+    /// Converge any of a turn's writes the host rejected mid-turn onto
+    /// the host (write-through already lands every successful one, so a
+    /// clean turn syncs nothing). The journal keeps its copies either
+    /// way. Best-effort: sync failures warn. A turn that wrote nothing
+    /// leaves no session file behind (the handle removes untouched fresh
+    /// files on drop).
+    async fn sync_agentfs(agentfs: Option<agentsdk_plugin_agentfs::AgentFsHandle>) {
+        let Some(fs) = agentfs else {
+            return;
+        };
+        match fs.sync_to_host().await {
+            Ok(paths) if !paths.is_empty() => tracing::info!(
+                files = paths.len(),
+                "agentfs: synced the turn's overlay writes to the host"
+            ),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("agentfs: end-of-turn sync failed: {e}"),
+        }
+    }
+
     async fn build_mcp_plugin(
-        pool: &DbPool,
+        tokens: &Arc<dyn TokenStore>,
         configured: &HashMap<String, McpServerConfig>,
         selection: &McpSelection,
         depth: u32,
+        remote_skills: agentsdk_plugin_skills::RemoteSkillSink,
     ) -> Result<McpPlugin> {
         let (configured, selection) = Self::filter_for_depth(configured, selection, depth);
         let servers = Self::select_mcp_servers(&configured, &selection)?;
         let strict = !matches!(selection, McpSelection::Available);
 
-        let mut plugin = McpPlugin::new();
+        let mut plugin = McpPlugin::new().with_remote_skills(remote_skills);
         for (name, server) in servers {
             let headers = server.http_headers();
             // OAuth is assumed: every server without an api_key connects
@@ -453,7 +519,8 @@ impl PieAgent {
                         .await
                         .map(|()| true)
                 } else {
-                    match crate::mcp_auth::authorization_manager(&name, server, pool.clone()).await
+                    match crate::mcp_auth::authorization_manager(&name, server, Arc::clone(tokens))
+                        .await
                     {
                         Ok((manager, stored)) => plugin
                             .add_remote_server_authorized(
@@ -649,13 +716,39 @@ impl PieAgent {
         if selection[PluginFlags::AGENTSMD] {
             builder = builder.plugin(crate::plugin::build_agentsmd_plugin(cwd)?);
         }
-        if selection[PluginFlags::SKILLS] {
-            builder = builder.plugin(
-                SkillsPlugin::builder()
-                    .search_paths(self.skill_paths(cwd))
-                    .build()
-                    .map_err(|e| AppError::Plugin(format!("failed to build skills plugin: {e}")))?,
-            );
+        if selection[PluginFlags::SKILLS] || selection.mcp != McpSelection::Off {
+            // Skills from connected MCP servers join the same find/load
+            // surface as filesystem skills: the mcp plugin publishes its
+            // catalog into this sink, the skills plugin serves it.
+            let remote_skills = agentsdk_plugin_skills::remote_skill_sink();
+
+            if selection[PluginFlags::SKILLS] {
+                builder = builder.plugin(
+                    SkillsPlugin::builder()
+                        .search_paths(self.skill_paths(cwd))
+                        .remote_skills(remote_skills.clone())
+                        .build()
+                        .map_err(|e| {
+                            AppError::Plugin(format!("failed to build skills plugin: {e}"))
+                        })?,
+                );
+            }
+
+            if selection.mcp != McpSelection::Off {
+                let config = CONFIG
+                    .get()
+                    .ok_or_else(|| AppError::Config("global config not initialized".into()))?;
+                builder = builder.plugin(
+                    Self::build_mcp_plugin(
+                        &self.tokens,
+                        &config.mcp,
+                        &selection.mcp,
+                        self.config.depth,
+                        remote_skills,
+                    )
+                    .await?,
+                );
+            }
         }
 
         if selection[PluginFlags::SHELL] {
@@ -664,28 +757,13 @@ impl PieAgent {
         if selection[PluginFlags::WEBSEARCH] {
             builder = builder.plugin(WebsearchPlugin::new());
         }
-        if selection.mcp != McpSelection::Off {
-            let config = CONFIG
-                .get()
-                .ok_or_else(|| AppError::Config("global config not initialized".into()))?;
-            builder = builder.plugin(
-                Self::build_mcp_plugin(
-                    &self.session.pool,
-                    &config.mcp,
-                    &selection.mcp,
-                    self.config.depth,
-                )
-                .await?,
-            );
-        }
 
         builder = builder
             .plugin(HelperBinariesPlugin::new(cwd))
             .plugin(UserCommandPlugin::new(
                 self.registry.clone(),
                 self.config.agent_name.clone(),
-            ))
-            .plugin(crate::plugin::DoomLoopPlugin::new());
+            ));
 
         if AgentConfig::is_debug() {
             builder = builder.plugin(crate::plugin::DebugPlugin::new(
@@ -724,20 +802,36 @@ impl PieAgent {
                 builder = builder.tool_filter(move |name| !mode.is_tool_blocked(name));
             }
 
-            // StreamPlugin must be FIRST: on_tool_post_execute is
-            // first-decisive-wins, and JewelsPlugin returns Proceed(Some(..))
-            // whenever redaction changes a result — anything registered after
-            // it (the output clamp, debug result logging) would be preempted.
+            // StreamPlugin must be FIRST among the plugins whose post
+            // actions matter per call (first-decisive-wins: JewelsPlugin
+            // returns Proceed(Some(..)) whenever redaction changes a
+            // result). DoomLoopPlugin registers ahead of it — its
+            // read-streak counter must observe EVERY tool result to know
+            // when the run stops converging — and its rare nudge
+            // preempts the stream clamp/redact for that one result, so
+            // the nudge path redacts and clamps the base itself.
+            let doom_loop = crate::plugin::DoomLoopPlugin::new();
             let stream_plugin = crate::agent::StreamPlugin::new(
                 event_tx.clone(),
                 self.config.retry.clone(),
                 self.model.config.model.clone(),
             );
-            builder = builder.plugin(stream_plugin).plugin(history_plugin.clone());
+            builder = builder
+                .plugin(doom_loop)
+                .plugin(stream_plugin)
+                .plugin(history_plugin.clone());
             builder = self.register_plugins(builder, &selection, &cwd).await?;
+            // The tracked handle stays behind for the end-of-turn sync;
+            // every other mode leaves the host to its own plugins.
+            let mut agentfs = None;
             builder = match selection.fs {
                 FsMode::Full => builder.plugin(FileSystemPlugin::new()),
                 FsMode::Readonly => builder.plugin(ReadOnlyFileSystemPlugin::new()),
+                FsMode::AgentFs => {
+                    let fs = self.open_session_fs(&cwd).await?;
+                    agentfs = Some(fs.clone());
+                    builder.plugin(agentsdk_plugin_agentfs::AgentFsPlugin::new(fs))
+                }
                 FsMode::Off => builder,
             }
             .plugin(PersistencePlugin::new(self.session.clone()));
@@ -778,14 +872,20 @@ impl PieAgent {
             history_plugin
                 .push(agentsdk::core::messages::user(&query))
                 .await;
-            self.session.add_user(&query).await?;
+            self.session.add_user(&query);
 
             let t_run = std::time::Instant::now();
-            let output = agent.run().await?;
+            let output = agent.run().await;
             tracing::debug!(
                 ms = crate::utils::ms_of(t_run.elapsed()),
                 "timing: agent run done"
             );
+
+            // The audit layer converges: any write the host rejected
+            // mid-turn is retried at the end of the turn — see
+            // `sync_agentfs`. Successful writes already landed.
+            Self::sync_agentfs(agentfs).await;
+            let output = output?;
 
             let final_messages = history_plugin.messages().await;
 
@@ -813,7 +913,7 @@ impl PieAgent {
 
     /// Read the run's cumulative usage from the agent world and persist it
     /// for bookkeeping. One record per interaction, in one place:
-    /// single-shot, TUI and cron runs all funnel through `stream()`.
+    /// single-shot and TUI runs all funnel through `stream()`.
     /// Providers that don't report usage leave nothing to record.
     async fn finalize_usage(
         &self,
@@ -831,8 +931,14 @@ impl PieAgent {
 
         if usage.requests > 0
             && let Err(e) = self
-                .session
-                .record_usage(&usage, &model, self.config.agent_name.as_deref(), cost_usd)
+                .usage
+                .record_usage(UsageEntry {
+                    session_id: self.session.id.to_string(),
+                    model: model.clone(),
+                    agent: self.config.agent_name.clone(),
+                    usage,
+                    cost_usd,
+                })
                 .await
         {
             tracing::warn!("failed to record llm usage: {e}");
@@ -907,10 +1013,11 @@ mod tests {
     }
 
     #[test]
-    fn no_plugins_key_means_full_default_set() {
+    fn no_plugins_key_means_tracked_default_set() {
         let sel =
             PieAgent::selected_plugins(Some(&tooled_agent(None, false)), &sandbox(&["."])).unwrap();
         assert_eq!(sel, PluginSelection::default());
+        assert_eq!(sel.fs, FsMode::AgentFs);
 
         // empty allow_write demotes fs even in the default set
         let sel =
@@ -945,6 +1052,28 @@ mod tests {
     fn readonly_demotes_explicit_fs_to_readonly() {
         let sel = PieAgent::selected_plugins(
             Some(&tooled_agent(Some(vec!["fs".into()]), true)),
+            &sandbox(&["."]),
+        )
+        .unwrap();
+        assert_eq!(sel.fs, FsMode::Readonly);
+    }
+
+    #[test]
+    fn fs_agentfs_selects_the_tracked_variant() {
+        let sel = PieAgent::selected_plugins(
+            Some(&tooled_agent(Some(vec!["fs-agentfs".into()]), false)),
+            &sandbox(&["."]),
+        )
+        .unwrap();
+        assert_eq!(sel.fs, FsMode::AgentFs);
+    }
+
+    #[test]
+    fn readonly_demotes_explicit_fs_agentfs_to_readonly() {
+        // Tracked writes are still writes: a readonly run must not get
+        // the overlay any more than the host plugin.
+        let sel = PieAgent::selected_plugins(
+            Some(&tooled_agent(Some(vec!["fs-agentfs".into()]), true)),
             &sandbox(&["."]),
         )
         .unwrap();
@@ -1147,12 +1276,13 @@ mod tests {
     #[test]
     fn explicit_mcp_connection_failure_fails_the_run() {
         let configured = dead_mcp_config();
-        let pool = block_on(crate::db::create_test_pool()).unwrap();
+        let tokens: Arc<dyn TokenStore> = Arc::new(crate::store::MemoryStore::new());
         let result = block_on(PieAgent::build_mcp_plugin(
-            &pool,
+            &tokens,
             &configured,
             &McpSelection::All,
             0,
+            agentsdk_plugin_skills::remote_skill_sink(),
         ));
         let Err(err) = result else {
             panic!("a dead server must fail an explicit request");
@@ -1169,12 +1299,13 @@ mod tests {
         let configured = dead_mcp_config();
         // The run asked for no server in particular: a dead one is skipped
         // (with a warning in the session log) instead of failing the run.
-        let pool = block_on(crate::db::create_test_pool()).unwrap();
+        let tokens: Arc<dyn TokenStore> = Arc::new(crate::store::MemoryStore::new());
         let plugin = block_on(PieAgent::build_mcp_plugin(
-            &pool,
+            &tokens,
             &configured,
             &McpSelection::Available,
             0,
+            agentsdk_plugin_skills::remote_skill_sink(),
         ))
         .unwrap();
         assert!(

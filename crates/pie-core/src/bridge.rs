@@ -12,12 +12,12 @@
 
 use crate::agent::{AgentConfig, AgentEvent, PieAgent};
 use crate::config::{ResolvedProvider, RetryConfig};
-use crate::db::DbPool;
 use crate::p1e_sandbox::SandboxConfig;
 use crate::plugin::{AgentMode, GateAsk};
-use crate::registry::{Registry, RegistryCache};
-use crate::session::{Session, SessionId as PieSessionId};
-use crate::usage::RunUsage;
+use crate::registry::Registry;
+use crate::session::Session;
+use crate::store::{TokenStore, UsageStore};
+use crate::usage::{RunUsage, UsageReport};
 use std::collections::HashSet;
 use std::future::Future;
 use std::path::PathBuf;
@@ -72,10 +72,12 @@ pub struct TurnIO {
 
 /// How a driven turn ended. `Completed` means the engine already emitted
 /// its terminal events (or nothing further); consumers turn `Cancelled`
-/// and `Failed` into their own terminal shapes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// and `Failed` into their own terminal shapes. The completed turn's LLM
+/// usage rides along — the provider reported nothing (`requests == 0`)
+/// reads as `None`, so clients never show a zero line.
+#[derive(Debug, Clone, PartialEq)]
 pub enum TurnEnd {
-    Completed,
+    Completed { usage: Option<UsageReport> },
     Cancelled,
     Failed(String),
 }
@@ -116,7 +118,10 @@ pub struct RemoteDoor {
 
 /// Everything the pie engine needs to drive turns.
 pub struct PieEngineDeps {
-    pub pool: Arc<DbPool>,
+    /// Usage bookkeeping — one row per run behind `pie usage`.
+    pub usage: Arc<dyn UsageStore>,
+    /// MCP OAuth grants — `pie mcp login` writes, runs authorize from.
+    pub tokens: Arc<dyn TokenStore>,
     pub registry: Arc<Registry>,
     pub sandbox: Arc<SandboxConfig>,
     pub provider: ResolvedProvider,
@@ -128,31 +133,35 @@ pub struct PieEngineDeps {
     pub door: RemoteDoor,
 }
 
-/// The pie agent behind a remote door. One conversation; turns reload the
-/// session from the pool, so concurrent requests see consistent state.
+/// The pie agent behind a remote door. One conversation; the session's
+/// history is shared in memory (`Arc`), so every turn — and every clone
+/// (the persistence plugin, per-turn agents) — sees one transcript. The
+/// durable record is the gateway's agent filesystem, not this process.
 pub struct PieEngine {
-    pool: Arc<DbPool>,
+    usage: Arc<dyn UsageStore>,
+    tokens: Arc<dyn TokenStore>,
     registry: Arc<Registry>,
     sandbox: Arc<SandboxConfig>,
     provider: ResolvedProvider,
     retry: RetryConfig,
     agent_name: Option<String>,
     door: RemoteDoor,
-    session_id: PieSessionId,
+    session: Session,
 }
 
 impl PieEngine {
     #[must_use]
     pub fn new(deps: PieEngineDeps) -> Self {
         Self {
-            pool: deps.pool,
+            usage: deps.usage,
+            tokens: deps.tokens,
             registry: deps.registry,
             sandbox: deps.sandbox,
             provider: deps.provider,
             retry: deps.retry,
             agent_name: deps.agent_name,
             door: deps.door,
-            session_id: deps.session.id,
+            session: deps.session,
         }
     }
 
@@ -192,6 +201,8 @@ impl PieEngine {
             Arc::clone(&self.registry),
             Arc::clone(&self.sandbox),
             session,
+            Arc::clone(&self.usage),
+            Arc::clone(&self.tokens),
             AgentConfig {
                 agent_name: self.agent_name.clone(),
                 retry: self.retry.clone(),
@@ -203,23 +214,22 @@ impl PieEngine {
         )
         .with_tool_gate((gate_tx, Arc::new(StdMutex::new(HashSet::new()))))
     }
-
-    async fn load_session(&self) -> Result<Session, String> {
-        Session::load(self.pool.clone(), self.session_id.clone())
-            .await
-            .map_err(|e| format!("failed to load session: {e}"))
-    }
 }
 
 impl Engine for PieEngine {
     async fn run_turn(&self, prompt: String, io: TurnIO) -> TurnEnd {
-        let session = match self.load_session().await {
-            Ok(session) => session,
-            Err(e) => return TurnEnd::Failed(e),
-        };
+        // The shared in-memory transcript — clones see one history.
+        let session = self.session.clone();
         let agent = self.door_agent(session, &io);
         match run_turn(agent, prompt, io.cancel, io.events.clone()).await {
-            PieTurnEnd::Completed { .. } => TurnEnd::Completed,
+            PieTurnEnd::Completed {
+                text: _,
+                usage,
+                cost_usd,
+            } => TurnEnd::Completed {
+                // Providers that report nothing leave no usage to account.
+                usage: (usage.requests > 0).then(|| usage.report(cost_usd)),
+            },
             PieTurnEnd::Cancelled => TurnEnd::Cancelled,
             PieTurnEnd::Failed(e) => TurnEnd::Failed(e),
         }
@@ -324,53 +334,6 @@ fn translate(event: AgentEvent) -> Option<Event> {
 /// message onto their own wire format.
 pub type PrepareError = String;
 
-/// Build the agent for one delegated (server-side) turn in `session`'s
-/// workspace: the daemon's registry cache for that root, the workspace
-/// granted read+write in its sandbox copy, depth 1 so no door can nest
-/// through itself.
-///
-/// # Errors
-///
-/// Fails when the daemon's global config was never set or the provider
-/// client cannot be built.
-pub fn delegated_agent(
-    provider: &ResolvedProvider,
-    retry: &RetryConfig,
-    base_sandbox: &Arc<SandboxConfig>,
-    registries: &RegistryCache,
-    session: &Session,
-    agent_name: Option<&str>,
-) -> Result<PieAgent, PrepareError> {
-    // The engine reads pricing, `[mcp.*]`, and debug flags from the global
-    // config; refuse to run if the daemon never set it.
-    let Some(_config) = crate::config::CONFIG.get() else {
-        return Err("server config not initialized".into());
-    };
-    let cwd = std::path::Path::new(&session.cwd);
-    let registry = registries.get(cwd);
-    let sandbox = Arc::new(crate::sandbox_grant::granted_sandbox(
-        base_sandbox,
-        &[cwd.to_path_buf()],
-    ));
-    let agent_config = AgentConfig {
-        retry: retry.clone(),
-        agent_name: agent_name.map(str::to_owned),
-        cwd: Some(cwd.to_path_buf()),
-        // Depth 1: this run is itself a subagent — served through a pie
-        // daemon — so agents cannot nest through the same door.
-        depth: 1,
-        ..AgentConfig::default()
-    };
-    let model = provider.build_client();
-    Ok(PieAgent::new(
-        model,
-        registry,
-        sandbox,
-        session.clone(),
-        agent_config,
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     //! Behavior tests for the pie engine's turn driving: failure and
@@ -459,13 +422,11 @@ mod tests {
         }
     }
 
-    async fn test_engine(cwd: &str, provider: ResolvedProvider) -> (PieEngine, Arc<DbPool>) {
-        let pool = Arc::new(crate::db::create_test_pool().await.unwrap());
-        let session = Session::create(pool.clone(), std::path::Path::new(cwd))
-            .await
-            .unwrap();
-        let engine = PieEngine::new(PieEngineDeps {
-            pool: pool.clone(),
+    fn test_engine(cwd: &str, provider: ResolvedProvider) -> PieEngine {
+        let session = Session::new(std::path::Path::new(cwd));
+        PieEngine::new(PieEngineDeps {
+            usage: Arc::new(crate::store::MemoryStore::new()),
+            tokens: Arc::new(crate::store::MemoryStore::new()),
             registry: empty_registry(),
             sandbox: Arc::new(SandboxConfig::default()),
             provider,
@@ -473,8 +434,7 @@ mod tests {
             agent_name: None,
             session,
             door: door(cwd),
-        });
-        (engine, pool)
+        })
     }
 
     /// The turn IO with its own event tap; asks are drained nowhere (a
@@ -495,7 +455,7 @@ mod tests {
     #[tokio::test]
     async fn a_dead_provider_fails_the_turn_with_an_error_event() {
         set_global_config();
-        let (engine, _pool) = test_engine("/tmp/pie-bridge-fail", dead_provider()).await;
+        let engine = test_engine("/tmp/pie-bridge-fail", dead_provider());
         let (_cancel_tx, cancel_rx) = watch::channel(());
         let (io, mut events) = turn_io(cancel_rx);
         let end = engine.run_turn("hello".into(), io).await;
@@ -541,7 +501,7 @@ mod tests {
             openai_url: url.parse().unwrap(),
             ..dead_provider()
         };
-        let (engine, _pool) = test_engine("/tmp/pie-bridge-cancel", provider).await;
+        let engine = test_engine("/tmp/pie-bridge-cancel", provider);
         let (cancel_tx, cancel_rx) = watch::channel(());
         let (io, mut events) = turn_io(cancel_rx);
         let engine = Arc::new(engine);

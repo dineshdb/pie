@@ -13,6 +13,5 @@ class Pie < Formula
 
   def install
     bin.install "pie"
-    bin.install "p1e"
   end
 end

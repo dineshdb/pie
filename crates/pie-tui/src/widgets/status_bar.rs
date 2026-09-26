@@ -10,6 +10,9 @@ pub struct StatusBar {
     pub active_steps: Vec<String>,
     pub is_streaming: bool,
     pub spinner_frame: usize,
+    /// The conversation's session usage summary (tokens + spend) —
+    /// right-aligned, dim; `None` before the first billed turn.
+    pub usage: Option<String>,
     pub theme: &'static Theme,
 }
 
@@ -18,12 +21,14 @@ impl StatusBar {
         active_steps: Vec<String>,
         is_streaming: bool,
         spinner_frame: usize,
+        usage: Option<String>,
         theme: &'static Theme,
     ) -> Self {
         Self {
             active_steps,
             is_streaming,
             spinner_frame,
+            usage,
             theme,
         }
     }
@@ -64,5 +69,18 @@ impl Widget for StatusBar {
             ),
             buf,
         );
+
+        // 3. Session usage, right-aligned over the title — it wins the
+        // overlap, the title is filler.
+        if let Some(usage) = self.usage
+            && area.width > 0
+        {
+            let usage = format!(" {usage} ");
+            let width =
+                u16::try_from(usage.chars().count().min(area.width as usize)).unwrap_or(area.width);
+            let x = area.x + area.width - width;
+            Span::styled(usage, Style::default().fg(self.theme.text_dim))
+                .render(Rect::new(x, area.y, width, 1), buf);
+        }
     }
 }

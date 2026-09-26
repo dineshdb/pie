@@ -7,12 +7,12 @@
 //! events through tuirealm's event system — all interaction goes through direct calls.
 //!
 //! Each frame: drain all events, merge them, then render once. Everything
-//! agent-shaped flows through the door client; `/model` and `/mode`
+//! agent-shaped flows through the A2A client; `/model` and `/mode`
 //! selections ride the selection extension onto the next outgoing message
 //! (the mode bar shows the pending or confirmed selection), and pie-specific
 //! wants with no A2A counterpart (`!shell` escapes) answer with a "not
 //! available over the bridge" notice rather than fake success (see the gap
-//! list in `door`'s docs).
+//! list in `client`'s docs).
 
 use crate::command::{Command, CommandAction};
 use crate::components::chat::{
@@ -20,9 +20,9 @@ use crate::components::chat::{
 };
 use crate::components::input::InputComponent;
 
+use crate::client::Client;
+pub use crate::client::ModelCatalog;
 pub use crate::components::input::ProviderView;
-use crate::door::Client;
-pub use crate::door::ModelCatalog;
 use crate::notify;
 use crate::realm::{App, Id, Msg, SessionId, StreamEvent, StreamPort};
 use crate::state::ChatMessage;
@@ -46,15 +46,15 @@ use tuirealm::ratatui::layout::{Constraint, Direction, Layout};
 
 type Terminal = tuirealm::ratatui::Terminal<CrosstermBackend<std::io::Stdout>>;
 
-/// What the TUI needs from the embedding process: the A2A door client,
+/// What the TUI needs from the embedding process: the A2A client,
 /// its event stream, the leaf data for the first render, and the
 /// provider/model catalog for `/model` (plain startup data — names and
 /// tiers, no live fetch).
 #[derive(Debug)]
 pub struct TuiDeps {
-    /// Sends A2A requests through the front door.
+    /// Sends A2A requests through the gateway's front door (a2acp's `FrontDoor`).
     pub client: Client,
-    /// The door's projected event stream — wired into the app's `StreamPort`.
+    /// The client's projected event stream — wired into the app's `StreamPort`.
     pub events: tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
     /// The conversation the TUI displays (input-history key).
     pub session_id: SessionId,
@@ -137,6 +137,9 @@ fn process_msg(msg: Msg, app: &mut App, input: &mut InputComponent) -> Option<Ms
             let query = input.finish_stream();
             notify::turn_complete(query.as_deref());
             input.sync_selection();
+            // The settled turn may have billed tokens: re-derive the
+            // session total from the task history.
+            input.client.refresh_usage();
         }
 
         Msg::StreamError(err) => {
@@ -248,7 +251,7 @@ fn handle_submit(text: &str, app: &mut App, input: &mut InputComponent) -> Optio
             }
         }
         CommandAction::NewSession => {
-            // The door drops the conversation; the views reset when the
+            // The client drops the conversation; the views reset when the
             // SessionSwitched event arrives.
             input.client.new_session();
         }
@@ -289,14 +292,16 @@ fn mode_lines(input: &InputComponent) -> Vec<String> {
 }
 
 /// `/mode` without arguments lists the modes the agent advertises on
-/// the card — honestly empty before its first session reported them;
-/// with an id it becomes the pending selection riding the next turn
-/// (the selection extension's mode leg → `session/set_mode`).
+/// the card — filled by the startup warm (the session opens before the
+/// first message), honestly empty when that failed until the first
+/// turn's session reports; with an id it becomes the pending selection
+/// riding the next turn (the selection extension's mode leg →
+/// `session/set_mode`).
 fn handle_mode_command(args: Option<&str>, app: &mut App, input: &mut InputComponent) {
     let Some(mode_id) = args.filter(|a| !a.is_empty()) else {
         let modes = mode_lines(input);
         let body = if modes.is_empty() {
-            "Modes are available after the first message — the agent reports them when its session opens.".to_string()
+            "No modes advertised yet — the agent reports them when its session opens.".to_string()
         } else {
             format!("Available modes:\n{}", modes.join("\n"))
         };
@@ -339,30 +344,41 @@ fn handle_mode_command(args: Option<&str>, app: &mut App, input: &mut InputCompo
     }
 }
 
-/// `/model` without arguments opens the picker over the startup
-/// catalog; with an id it becomes the pending selection riding the next
-/// turn (the selection extension's model leg → `_meta.model` on the
-/// prompt, resolved agent-side the way the roster resolves an agent's
-/// `model:`).
+/// `/model` without arguments opens the picker over the agent's
+/// advertised models when its card reports a catalog (opencode among
+/// them), else over the startup catalog; with an id it becomes the
+/// pending selection riding the next turn (the selection extension's
+/// model leg — the agent's catalog channel when it advertises one,
+/// `_meta.model` on the prompt otherwise).
 fn handle_model_command(name: Option<&str>, app: &mut App, input: &mut InputComponent) {
-    if let Some(id) = name.filter(|a| !a.is_empty()) {
-        if !input.catalog.contains(id) {
-            if let Some(chat) = chat_mut!(app) {
-                chat.add_message(ChatMessage::system(&format!(
-                    "Error: unknown model '{id}' — /model lists the catalog"
-                )));
-            }
-            return;
-        }
-        input.pending.model = Some(id.to_string());
+    let Some(id) = name.filter(|a| !a.is_empty()) else {
+        open_model_picker(app, input);
+        return;
+    };
+    // Validate against what the agent accepts — a typo is a typo, and
+    // an unknown id would fail the next turn's send.
+    if !input.model_known(id) {
         if let Some(chat) = chat_mut!(app) {
             chat.add_message(ChatMessage::system(&format!(
-                "Next message will use model **{id}**"
+                "Error: unknown model '{id}' — /model lists the catalog"
             )));
         }
         return;
     }
-    if input.catalog.entries.is_empty() {
+    input.pending.model = Some(id.to_string());
+    if let Some(chat) = chat_mut!(app) {
+        chat.add_message(ChatMessage::system(&format!(
+            "Next message will use model **{id}**"
+        )));
+    }
+}
+
+/// Open the model picker over the catalog `/model` serves, with the
+/// conversation's current model highlighted — with opencode-sized
+/// catalogs (90+ entries) row zero is nobody's model.
+fn open_model_picker(app: &mut App, input: &mut InputComponent) {
+    let entries = input.model_entries();
+    if entries.is_empty() {
         bridge_gap(app, "model switching");
         return;
     }
@@ -370,12 +386,17 @@ fn handle_model_command(name: Option<&str>, app: &mut App, input: &mut InputComp
         .pending
         .model
         .clone()
-        .or_else(|| input.current.model.clone());
+        .or_else(|| input.current.model.clone())
+        .or_else(|| input.client.default_model());
+    let selected_idx = entries
+        .iter()
+        .position(|entry| Some(&entry.id) == current_id.as_ref())
+        .unwrap_or(0);
     if let Some(chat) = chat_mut!(app) {
         chat.active_dialog = ActiveDialog::ModelSelector(ModelSelectorState {
-            entries: input.catalog.entries.clone(),
+            entries,
             current_id,
-            selected_idx: 0,
+            selected_idx,
         });
     }
 }
@@ -573,7 +594,14 @@ fn render(app: &mut App, input: &mut InputComponent, terminal: &mut Terminal) ->
         let is_streaming = chat_ref!(app).is_some_and(ChatComponent::is_streaming);
         let active_steps = InputComponent::active_steps(is_streaming);
         let theme = theme::current();
-        let status_bar = StatusBar::new(active_steps, is_streaming, input.spinner_frame, theme);
+        let session_usage = input.client.usage();
+        let status_bar = StatusBar::new(
+            active_steps,
+            is_streaming,
+            input.spinner_frame,
+            session_usage,
+            theme,
+        );
         f.render_widget(status_bar, status_bar_area);
 
         let yolo = chat_ref!(app).is_some_and(|chat| chat.yolo);

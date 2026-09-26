@@ -1,10 +1,11 @@
-//! The TUI-facing flow over a real gateway: `pie_tui`'s door client
+//! The TUI-facing flow over a real gateway: `pie_tui`'s A2A client
 //! drives an in-process scripted agent through `FrontDoor` — prompt →
 //! streamed events → done, the `INPUT_REQUIRED` permission ask → answer,
 //! cancel, `/new`, and the selection extension (mode + model riding a
-//! turn, the door's read-back). This is the exact path interactive
-//! `pie` runs, minus only the process: the frontend cannot tell the
-//! difference.
+//! turn, the client's read-back; both the legacy mode report and the
+//! config-options shape opencode ≥ 1.18 answers with). This is the exact
+//! path interactive `pie` runs, minus only the process: the frontend
+//! cannot tell the difference.
 //!
 //! One test function on purpose: the gateway's task store location is
 //! redirected through `A2A_ACP_HOME`, and environment variables cannot
@@ -24,14 +25,16 @@ use acp::schema::v1::{
     AgentCapabilities, CancelNotification, ContentBlock, ContentChunk, InitializeRequest,
     InitializeResponse, NewSessionRequest, NewSessionResponse, PermissionOption,
     PermissionOptionKind, PromptRequest, PromptResponse, RequestPermissionOutcome,
-    RequestPermissionRequest, SessionId, SessionMode, SessionModeId, SessionModeState,
-    SessionNotification, SessionUpdate, SetSessionModeRequest, SetSessionModeResponse, StopReason,
+    RequestPermissionRequest, SessionConfigOption, SessionConfigOptionCategory,
+    SessionConfigOptionValue, SessionConfigSelectOption, SessionId, SessionMode, SessionModeId,
+    SessionModeState, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+    SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse, StopReason,
     TextContent, ToolCallId, ToolCallUpdate, ToolCallUpdateFields,
 };
 use agent_client_protocol as acp;
 use pie_tui::SELECTION_EXTENSION_URI;
 use pie_tui::StreamEvent;
-use pie_tui::door::{self, Selection};
+use pie_tui::client::{self, Selection};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -54,6 +57,8 @@ struct Recorder {
     prompt_models: Arc<Mutex<Vec<Option<String>>>>,
     /// Every `session/set_mode`, in order.
     set_modes: Arc<Mutex<Vec<String>>>,
+    /// Every `session/set_config_option` as (config id, value), in order.
+    set_config_options: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 fn lock<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -73,11 +78,21 @@ enum Script {
     Hang,
 }
 
+/// What the agent's `session/new` reports about its selectable state:
+/// the legacy `modes` shape, or the `configOptions` selects opencode
+/// ≥ 1.18 answers with (no legacy modes at all).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Report {
+    Modes,
+    ConfigOptions,
+}
+
 /// The scripted agent as an in-process a2acp agent: one connection per
 /// conversation, each served by the same script and the same recorder.
 #[derive(Debug, Clone)]
 struct ScriptedAgent {
     script: Script,
+    report: Report,
     recorder: Recorder,
 }
 
@@ -87,8 +102,9 @@ impl a2acp::InProcessAgent for ScriptedAgent {
         transport: acp::Channel,
     ) -> Pin<Box<dyn Future<Output = Result<(), acp::Error>> + Send>> {
         let script = self.script.clone();
+        let report = self.report;
         let recorder = self.recorder.clone();
-        Box::pin(scripted_agent(transport, script, recorder))
+        Box::pin(scripted_agent(transport, script, report, recorder))
     }
 }
 
@@ -104,9 +120,37 @@ fn scripted_modes() -> SessionModeState {
     )
 }
 
+/// The config options the config-flavored agent reports: a model select
+/// and a mode select, no legacy `modes` — opencode's shape.
+fn scripted_config_options() -> Vec<SessionConfigOption> {
+    vec![
+        SessionConfigOption::select(
+            "model",
+            "Model",
+            "citadel/glm",
+            vec![
+                SessionConfigSelectOption::new("citadel/glm", "Citadel GLM"),
+                SessionConfigSelectOption::new("opencode/zen", "OpenCode Zen"),
+            ],
+        )
+        .category(Some(SessionConfigOptionCategory::Model)),
+        SessionConfigOption::select(
+            "mode",
+            "Session Mode",
+            "build",
+            vec![
+                SessionConfigSelectOption::new("build", "build"),
+                SessionConfigSelectOption::new("plan", "plan"),
+            ],
+        )
+        .category(Some(SessionConfigOptionCategory::Mode)),
+    ]
+}
+
 async fn scripted_agent(
     transport: impl acp::ConnectTo<acp::Agent> + 'static,
     script: Script,
+    report: Report,
     recorder: Recorder,
 ) -> Result<(), acp::Error> {
     let cancel = Arc::new(tokio::sync::Notify::new());
@@ -125,12 +169,36 @@ async fn scripted_agent(
             acp::on_receive_request!(),
         )
         .on_receive_request(
-            async |_req: NewSessionRequest, responder: Responder<NewSessionResponse>, _cx| {
+            async move |_req: NewSessionRequest, responder: Responder<NewSessionResponse>, _cx| {
                 let id = format!("s-{}", SESSIONS.fetch_add(1, Ordering::Relaxed));
-                let _ = responder.respond(
-                    NewSessionResponse::new(SessionId::from(id)).modes(Some(scripted_modes())),
-                );
+                let response = match report {
+                    Report::Modes => {
+                        NewSessionResponse::new(SessionId::from(id)).modes(Some(scripted_modes()))
+                    }
+                    Report::ConfigOptions => NewSessionResponse::new(SessionId::from(id))
+                        .config_options(Some(scripted_config_options())),
+                };
+                let _ = responder.respond(response);
                 Ok(())
+            },
+            acp::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let recorder = recorder.clone();
+                async move |req: SetSessionConfigOptionRequest,
+                            responder: Responder<SetSessionConfigOptionResponse>,
+                            _cx| {
+                    let value = match req.value {
+                        SessionConfigOptionValue::ValueId { value } => value.0.to_string(),
+                        _ => String::new(),
+                    };
+                    lock(&recorder.set_config_options).push((req.config_id.0.to_string(), value));
+                    let _ = responder.respond(SetSessionConfigOptionResponse::new(
+                        scripted_config_options(),
+                    ));
+                    Ok(())
+                }
             },
             acp::on_receive_request!(),
         )
@@ -266,12 +334,13 @@ fn tui_config() -> a2acp::Config {
     }
 }
 
-fn gateway(agents: &[(&str, Script)]) -> (a2acp::FrontDoor, Recorder) {
+async fn gateway(agents: &[(&str, Script, Report)]) -> (a2acp::FrontDoor, Recorder) {
     let recorder = Recorder::default();
     let mut in_process = BTreeMap::new();
-    for (name, script) in agents {
+    for (name, script, report) in agents {
         let agent: Arc<dyn a2acp::InProcessAgent> = Arc::new(ScriptedAgent {
             script: script.clone(),
+            report: *report,
             recorder: recorder.clone(),
         });
         in_process.insert((*name).to_string(), agent);
@@ -279,15 +348,22 @@ fn gateway(agents: &[(&str, Script)]) -> (a2acp::FrontDoor, Recorder) {
     let mut config = tui_config();
     config.a2a.default_agent = agents
         .first()
-        .map_or_else(String::new, |(name, _)| (*name).into());
-    let gateway = a2acp::a2a::gateway_from_config(&config, &in_process).expect("gateway assembles");
+        .map_or_else(String::new, |(name, _, _)| (*name).into());
+    let gateway = a2acp::a2a::gateway_from_config(&config, &in_process)
+        .await
+        .expect("gateway assembles");
     (gateway.connect(), recorder)
 }
 
 type Events = mpsc::UnboundedReceiver<StreamEvent>;
 
-fn client_for(door: &a2acp::FrontDoor, agent: &str) -> (door::Client, Events) {
-    door::open(door.clone(), agent, std::env::temp_dir())
+async fn client_for(front: &a2acp::FrontDoor, agent: &str) -> (client::Client, Events) {
+    client::open(
+        client::Door::InProcess(front.clone()),
+        agent,
+        std::env::temp_dir(),
+    )
+    .await
 }
 
 /// Collect events until `stop` matches (or the deadline panics).
@@ -323,14 +399,109 @@ async fn the_tui_flow_over_the_gateway() {
     unsafe { std::env::set_var("A2A_ACP_HOME", store.path()) };
 
     let (door, recorder) = gateway(&[
-        ("echo", Script::Echo(vec!["hello", " world"])),
-        ("ask", Script::Ask),
-        ("hang", Script::Hang),
-    ]);
+        ("echo", Script::Echo(vec!["hello", " world"]), Report::Modes),
+        ("ask", Script::Ask, Report::Modes),
+        ("hang", Script::Hang, Report::Modes),
+        (
+            "config",
+            Script::Echo(vec!["hello", " world"]),
+            Report::ConfigOptions,
+        ),
+    ])
+    .await;
+
+    // The startup warm runs BEFORE any other block — a fresh gateway is
+    // the honest cold card, and a TUI warms before its first message.
+
+    // ── warm start: the session opens BEFORE the first message ───────
+    // The startup warm opens the agent's session in the background; when
+    // it settles, the card advertises the reported modes with no prompt
+    // sent, and the first prompt then runs on the warm session (no
+    // second open).
+    {
+        let (client, mut events) = client_for(&door, "echo").await;
+        assert!(
+            client.modes().is_empty(),
+            "cold card: nothing advertised before the warm settles"
+        );
+        let sessions_before = SESSIONS.load(Ordering::Relaxed);
+        client.warm();
+        let seen = events_until(&mut events, |ev| matches!(ev, StreamEvent::Warm)).await;
+        assert_eq!(seen.last(), Some(&StreamEvent::Warm));
+        let modes = client.modes();
+        let mode_ids: Vec<&str> = modes.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            mode_ids,
+            vec!["build", "plan", "review"],
+            "the card advertises the reported modes before any message"
+        );
+        assert_eq!(
+            client.default_mode().as_deref(),
+            Some("build"),
+            "the mode bar's fallback reads the reported default"
+        );
+        assert_eq!(
+            SESSIONS.load(Ordering::Relaxed),
+            sessions_before + 1,
+            "exactly one session opened"
+        );
+
+        // The first prompt rides the warm conversation: no second open.
+        client.prompt("after warm", &Selection::default());
+        let seen = events_until(&mut events, |ev| matches!(ev, StreamEvent::Done(_))).await;
+        assert_eq!(
+            seen.last(),
+            Some(&StreamEvent::Done("hello world".into())),
+            "the warmed-up conversation answers: {seen:?}"
+        );
+        assert_eq!(
+            SESSIONS.load(Ordering::Relaxed),
+            sessions_before + 1,
+            "the warm session serves the first prompt"
+        );
+    }
+
+    // A double warm is a no-op — one client, one warm, one conversation
+    // (a second would mint its own and leak its session to the idle
+    // grace).
+    {
+        let (client, mut events) = client_for(&door, "echo").await;
+        let sessions_before = SESSIONS.load(Ordering::Relaxed);
+        client.warm();
+        client.warm();
+        events_until(&mut events, |ev| matches!(ev, StreamEvent::Warm)).await;
+        assert_eq!(
+            SESSIONS.load(Ordering::Relaxed),
+            sessions_before + 1,
+            "the second warm call changed nothing"
+        );
+    }
+
+    // A failed warm is silent and stays lazy: an agent the gateway does
+    // not know opens nothing and emits nothing; the prompt fails the way
+    // it always did (the gateway refuses the unknown agent).
+    {
+        let (client, mut events) = client_for(&door, "missing").await;
+        let sessions_before = SESSIONS.load(Ordering::Relaxed);
+        client.warm();
+        let settled = tokio::time::timeout(Duration::from_millis(300), events.recv()).await;
+        assert!(settled.is_err(), "a failed warm stays silent: {settled:?}");
+        assert_eq!(SESSIONS.load(Ordering::Relaxed), sessions_before);
+
+        client.prompt("hello", &Selection::default());
+        let seen = events_until(&mut events, |ev| matches!(ev, StreamEvent::Error(_))).await;
+        let StreamEvent::Error(message) = seen.last().unwrap() else {
+            unreachable!("stopped on the error");
+        };
+        assert!(
+            message.contains("unknown agent 'missing'"),
+            "the lazy path fails exactly as before: {message}"
+        );
+    }
 
     // Prompt → deltas → done, with the final artifact as the done text.
     {
-        let (client, mut events) = client_for(&door, "echo");
+        let (client, mut events) = client_for(&door, "echo").await;
         client.prompt("hi", &Selection::default());
         let seen = events_until(&mut events, |ev| matches!(ev, StreamEvent::Done(_))).await;
         let deltas: Vec<&str> = seen
@@ -351,7 +522,7 @@ async fn the_tui_flow_over_the_gateway() {
     // Permission ask → the turn parks INPUT_REQUIRED; the answer resumes
     // it and the turn completes with the granted path.
     {
-        let (client, mut events) = client_for(&door, "ask");
+        let (client, mut events) = client_for(&door, "ask").await;
         client.prompt("run it", &Selection::default());
         let seen = events_until(&mut events, |ev| {
             matches!(ev, StreamEvent::PermissionAsk { .. })
@@ -383,7 +554,7 @@ async fn the_tui_flow_over_the_gateway() {
 
     // A denied ask runs the turn on the denied path.
     {
-        let (client, mut events) = client_for(&door, "ask");
+        let (client, mut events) = client_for(&door, "ask").await;
         client.prompt("run it", &Selection::default());
         let seen = events_until(&mut events, |ev| {
             matches!(ev, StreamEvent::PermissionAsk { .. })
@@ -405,7 +576,7 @@ async fn the_tui_flow_over_the_gateway() {
     // Cancel: a running turn ends as the terminal Cancelled error, the
     // same event the pre-bridge TUI rendered.
     {
-        let (client, mut events) = client_for(&door, "hang");
+        let (client, mut events) = client_for(&door, "hang").await;
         client.prompt("hang", &Selection::default());
         // Wait for the turn to actually be running so CancelTask
         // addresses a live task.
@@ -427,7 +598,7 @@ async fn the_tui_flow_over_the_gateway() {
     // `/new` resets the conversation client-side; the next prompt starts
     // a fresh one and completes in it.
     {
-        let (client, mut events) = client_for(&door, "echo");
+        let (client, mut events) = client_for(&door, "echo").await;
         client.new_session();
         let seen = events_until(&mut events, |ev| {
             matches!(ev, StreamEvent::SessionSwitched(_))
@@ -454,7 +625,7 @@ async fn the_tui_flow_over_the_gateway() {
     // Follow-up prompts continue one conversation (same contextId → the
     // agent keeps its memory): no session switch between turns.
     {
-        let (client, mut events) = client_for(&door, "echo");
+        let (client, mut events) = client_for(&door, "echo").await;
         client.prompt("first", &Selection::default());
         let seen = events_until(&mut events, |ev| matches!(ev, StreamEvent::Done(_))).await;
         assert_eq!(seen.last(), Some(&StreamEvent::Done("hello world".into())));
@@ -481,7 +652,7 @@ async fn the_tui_flow_over_the_gateway() {
     // `_meta.model` on every prompt of the conversation), and the door's
     // read-back reports what the conversation now runs under.
     {
-        let (client, mut events) = client_for(&door, "echo");
+        let (client, mut events) = client_for(&door, "echo").await;
         // No selection yet: the read-back is the default and the first
         // prompt carries no model meta.
         assert_eq!(client.selection(), Selection::default());
@@ -518,6 +689,10 @@ async fn the_tui_flow_over_the_gateway() {
             Some(&Some("deep".to_string())),
             "the model leg rode _meta.model on the prompt"
         );
+        // The read-back is async now: refresh, wait for the poke, read.
+        client.refresh_selection();
+        let seen = events_until(&mut events, |ev| matches!(ev, StreamEvent::Selection)).await;
+        assert!(!seen.is_empty(), "the selection refresh pokes the TUI");
         assert_eq!(
             client.selection(),
             Selection {
@@ -544,7 +719,7 @@ async fn the_tui_flow_over_the_gateway() {
 
         // The mode list fills in after the first session: the card the
         // pickers read now advertises the scripted agent's modes.
-        client.refresh_card();
+        client.refresh_card().await.unwrap();
         let modes = client.modes();
         let ids: Vec<&str> = modes.iter().map(|mode| mode.id.as_str()).collect();
         assert_eq!(ids, vec!["build", "plan", "review"]);
@@ -554,7 +729,7 @@ async fn the_tui_flow_over_the_gateway() {
     // turn runs — the extension's error semantics, surfaced as the
     // turn's error event.
     {
-        let (client, mut events) = client_for(&door, "echo");
+        let (client, mut events) = client_for(&door, "echo").await;
         client.prompt(
             "bad mode",
             &Selection {
@@ -574,6 +749,93 @@ async fn the_tui_flow_over_the_gateway() {
             client.selection(),
             Selection::default(),
             "a refused selection leaves the conversation untouched"
+        );
+    }
+
+    // ── the config-options shape (opencode ≥ 1.18) ──────────────────
+    // The agent reports `configOptions` selects (no legacy modes); the
+    // same selection extension must light up over them: the catalog is
+    // advertised, selections forward on the config channel, and the
+    // model still rides `_meta.model` regardless.
+    {
+        let (client, mut events) = client_for(&door, "config").await;
+        // Cold card: nothing is advertised before the first session.
+        assert_eq!(client.models(), None, "nothing is fabricated");
+
+        client.prompt("hello", &Selection::default());
+        events_until(&mut events, |ev| matches!(ev, StreamEvent::Done(_))).await;
+        client.refresh_card().await.unwrap();
+
+        // The model select became the advertised catalog; the mode
+        // select became the mode list, defaults included.
+        let models = client.models().expect("the catalog is advertised");
+        let ids: Vec<&str> = models.iter().map(|model| model.id.as_str()).collect();
+        assert_eq!(ids, vec!["citadel/glm", "opencode/zen"]);
+        assert_eq!(
+            client.default_model().as_deref(),
+            Some("citadel/glm"),
+            "the select's current value is the default"
+        );
+        let modes = client.modes();
+        let mode_ids: Vec<&str> = modes.iter().map(|mode| mode.id.as_str()).collect();
+        assert_eq!(mode_ids, vec!["build", "plan"]);
+
+        // Both legs forward on the config channel; the model rides
+        // `_meta.model` regardless of the channel.
+        client.prompt(
+            "selected",
+            &Selection {
+                mode: Some("plan".into()),
+                model: Some("opencode/zen".into()),
+            },
+        );
+        events_until(&mut events, |ev| matches!(ev, StreamEvent::Done(_))).await;
+        let forwarded = lock(&recorder.set_config_options);
+        assert!(
+            forwarded.contains(&("mode".to_string(), "plan".to_string())),
+            "the mode leg forwards to session/set_config_option: {forwarded:?}"
+        );
+        assert!(
+            forwarded.contains(&("model".to_string(), "opencode/zen".to_string())),
+            "the model leg forwards to session/set_config_option: {forwarded:?}"
+        );
+        assert_eq!(
+            lock(&recorder.prompt_models).last(),
+            Some(&Some("opencode/zen".to_string())),
+            "_meta.model rides the prompt whatever the channel"
+        );
+        client.refresh_selection();
+        let seen = events_until(&mut events, |ev| matches!(ev, StreamEvent::Selection)).await;
+        assert!(!seen.is_empty(), "the read-back pokes the TUI");
+        assert_eq!(
+            client.selection(),
+            Selection {
+                mode: Some("plan".into()),
+                model: Some("opencode/zen".into()),
+            },
+            "the read-back covers the config-channel selections"
+        );
+
+        // A model outside the advertised catalog is refused before the
+        // turn runs, naming the ids.
+        client.prompt(
+            "bad model",
+            &Selection {
+                mode: None,
+                model: Some("gibberish".into()),
+            },
+        );
+        let seen = events_until(&mut events, |ev| matches!(ev, StreamEvent::Error(_))).await;
+        let StreamEvent::Error(message) = seen.last().unwrap() else {
+            unreachable!("stopped on the error");
+        };
+        assert!(
+            message.contains("does not advertise model 'gibberish'"),
+            "the rejection names the model: {message}"
+        );
+        assert!(
+            message.contains("citadel/glm") && message.contains("opencode/zen"),
+            "the rejection names the catalog: {message}"
         );
     }
 

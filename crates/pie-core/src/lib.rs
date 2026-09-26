@@ -1,9 +1,12 @@
 //! pie-core — the pie agent library.
 //!
-//! Everything that makes pie run, with no frontend: the agent engine and
-//! plugins, configuration, SQLite sessions, the registry (skills/agents),
-//! cron, and the CLI command handlers. Frontends live elsewhere — the `pie`
-//! application crate (CLI + TUI) and `pie-acp` (Agent Client Protocol).
+//! Everything that makes pie run, with no frontend and no SQL: the
+//! agent engine and plugins, configuration, in-memory sessions, the
+//! registry (skills/agents), and the CLI command handlers. Persistence
+//! seams (usage bookkeeping, MCP OAuth grants) are traits in
+//! [`store`] implemented where the SQL lives. Frontends live
+//! elsewhere — the `pie` application crate (CLI + TUI) and `pie-acp`
+//! (Agent Client Protocol).
 //!
 //! Lints: the workspace policy applies; test code is allowed
 //! `unwrap`/`expect`/`panic`/indexing via the crate-level `cfg_attr` below.
@@ -34,8 +37,6 @@ pub mod agent;
 pub mod bridge;
 pub mod cmd;
 pub mod config;
-pub mod cron;
-pub mod db;
 pub mod error;
 pub mod handler;
 pub mod instructions;
@@ -45,6 +46,7 @@ pub mod prompt;
 pub mod registry;
 pub mod sandbox_grant;
 pub mod session;
+pub mod store;
 pub mod tools;
 pub mod usage;
 pub mod utils;

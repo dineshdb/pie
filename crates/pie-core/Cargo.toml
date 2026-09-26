@@ -13,17 +13,14 @@ repository = "https://github.com/dineshdb/pie"
 # second, conflicting agentsdk instance.
 anyhow = "1"
 async-trait = "0.1"
-cel = "0.14"
 chrono = { version = "0.4.44", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
-croner = "4"
 dirs.workspace = true
 figment = { version = "0.10", features = ["toml"] }
 futures = "0.3"
 include_dir = "0.7"
 minijinja = { version = "2", features = ["json"] }
 p1e-sandbox = { path = "../p1e-sandbox", version = "0.2.0" }
-sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "migrate"] }
 itertools = "0.15"
 termion = "4"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "net", "time"] }
@@ -36,7 +33,6 @@ redact = { version = "0.1.11", features = ["serde"] }
 rmcp = { version = "3.4", features = ["client", "schemars", "reqwest", "transport-streamable-http-client", "transport-streamable-http-client-reqwest", "auth"] }
 url = { version = "2.5.8", features = ["serde"] }
 thiserror = "2.0.18"
-derive_more = { version = "2.1.1", features = ["display", "from"] }
 schemars = "1"
 serde.workspace = true
 serde_json.workspace = true
@@ -52,6 +48,7 @@ agentsdk-plugin-agentsmd = { git = "https://github.com/dineshdb/agentsdk", branc
 agentsdk-plugin-jewels = { git = "https://github.com/dineshdb/agentsdk", branch = "main" }
 agentsdk-plugin-mcp = { git = "https://github.com/dineshdb/agentsdk", branch = "main" }
 agentsdk-plugin-shell = { git = "https://github.com/dineshdb/agentsdk", branch = "main" }
+agentsdk-plugin-agentfs = { path = "../agentsdk-plugin-agentfs", version = "0.1.0" }
 [lints]
 workspace = true
 

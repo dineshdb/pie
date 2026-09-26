@@ -2,7 +2,7 @@
 //!
 //! Owns the message list, render cache, scroll state, and streaming response tracking.
 
-use crate::door::CatalogEntry;
+use crate::client::CatalogEntry;
 use crate::realm::{AskId, Msg, StreamEvent};
 use crate::state::ChatMessage;
 use crate::theme;
@@ -74,7 +74,16 @@ pub struct ChatComponent {
     pub messages: Vec<ChatMessage>,
     pub render_cache: MessageRenderCache,
     pub chat_state: ChatState,
+    /// The in-flight text segment deltas append to — `None` whenever the
+    /// segment is closed (a tool call arrived, the turn settled).
     pub response_idx: Option<usize>,
+    /// A turn is in flight — set on submit, cleared on settle. Deliberately
+    /// wider than `response_idx`, which legitimately goes `None` between
+    /// segments mid-turn.
+    pub streaming: bool,
+    /// This turn streamed at least one delta — the terminal frame's full
+    /// answer is then already on screen and must not be re-materialized.
+    pub streamed_this_turn: bool,
     pub active_dialog: ActiveDialog,
     pub last_area: Rect,
     pub render_plan: Vec<chat::ChatRenderItem>,
@@ -94,6 +103,8 @@ impl ChatComponent {
             render_cache: MessageRenderCache::new(),
             chat_state: ChatState::new(),
             response_idx: None,
+            streaming: false,
+            streamed_this_turn: false,
             active_dialog: ActiveDialog::None,
             last_area: Rect::default(),
             render_plan: Vec::new(),
@@ -123,14 +134,8 @@ impl ChatComponent {
             self.response_idx = self.response_idx.and_then(|i| i.checked_sub(1));
         }
 
-        if let Some(idx) = self.response_idx {
-            self.messages.insert(idx, msg);
-            self.render_cache.insert(idx);
-            self.response_idx = Some(idx + 1);
-        } else {
-            self.messages.push(msg);
-            self.render_cache.push();
-        }
+        self.messages.push(msg);
+        self.render_cache.push();
 
         self.chat_state.auto_scroll = true;
         self.render_plan.clear();
@@ -169,38 +174,99 @@ impl ChatComponent {
     // ── Streaming lifecycle ──────────────────────────────────────────
 
     pub fn start_response(&mut self) {
+        self.close_response_segment();
         self.add_message(ChatMessage::response());
         self.response_idx = Some(self.messages.len() - 1);
+        self.streaming = true;
+        self.streamed_this_turn = false;
+        self.render_plan.clear();
+    }
+
+    /// A tool call (or turn end) arrived mid-stream: the text streamed so
+    /// far is what preceded it — freeze that segment in place so the next
+    /// delta opens a fresh one *after* whatever comes next. An untouched
+    /// segment is dropped rather than left as dead weight.
+    fn close_response_segment(&mut self) {
+        let Some(idx) = self.response_idx else {
+            return;
+        };
+        self.response_idx = None;
+        if self.messages.get(idx).is_some_and(|m| m.content.is_empty()) {
+            self.messages.remove(idx);
+            self.render_cache.remove(idx);
+        } else if let Some(msg) = self.messages.get_mut(idx) {
+            msg.finalize_response();
+            self.render_cache.invalidate(idx);
+        }
+    }
+
+    /// Reset the per-turn streaming state once a turn settles.
+    fn settle_turn(&mut self) {
+        self.response_idx = None;
+        self.streaming = false;
+        self.streamed_this_turn = false;
         self.render_plan.clear();
     }
 
     pub fn update_response(&mut self, delta: &str) {
+        if self.response_idx.is_none() {
+            // Text resuming after a tool call — a fresh segment, so it
+            // renders after the tool line it followed.
+            self.add_message(ChatMessage::response());
+            self.response_idx = Some(self.messages.len() - 1);
+        }
         if let Some(idx) = self.response_idx
             && let Some(msg) = self.messages.get_mut(idx)
         {
             msg.content.push_str(delta);
+            self.streamed_this_turn = true;
             self.chat_state.scroll_to_bottom();
             self.render_plan.clear();
         }
     }
+
     pub fn finish_stream(&mut self, output: String) {
-        if let Some(idx) = self.response_idx
-            && let Some(msg) = self.messages.get_mut(idx)
-        {
-            msg.set_content(output);
-            msg.finalize_response();
-            self.render_cache.invalidate(idx);
+        match self.response_idx {
+            Some(idx) => {
+                if let Some(msg) = self.messages.get_mut(idx) {
+                    // The terminal frame carries the whole answer; deltas
+                    // already painted it (possibly across segments), so it
+                    // only materializes when nothing streamed.
+                    if !self.streamed_this_turn {
+                        msg.set_content(output);
+                    }
+                    msg.finalize_response();
+                    self.render_cache.invalidate(idx);
+                }
+            }
+            None if !self.streamed_this_turn && !output.is_empty() => {
+                // The answer arrived only on the final frame, after tool
+                // calls closed every segment — it lands as its own message.
+                let mut msg = ChatMessage::response();
+                msg.set_content(output);
+                msg.finalize_response();
+                self.add_message(msg);
+            }
+            None => {}
         }
-        self.response_idx = None;
-        self.render_plan.clear();
+        self.settle_turn();
     }
 
     pub fn stream_error(&mut self, err: &str) {
-        self.finish_stream(format!("Error: {err}"));
+        let line = format!("Error: {err}");
+        if !self.streamed_this_turn {
+            self.finish_stream(line);
+            return;
+        }
+        // Deltas already painted this turn's text — the failure appends
+        // after it instead of clobbering streamed content.
+        self.close_response_segment();
+        self.add_message(ChatMessage::assistant(&line));
+        self.settle_turn();
     }
 
     pub fn is_streaming(&self) -> bool {
-        self.response_idx.is_some()
+        self.streaming
     }
 
     fn get_help_total_lines(registry: &Registry) -> u16 {
@@ -430,6 +496,9 @@ impl ChatComponent {
                 failed,
             } => {
                 if output.is_empty() {
+                    // The call announces itself here: anything streamed so
+                    // far happened *before* it.
+                    self.close_response_segment();
                     self.add_message(ChatMessage::tool_call(id, display));
                     return Msg::Redraw;
                 }
@@ -461,6 +530,7 @@ impl ChatComponent {
                 // The realm loop resets the input component onto it.
                 Msg::SessionSwitched(session_id.clone())
             }
+            StreamEvent::Warm | StreamEvent::Selection | StreamEvent::Usage => Msg::Redraw,
         }
     }
 
@@ -621,7 +691,7 @@ impl ChatComponent {
         {
             let id = state.id.clone();
             self.active_dialog = ActiveDialog::None;
-            // The realm loop routes the answer through the door client.
+            // The realm loop routes the answer through the A2A client.
             return Msg::AnswerPermission(id, allow);
         }
         Msg::Redraw
@@ -778,25 +848,117 @@ mod tests {
         chat.update_response("Hello");
         assert_eq!(chat.messages[0].content, "Hello");
 
-        chat.finish_stream("Hello world".to_string());
+        chat.finish_stream("Hello".to_string());
         assert!(!chat.is_streaming());
         assert_eq!(chat.response_idx, None);
         assert!(!chat.messages[0].is_response());
-        assert_eq!(chat.messages[0].content, "Hello world");
+        assert_eq!(chat.messages[0].content, "Hello");
     }
 
+    /// The terminal frame's full answer only materializes when no delta
+    /// ever streamed — streamed text is already on screen and must not be
+    /// overwritten (possibly across several segments).
     #[tokio::test]
-    async fn tool_calls_appear_before_active_response() {
+    async fn unstreamed_answer_materializes_on_finish() {
+        let mut chat = ChatComponent::new(vec![], test_registry());
+        chat.start_response();
+        chat.finish_stream("the whole answer".to_string());
+        assert_eq!(chat.messages[0].content, "the whole answer");
+        assert!(!chat.messages[0].is_response());
+    }
+
+    /// Text, a tool call, and more text must read in arrival order: the
+    /// tool call splits the response into segments instead of hoisting
+    /// itself above one growing lump of text.
+    #[tokio::test]
+    async fn text_and_tool_calls_interleave_in_arrival_order() {
         let mut chat = ChatComponent::new(vec![ChatMessage::user("run tool")], test_registry());
         chat.start_response(); // idx 1
-        chat.update_response("I will run a tool");
-        chat.add_message(ChatMessage::tool("tool result"));
+        chat.update_response("first, a tool: ");
 
-        assert_eq!(chat.messages.len(), 3);
+        chat.handle_user_event(&StreamEvent::ToolCall {
+            id: "call-1".to_string(),
+            name: "Bash".to_string(),
+            display: "Bash{command = ls}".to_string(),
+            output: String::new(),
+            failed: false,
+        });
+
+        chat.update_response("done. ");
+        chat.finish_stream("done. that is all".to_string());
+
+        let roles: Vec<_> = chat.messages.iter().map(|m| m.role).collect();
+        assert_eq!(
+            roles,
+            vec![Role::User, Role::Assistant, Role::Tool, Role::Assistant],
+            "transcript must interleave in arrival order"
+        );
+        assert_eq!(chat.messages[1].content, "first, a tool: ");
+        assert_eq!(chat.messages[2].content, "Bash{command = ls}");
+        assert_eq!(chat.messages[3].content, "done. ");
+        assert!(!chat.messages[3].is_response(), "turn settled");
+        assert!(!chat.is_streaming());
+    }
+
+    /// A turn that opens with a tool call must not leave an empty response
+    /// segment behind — the text had not started yet.
+    #[tokio::test]
+    async fn tool_call_before_any_text_leaves_no_empty_segment() {
+        let mut chat = ChatComponent::new(vec![ChatMessage::user("go")], test_registry());
+        chat.start_response(); // idx 1, still empty
+
+        chat.handle_user_event(&StreamEvent::ToolCall {
+            id: "call-1".to_string(),
+            name: "Glob".to_string(),
+            display: "Glob{pattern = **/*.rs}".to_string(),
+            output: String::new(),
+            failed: false,
+        });
+
+        assert_eq!(chat.messages.len(), 2, "empty segment dropped");
         assert_eq!(chat.messages[1].role, Role::Tool);
+
+        // Text after the tool call opens a fresh segment after it.
+        chat.update_response("found them");
+        assert_eq!(chat.messages.len(), 3);
         assert_eq!(chat.messages[2].role, Role::Assistant);
-        assert!(chat.messages[2].is_response());
-        assert_eq!(chat.response_idx, Some(2));
+        assert_eq!(chat.messages[2].content, "found them");
+    }
+
+    /// A failed turn after streamed text appends the failure instead of
+    /// clobbering what already rendered.
+    #[tokio::test]
+    async fn stream_error_after_streamed_text_appends() {
+        let mut chat = ChatComponent::new(vec![], test_registry());
+        chat.start_response();
+        chat.update_response("partial answer");
+        chat.stream_error("boom");
+
+        assert_eq!(chat.messages.len(), 2);
+        assert_eq!(chat.messages[0].content, "partial answer");
+        assert_eq!(chat.messages[1].content, "Error: boom");
+        assert!(!chat.is_streaming());
+    }
+
+    /// The answer arriving only on the final frame, after tool calls
+    /// closed every segment, still lands — as its own message.
+    #[tokio::test]
+    async fn final_answer_after_tool_calls_lands_its_own_message() {
+        let mut chat = ChatComponent::new(vec![ChatMessage::user("go")], test_registry());
+        chat.start_response();
+        chat.handle_user_event(&StreamEvent::ToolCall {
+            id: "call-1".to_string(),
+            name: "Read".to_string(),
+            display: "Read{path = a.rs}".to_string(),
+            output: String::new(),
+            failed: false,
+        });
+
+        chat.finish_stream("the whole answer".to_string());
+        assert_eq!(chat.messages.len(), 3);
+        assert_eq!(chat.messages[2].content, "the whole answer");
+        assert_eq!(chat.messages[2].role, Role::Assistant);
+        assert!(!chat.is_streaming());
     }
 
     /// A tool call's pre- and post-execution halves must land as one

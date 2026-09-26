@@ -22,7 +22,13 @@ After each change, run following tests to verify if the change is valid.
   architecture and organization to slim down and /simplify the codebase to keep
   it lean and clean.
 - Prefer newtypes over raw types
-- Use sqlx, statically typed queries for maximum foolproofness.
+- Use turso (the in-process SQLite-compatible engine) for persistence —
+  never sqlx or another SQL driver. Statically typed queries, one store
+  (`pie-acp`'s `store`, `~/.pie/pie.db`), idempotent baseline schema —
+  no migration runner.
+- pie-tui is stateless: it owns no database and persists nothing. The
+  store belongs to `pie acp`.
+- One binary: `pie`. No alias binaries.
 
 ## I'm an Idiot
 

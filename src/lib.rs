@@ -8,28 +8,162 @@
     )
 )]
 
+/// The agent on the daemon's card that pie-tui drives: `pie` when the
+/// daemon advertises it (the a2acp default config spawns `pie acp`),
+/// else the card's first skill (the daemon's default agent) — an
+/// honestly-driven agent beats a hard failure when the daemon is
+/// configured for other agents.
+async fn pie_agent_on(door: &a2acp::HttpDoor) -> anyhow::Result<String> {
+    let card = door
+        .card()
+        .await
+        .map_err(|e| anyhow::anyhow!("the a2acp daemon's card is unreadable: {e}"))?;
+    let skills = card
+        .get("skills")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("the a2acp daemon's card lists no agents"))?;
+    let ids: Vec<&str> = skills
+        .iter()
+        .filter_map(|skill| skill["id"].as_str())
+        .collect();
+    Ok(if ids.contains(&"pie") {
+        "pie".to_string()
+    } else {
+        ids.first()
+            .map(|id| (*id).to_string())
+            .ok_or_else(|| anyhow::anyhow!("the a2acp daemon's card lists no agents"))?
+    })
+}
+
+/// Interactive mode: connect the TUI to the a2acp daemon — ensuring one
+/// runs first (the pidfile rendezvous under `XDG_RUNTIME_DIR`; a
+/// healthy daemon is adopted, a missing one is spawned and waited on) —
+/// and hand the daemon's HTTP door to the TUI. The daemon owns the
+/// gateway and spawns `pie acp` per conversation (pie's agent core
+/// lives behind `pie acp`); this process is just the frontend, so
+/// a second `pie` in the same directory shares the same conversations.
+async fn run_interactive(setup: Interactive) -> anyhow::Result<()> {
+    let Interactive {
+        registry,
+        agent_name,
+        resume,
+        yolo,
+    } = setup;
+    let cwd = std::env::current_dir().context("cannot determine working directory")?;
+    let startup = agent_name
+        .as_deref()
+        .and_then(|name| registry.agents.iter().find(|a| a.name == name));
+    let resolved = config::CONFIG.get().context("config should be set")?;
+    let startup_provider =
+        resolve_agent_provider(startup, &resolved.provider, &resolved.model_tiers);
+    let provider = pie_tui::ProviderView {
+        name: startup_provider.name.clone(),
+        model: startup_provider.model.clone(),
+    };
+    let catalog = model_catalog(&startup_provider, &resolved.model_tiers);
+
+    let daemon = a2acp::daemon::ensure_daemon("a2acp", &spawn_a2acp).await?;
+    let http = a2acp::HttpDoor::new(&daemon.base_url)?;
+    let agent = pie_agent_on(&http).await?;
+    let (context, history) = resume_lookup(&http, &cwd, resume).await;
+    let door = pie_tui::client::Door::Http(http);
+
+    let session_id = pie_tui::SessionId::new(
+        context
+            .clone()
+            .unwrap_or_else(|| format!("tui-{}", mint_session_suffix())),
+    );
+
+    let (client, events) = pie_tui::client::open(door, agent, cwd.clone()).await;
+    // A resumed conversation continues on its gateway context; otherwise
+    // the warm opens the agent's session before the first message (modes
+    // on the card immediately), falling back to the lazy first-prompt
+    // open when it fails.
+    if let Some(context_id) = context {
+        client.resume(context_id);
+    } else {
+        client.warm();
+    }
+
+    pie_tui::run_tui(pie_tui::TuiDeps {
+        client,
+        events,
+        session_id,
+        history,
+        provider,
+        catalog,
+        registry,
+        yolo,
+    })
+    .await
+}
+
+/// The spawn command for [`a2acp::daemon::ensure_daemon`]: the `a2acp`
+/// binary from `$PATH` with its own configuration (bind, agents,
+/// permission mode are the daemon's business, not pie's).
+fn spawn_a2acp() -> std::process::Command {
+    std::process::Command::new("a2acp")
+}
+
+/// The resume lookup over the daemon's HTTP door: the directory's most
+/// recent conversation plus its transcript (empty without `--resume`
+/// or when nothing is persisted).
+async fn resume_lookup(
+    door: &a2acp::HttpDoor,
+    cwd: &std::path::Path,
+    resume: bool,
+) -> (Option<String>, Vec<HistoryEntry>) {
+    if !resume {
+        return (None, Vec::new());
+    }
+    let Some(context_id) = door.last_context_for_cwd(cwd).await else {
+        return (None, Vec::new());
+    };
+    let turns = door.context_history(&context_id).await;
+    let history = turns
+        .into_iter()
+        .enumerate()
+        .map(|(n, message)| HistoryEntry {
+            id: i64::try_from(n + 1).unwrap_or(i64::MAX),
+            ts: i64::try_from(n + 1).unwrap_or(i64::MAX),
+            role: match message.role.as_str() {
+                "ROLE_AGENT" => Role::Assistant,
+                _ => Role::User,
+            },
+            content: message.text,
+        })
+        .collect();
+    (Some(context_id), history)
+}
+
+/// A short unique suffix for the TUI's local display id (the
+/// input-history key) when no gateway conversation exists yet.
+fn mint_session_suffix() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    format!("{now:x}{seq:x}")
+}
+
 use anyhow::Context;
 use clap::Parser;
 use core::option::Option::Some;
 use p1e_sandbox::SandboxConfig;
 use pie_core::agent::Agent;
 use pie_core::config::{ResolvedConfig, build_sandbox, load_config};
-use pie_core::db::DbPool;
-use pie_core::error::Result;
 use pie_core::handler;
 use pie_core::instructions::Instructions;
 use pie_core::registry::Registry;
-use pie_core::session::Session;
+use pie_core::session::{HistoryEntry, Role, Session};
 use pie_core::utils::output::OutputFormat;
-use pie_core::{cmd, config, cron, db};
+use pie_core::{cmd, config};
 use std::io::{self, IsTerminal, Read};
 use std::sync::Arc;
 use tracing::trace;
 use tracing_subscriber::EnvFilter;
-
-mod roster;
-mod server;
-mod server_service;
 
 #[derive(Parser, Clone)]
 #[command(name = "pie", version = "0.1.0")]
@@ -53,12 +187,6 @@ struct Cli {
     /// Toggleable at runtime with `/yolo`.
     #[arg(long, global = true)]
     yolo: bool,
-
-    /// Run the TUI against an external ACP agent instead of the
-    /// in-process engine: command and arguments, e.g. `pie --acp-agent
-    /// pie acp`
-    #[arg(long = "acp-agent", value_name = "COMMAND [ARGS]", num_args = 1..)]
-    acp_agent: Vec<String>,
 }
 
 #[derive(clap::Subcommand, Clone)]
@@ -71,12 +199,6 @@ enum Commands {
         #[arg(long)]
         days: Option<u32>,
     },
-    /// Run the cron daemon (continuous mode)
-    Daemon {
-        /// Check interval in seconds (default: 60)
-        #[arg(short, long, default_value = "60")]
-        interval: u64,
-    },
     /// List available skills and agents
     Skills,
     /// Launch another agent with current provider environment
@@ -87,11 +209,6 @@ enum Commands {
         /// Do not sandbox the command
         #[arg(short = 'S', long)]
         no_sandbox: bool,
-    },
-    /// Manage cron jobs
-    Cron {
-        #[command(subcommand)]
-        command: cmd::CronCommand,
     },
     /// Manage MCP server OAuth authorization
     Mcp {
@@ -110,25 +227,6 @@ enum Commands {
     },
     /// Serve the Agent Client Protocol (ACP) over stdio, for editor clients
     Acp,
-    /// Serve the A2A agent-to-agent protocol over streamable HTTP
-    Server {
-        /// Bind address override ([server] bind in pie.toml by default)
-        #[arg(long, global = true)]
-        bind: Option<String>,
-        /// Hostname remote clients will use (`allowed_hosts`; install only)
-        #[arg(long, global = true)]
-        host: Vec<String>,
-        #[command(subcommand)]
-        command: Option<ServerCommand>,
-    },
-}
-
-#[derive(clap::Subcommand, Clone, Debug)]
-enum ServerCommand {
-    /// Install the daemon as a login service (launchd / systemd user unit)
-    Install,
-    /// Remove the installed service
-    Uninstall,
 }
 
 impl Cli {
@@ -137,25 +235,13 @@ impl Cli {
     }
 }
 
-async fn resolve_session(pool: Arc<DbPool>, resume: bool) -> Result<Session> {
-    let cwd = std::env::current_dir()?;
-    if resume
-        && let Some(session) =
-            Session::find_latest_for_cwd(pool.clone(), &cwd.to_string_lossy()).await?
-    {
-        return Ok(session);
-    }
-    Session::create(pool, &cwd).await
-}
-
 /// Run the PIE agent.
 ///
 /// # Errors
 ///
 /// Returns an error if:
 /// - Configuration cannot be loaded or resolved.
-/// - Database pool cannot be initialized.
-/// - Session cannot be resolved.
+/// - The pie-local store (`~/.pie/pie.db`) cannot be opened.
 /// - Subscriber initialization fails.
 /// - The command or interactive session fails.
 pub async fn run() -> anyhow::Result<()> {
@@ -164,9 +250,6 @@ pub async fn run() -> anyhow::Result<()> {
 
     let mut cli = Cli::parse();
     let format = cli.output_format();
-
-    let pool = Arc::new(db::create_persistent_pool().await?);
-    timing.push(("db_pool", t0.elapsed()));
 
     let t = std::time::Instant::now();
     let pie_config = load_config()?;
@@ -182,26 +265,21 @@ pub async fn run() -> anyhow::Result<()> {
     let t = std::time::Instant::now();
     let registry = Registry::load();
     timing.push(("registry_load", t.elapsed()));
-    let server_config = pie_config.server.clone();
     let base_sandbox = build_sandbox(&pie_config);
     if let Some(cmd) = cli.command {
-        return handle_command(
-            cmd,
-            config,
-            &registry,
-            pool.clone(),
-            &server_config,
-            &base_sandbox,
-        )
-        .await;
+        return handle_command(cmd, config, &registry).await;
     }
 
     // `pie <agent> [query...]`: a first token matching an agent name selects
     // that agent; the rest (or piped stdin) is the query.
     let agent = extract_agent(&registry, &mut cli);
 
-    let t = std::time::Instant::now();
-    let session = resolve_session(pool.clone(), cli.resume).await?;
+    // Stateless pie: the conversation's durable transcript lives in the
+    // gateway's agent filesystem. The in-memory session here is the
+    // process's working memory — hydrated from the gateway on --resume,
+    // never persisted locally.
+    let cwd = std::env::current_dir()?;
+    let session = Session::new(&cwd);
     timing.push(("session_resolve", t.elapsed()));
     timing.push(("startup_total", t0.elapsed()));
 
@@ -228,13 +306,9 @@ pub async fn run() -> anyhow::Result<()> {
     } else {
         init_file_subscriber(&session.id.to_string(), &config.log_level)?;
         let setup = Interactive {
-            pool,
             registry,
-            base_sandbox,
-            config,
             agent_name: agent.map(|a| a.name),
-            session,
-            acp_agent: cli.acp_agent.clone(),
+            resume: cli.resume,
             yolo: cli.yolo,
         };
         run_interactive(setup).await
@@ -278,21 +352,22 @@ async fn handle_command(
     cmd: Commands,
     config: &ResolvedConfig,
     registry: &Arc<Registry>,
-    pool: Arc<DbPool>,
-    server_config: &config::ServerConfig,
-    base_sandbox: &Arc<SandboxConfig>,
 ) -> anyhow::Result<()> {
-    // Commands that don't need interactive UI usually want stderr logging
-    if !matches!(cmd, Commands::Daemon { .. }) || config.debug {
-        init_stderr_subscriber(config.debug, &config.log_level);
-    }
+    // Commands that don't need interactive UI want stderr logging
+    init_stderr_subscriber(config.debug, &config.log_level);
 
     match cmd {
         Commands::Status => {
-            cmd::handle_status(config, registry, server_config);
+            cmd::handle_status(config, registry);
             Ok(())
         }
-        Commands::Usage { days } => cmd::handle_usage(config, pool, days).await,
+        Commands::Usage { days } => {
+            // The only database consumers are the ones below — the
+            // interactive TUI stays stateless and never opens pie.db.
+            let store = Arc::new(pie_acp::store::create_persistent_pool().await?);
+            let usage: Arc<dyn pie_core::store::UsageStore> = store.clone();
+            cmd::handle_usage(config, &usage, days).await
+        }
         Commands::Skills => {
             cmd::handle_skills(config, registry);
             Ok(())
@@ -301,39 +376,17 @@ async fn handle_command(
             all_args,
             no_sandbox,
         } => cmd::handle_launch(config, &all_args, no_sandbox),
-        Commands::Cron { command } => cmd::handle_cron(command, pool, registry.clone()).await,
-        Commands::Mcp { command } => cmd::handle_mcp(command, config, pool).await,
+        Commands::Mcp { command } => {
+            let store = Arc::new(pie_acp::store::create_persistent_pool().await?);
+            let tokens: Arc<dyn pie_core::store::TokenStore> = store.clone();
+            cmd::handle_mcp(command, config, &tokens).await
+        }
         Commands::Exec { skill, script } => cmd::handle_exec(config, registry, skill, &script),
-        Commands::Acp => pie_acp::serve_stdio(pool, registry.clone(), config).await,
-        Commands::Server {
-            bind,
-            host,
-            command,
-        } => match command {
-            Some(ServerCommand::Install) => server_service::install(bind, &host, server_config),
-            Some(ServerCommand::Uninstall) => server_service::uninstall(),
-            None => {
-                server::serve(
-                    bind,
-                    server::ServerDeps {
-                        pool,
-                        registry: registry.clone(),
-                        sandbox: base_sandbox.clone(),
-                    },
-                    server_config.clone(),
-                    config,
-                )
-                .await
-            }
-        },
-        Commands::Daemon { interval } => {
-            if !config.debug {
-                tracing::info!(
-                    "pie daemon starting (interval: {interval}s, pid: {})",
-                    std::process::id()
-                );
-            }
-            cron::run_daemon(pool, registry.clone(), interval).await
+        Commands::Acp => {
+            let store = Arc::new(pie_acp::store::create_persistent_pool().await?);
+            let usage: Arc<dyn pie_core::store::UsageStore> = store.clone();
+            let tokens: Arc<dyn pie_core::store::TokenStore> = store.clone();
+            pie_acp::serve_stdio(usage, tokens, registry.clone(), config).await
         }
     }
 }
@@ -365,6 +418,24 @@ async fn run_single_shot(
         );
     }
 
+    // Stateless resume: the conversation's durable transcript is the
+    // gateway's, so resuming assembles it (read-only plumbing for the
+    // history lookup) and hydrates the session. Without --resume there
+    // is nothing to look up — and assembling would only contend on the
+    // gateway's store while a server holds it.
+    if cli.resume {
+        anyhow::bail!(
+            "--resume on single-shot requires the pie daemon: run `pie` (interactive) once, \
+             or `pie server`, then retry"
+        );
+    }
+
+    // One store, both seams: usage bookkeeping + MCP OAuth grants. The
+    // single-shot CLI records runs; the interactive TUI never gets here.
+    let store = Arc::new(pie_acp::store::create_persistent_pool().await?);
+    let usage: Arc<dyn pie_core::store::UsageStore> = store.clone();
+    let tokens: Arc<dyn pie_core::store::TokenStore> = store.clone();
+
     let full_query = match (piped_stdin.as_deref(), cli_query.is_empty()) {
         (Some(stdin), false) => format!("## Stdin\n```\n{stdin}\n```\n\n{cli_query}"),
         (Some(stdin), true) => stdin.to_string(),
@@ -376,6 +447,8 @@ async fn run_single_shot(
         model: engine.model,
         query,
         session,
+        usage,
+        tokens,
         format,
         sandbox_settings: engine.sandbox_settings,
         retry: config.retry.clone(),
@@ -385,56 +458,15 @@ async fn run_single_shot(
     .await
 }
 
-/// Everything interactive mode needs to open its A2A door.
-struct Interactive<'a> {
-    pool: Arc<DbPool>,
+/// Everything interactive mode needs to open its A2A client.
+struct Interactive {
     registry: Arc<Registry>,
-    /// The base sandbox, BEFORE any agent's merge — the roster factory
-    /// merges each entry's own agent sandbox onto it.
-    base_sandbox: Arc<SandboxConfig>,
-    config: &'a ResolvedConfig,
     agent_name: Option<String>,
-    session: Session,
-    /// External ACP agent to run instead of the in-process engine
-    /// (`--acp-agent`); empty means in-process.
-    acp_agent: Vec<String>,
+    /// Continue this directory's most recent conversation from the
+    /// gateway's history (`--resume`).
+    resume: bool,
     /// Start the TUI in yolo mode: permission asks are auto-approved.
     yolo: bool,
-}
-
-/// How long the interactive gateway keeps a conversation's agent session
-/// alive between turns: effectively forever — the TUI's conversation is
-/// the session, and an idle re-mint would open a fresh (amnesiac) one.
-/// TODO(a2acp): re-minted sessions should resume the conversation's
-/// session (`session/load`) instead of relying on a long grace.
-const TUI_IDLE_GRACE_SECS: u64 = 31_536_000; // one year
-
-/// The a2acp gateway config every TUI door runs on: permission asks are
-/// forwarded (the TUI answers them), no process agents unless
-/// `--acp-agent` provides one.
-fn tui_gateway_config() -> a2acp::Config {
-    a2acp::Config {
-        permission: a2acp::PermissionMode::Ask,
-        agents: std::collections::BTreeMap::new(),
-        idle_grace_secs: TUI_IDLE_GRACE_SECS,
-        ..a2acp::Config::default()
-    }
-}
-
-/// The interactive door's in-process roster: the default `pie` entry —
-/// the startup-selected agent, resuming the startup conversation — plus
-/// the addressable registry roster ([`roster::install`]). The TUI keeps
-/// driving the default entry; only the gateway's addressable roster
-/// grows.
-fn tui_roster(
-    config: &mut a2acp::Config,
-    deps: &roster::RosterDeps<'_>,
-    startup: Option<&Agent>,
-    startup_session: pie_core::session::SessionId,
-) -> std::collections::BTreeMap<String, Arc<dyn a2acp::InProcessAgent>> {
-    let mut default = deps.host_deps(startup);
-    default.resume = Some(startup_session);
-    roster::install(config, deps, default)
 }
 
 /// The startup model catalog for the TUI's `/model` picker: the
@@ -458,76 +490,6 @@ fn model_catalog(
         }))
         .collect(),
     }
-}
-
-/// Interactive mode: assemble an a2acp gateway in process — pie's agent
-/// roster hosted as the gateway's in-process agents by default (the
-/// TUI's own session on the default entry), an external ACP agent's
-/// process spec with `--acp-agent` — and hand the front door to the
-/// TUI. The TUI's code path is identical either way; to the gateway the
-/// two hosting modes are indistinguishable.
-async fn run_interactive(setup: Interactive<'_>) -> anyhow::Result<()> {
-    let Interactive {
-        pool,
-        registry,
-        base_sandbox,
-        config: resolved,
-        agent_name,
-        session,
-        acp_agent,
-        yolo,
-    } = setup;
-    let cwd = std::env::current_dir().context("cannot determine working directory")?;
-    let history = session.history_entries().to_vec();
-    let session_id = pie_tui::SessionId::new(session.id.to_string());
-    let deps = roster::RosterDeps {
-        pool,
-        registry: Arc::clone(&registry),
-        sandbox: base_sandbox,
-        config: resolved,
-    };
-    let startup = agent_name
-        .as_deref()
-        .and_then(|name| registry.agents.iter().find(|a| a.name == name));
-    let startup_provider =
-        resolve_agent_provider(startup, &resolved.provider, &resolved.model_tiers);
-    let provider = pie_tui::ProviderView {
-        name: startup_provider.name.clone(),
-        model: startup_provider.model.clone(),
-    };
-    let catalog = model_catalog(&startup_provider, &resolved.model_tiers);
-
-    let mut config = tui_gateway_config();
-    let in_process = if acp_agent.is_empty() {
-        config.a2a.default_agent = roster::PIE_AGENT.into();
-        tui_roster(&mut config, &deps, startup, session.id)
-    } else {
-        let Some((program, args)) = acp_agent.split_first() else {
-            anyhow::bail!("--acp-agent needs a command to run");
-        };
-        let spec = a2acp::AgentSpec {
-            command: program.clone(),
-            args: args.to_vec(),
-            ..a2acp::AgentSpec::new("", &[])
-        };
-        config.a2a.default_agent = "agent".into();
-        config.agents.insert("agent".to_string(), spec);
-        std::collections::BTreeMap::new()
-    };
-    let gateway = a2acp::a2a::gateway_from_config(&config, &in_process)?;
-    let (client, events) = pie_tui::door::open(gateway.connect(), &config.a2a.default_agent, cwd);
-
-    pie_tui::run_tui(pie_tui::TuiDeps {
-        client,
-        events,
-        session_id,
-        history,
-        provider,
-        catalog,
-        registry,
-        yolo,
-    })
-    .await
 }
 
 fn default_env_filter(default_level: &str) -> EnvFilter {
@@ -605,7 +567,22 @@ mod tests {
         Registry {
             agents: names
                 .iter()
-                .map(|n| roster::tests::minimal_agent(n))
+                .map(|name| Agent {
+                    name: (*name).to_string(),
+                    description: String::new(),
+                    output_mode: pie_core::agent::OutputMode::default(),
+                    model: None,
+                    temperature: None,
+                    content: String::new(),
+                    needs: Vec::new(),
+                    tools: Vec::new(),
+                    sandbox: None,
+                    grants: Vec::new(),
+                    readonly: false,
+                    plugins: None,
+                    skills_paths: Vec::new(),
+                    max_steps: None,
+                })
                 .collect(),
             skills: Vec::new(),
             completions: Vec::new(),
@@ -619,7 +596,6 @@ mod tests {
             query: query.split_whitespace().map(ToString::to_string).collect(),
             resume: false,
             yolo: false,
-            acp_agent: Vec::new(),
         }
     }
 
@@ -692,54 +668,5 @@ mod tests {
 
         let resolved = resolve_agent_provider(None, &default, &tiers);
         assert_eq!(resolved.model, "gpt");
-    }
-
-    #[tokio::test]
-    async fn the_interactive_door_assembles_the_addressable_roster() {
-        let registry = registry_with(&["review", "explore"]);
-        let pool = Arc::new(db::create_test_pool().await.unwrap());
-        let session = Session::create(pool.clone(), std::path::Path::new("/tmp/roster-tui"))
-            .await
-            .unwrap();
-        let resolved = ResolvedConfig {
-            provider: config::ResolvedProvider {
-                name: "default".into(),
-                model: "gpt".into(),
-                anthropic_url: None,
-                openai_url: "http://127.0.0.1:9/v1".parse().unwrap(),
-                api_key: redact::Secret::new("k".into()),
-                temperature: None,
-            },
-            retry: config::RetryConfig::default(),
-            model_tiers: std::collections::HashMap::new(),
-            mcp: std::collections::HashMap::new(),
-            pricing: std::collections::HashMap::new(),
-            output_format: OutputFormat::default(),
-            log_level: "warn".to_string(),
-            debug: false,
-        };
-        let deps = roster::RosterDeps {
-            pool,
-            registry: Arc::new(registry),
-            sandbox: Arc::new(SandboxConfig::default()),
-            config: &resolved,
-        };
-
-        // The TUI's own default: the startup-selected agent (here
-        // `review`), resuming the startup session.
-        let startup = deps.registry.agents.iter().find(|a| a.name == "review");
-        let mut config = tui_gateway_config();
-        let hosts = tui_roster(&mut config, &deps, startup, session.id);
-
-        // The TUI drives the default entry; the crate's own default
-        // agrees with pie's.
-        assert_eq!(config.a2a.default_agent, roster::PIE_AGENT);
-        let mut names: Vec<&str> = hosts.keys().map(String::as_str).collect();
-        names.sort_unstable();
-        assert_eq!(names, vec!["explore", "pie", "review"]);
-        assert!(
-            config.agents.contains_key("review") && config.agents.contains_key("pie"),
-            "the card's display specs ride the config"
-        );
     }
 }

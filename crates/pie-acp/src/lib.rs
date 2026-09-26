@@ -1,12 +1,13 @@
 //! ACP — the Agent Client Protocol (v1) frontend for the pie agent, as a
 //! thin assembly: `pie acp` is `PieEngine` (from `pie-core::bridge`) plus
-//! a stdio transport, and [`PieHost`] serves the same loop in process to
-//! an a2acp gateway. All protocol knowledge — handlers, the permission
+//! a stdio transport. All protocol knowledge — handlers, the permission
 //! round trip, the event mapping — lives in this crate's server loop
 //! ([`server::serve_acp`]); the assembly only opens pie sessions and
 //! builds per-session engines, pinning their modes (`session/set_mode`)
 //! and providers (the selection extension's model leg on
-//! `session/prompt` `_meta`).
+//! `session/prompt` `_meta`). An a2acp gateway spawns this process per
+//! conversation (a2acp's card entry `pie` → `pie acp`), so every A2A
+//! client — pie-tui, Citadel — drives pie's agent core through it.
 //!
 //! Runs carry their working directory in the session's cwd; the engine
 //! never touches the process cwd, so sessions in different workspaces
@@ -29,10 +30,9 @@
     )
 )]
 
-mod host;
 mod server;
+pub mod store;
 
-pub use host::{HostDeps, PieHost};
 pub use server::{
     ModeInfo, Modes, OpenError, OpenSession, OpenedSession, ReplayAuthor, ReplayEntry, ServerInfo,
     SessionSource, serve_acp,
@@ -41,12 +41,12 @@ pub use server::{
 use agent_client_protocol as acp;
 use pie_core::bridge::{ModeCell, PieEngine, PieEngineDeps, ProviderCell, RemoteDoor};
 use pie_core::config::{ResolvedConfig, ResolvedProvider};
-use pie_core::db::DbPool;
 use pie_core::p1e_sandbox::SandboxConfig;
 use pie_core::plugin::AgentMode;
 use pie_core::registry::Registry;
 use pie_core::sandbox_grant::granted_sandbox;
 use pie_core::session::{Role, Session, SessionId as PieSessionId};
+use pie_core::store::{TokenStore, UsageStore};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::{Mutex as StdMutex, PoisonError};
@@ -60,13 +60,19 @@ fn lock<T>(lock: &StdMutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// provider selections. Everything here is pie-shaped; the protocol
 /// lives in [`server`].
 pub struct PieSessions {
-    // Manual `Debug`: pool/registry handles have no useful
+    // Manual `Debug`: store/registry handles have no useful
     // representation, and provider config must not leak its api key.
-    pub pool: Arc<DbPool>,
+    /// Usage bookkeeping — one row per run behind `pie usage`.
+    pub usage: Arc<dyn UsageStore>,
+    /// MCP OAuth grants — `pie mcp login` writes, runs authorize from.
+    pub tokens: Arc<dyn TokenStore>,
     pub registry: Arc<Registry>,
     pub sandbox: Arc<SandboxConfig>,
     pub provider: ResolvedProvider,
     pub retry: pie_core::config::RetryConfig,
+    /// The live in-memory sessions, by id. Stateless pie: this map is
+    /// the engine's memory — it lives exactly as long as the process.
+    sessions: StdMutex<HashMap<PieSessionId, Session>>,
     /// The configured `[model.<name>]` tiers — what a model selection
     /// resolves against (a tier name wins wholesale; see
     /// [`resolve_model_selection`]).
@@ -80,9 +86,6 @@ pub struct PieSessions {
     /// Each session's pinned provider, swapped by the selection
     /// extension's model leg and read by the engine at the next turn.
     models: StdMutex<HashMap<String, ProviderCell>>,
-    /// A session the next open resumes regardless of the wire request —
-    /// the interactive host's startup conversation, taken once.
-    resume_first: StdMutex<Option<PieSessionId>>,
 }
 
 impl std::fmt::Debug for PieSessions {
@@ -94,7 +97,8 @@ impl std::fmt::Debug for PieSessions {
 impl PieSessions {
     #[must_use]
     pub fn new(
-        pool: Arc<DbPool>,
+        usage: Arc<dyn UsageStore>,
+        tokens: Arc<dyn TokenStore>,
         registry: Arc<Registry>,
         sandbox: Arc<SandboxConfig>,
         provider: ResolvedProvider,
@@ -102,22 +106,18 @@ impl PieSessions {
         model_tiers: HashMap<String, ResolvedProvider>,
     ) -> Self {
         Self {
-            pool,
+            usage,
+            tokens,
             registry,
             sandbox,
             provider,
             retry,
             model_tiers,
             agent_name: None,
+            sessions: StdMutex::new(HashMap::new()),
             pinned: StdMutex::new(HashMap::new()),
             models: StdMutex::new(HashMap::new()),
-            resume_first: StdMutex::new(None),
         }
-    }
-
-    /// Seed the next session open to resume `id` (interactive hosting).
-    pub(crate) fn set_resume_first(&mut self, id: PieSessionId) {
-        *lock(&self.resume_first) = Some(id);
     }
 }
 
@@ -137,21 +137,29 @@ impl SessionSource for PieSessions {
         }
     }
 
+    // Async to satisfy the trait — the assembly itself is synchronous
+    // memory, so there is nothing to await.
+    #[allow(clippy::unused_async_trait_impl)]
     async fn open(&self, open: OpenSession) -> Result<OpenedSession<PieEngine>, OpenError> {
-        let resume = open
-            .resume
-            .clone()
-            .or_else(|| lock(&self.resume_first).take().map(|id| id.to_string()));
-        let session = match resume {
-            Some(id) => {
-                let unknown = format!("unknown session '{id}'");
-                Session::load(self.pool.clone(), PieSessionId::from(id))
-                    .await
-                    .map_err(|_| OpenError::Invalid(unknown))?
+        let resume = open.resume.clone();
+        let session = {
+            let mut sessions = lock(&self.sessions);
+            if let Some(id) = resume {
+                let id = PieSessionId::from(id);
+                // Stateless pie: engine memory is per-process, so a
+                // resume id this process never held names nothing — the
+                // client opens a fresh session instead. (The durable
+                // transcript is the gateway's agent filesystem, not this
+                // process.)
+                let Some(session) = sessions.get(&id).cloned() else {
+                    return Err(OpenError::Invalid(format!("unknown session '{id}'")));
+                };
+                session
+            } else {
+                let session = Session::new(&open.cwd);
+                sessions.insert(session.id.clone(), session.clone());
+                session
             }
-            None => Session::create(self.pool.clone(), &open.cwd)
-                .await
-                .map_err(|e| OpenError::Internal(e.to_string()))?,
         };
         let resumed = open.resume.is_some();
         tracing::info!(session = %session.id, cwd = %open.cwd.display(), resumed, "acp: session opened");
@@ -173,7 +181,8 @@ impl SessionSource for PieSessions {
             .collect();
 
         let engine = PieEngine::new(PieEngineDeps {
-            pool: self.pool.clone(),
+            usage: Arc::clone(&self.usage),
+            tokens: Arc::clone(&self.tokens),
             registry: self.registry.clone(),
             sandbox: Arc::new(granted_sandbox(&self.sandbox, &roots(&open))),
             provider: self.provider.clone(),
@@ -202,17 +211,13 @@ impl SessionSource for PieSessions {
             return Err(format!("unknown session '{session_id}'"));
         };
         *lock(cell) = Some(mode);
-        // Persist as pie always has — the system marker — so the mode
-        // survives the process (a resumed conversation reads it back).
-        let pool = Arc::clone(&self.pool);
-        let (id, marker) = (session_id.to_string(), mode.system_marker());
-        tokio::spawn(async move {
-            if let Ok(mut session) = Session::load(pool, PieSessionId::from(id)).await
-                && let Err(e) = session.add_system(&marker).await
-            {
-                tracing::warn!("acp: persisting the mode marker failed: {e}");
-            }
-        });
+        // Record the system marker in the session's memory (the engine's
+        // system-prompt side channel). Stateless pie: it lives as long
+        // as the process — the pin cell above carries the mode anyway.
+        let marker = mode.system_marker();
+        if let Some(session) = lock(&self.sessions).get(&PieSessionId::from(session_id)) {
+            session.add_system(&marker);
+        }
         Ok(mode.short_name().to_string())
     }
 
@@ -311,12 +316,14 @@ pub fn server_info() -> ServerInfo {
 /// Errors if the pie config cannot be loaded (for the `[sandbox]` section,
 /// which never reaches `handle_command`) or the connection fails on I/O.
 pub async fn serve_stdio(
-    pool: Arc<DbPool>,
+    usage: Arc<dyn UsageStore>,
+    tokens: Arc<dyn TokenStore>,
     registry: Arc<Registry>,
     config: &ResolvedConfig,
 ) -> anyhow::Result<()> {
     let sessions = PieSessions::new(
-        pool,
+        usage,
+        tokens,
         registry,
         pie_core::config::build_sandbox(&pie_core::config::load_config()?),
         config.provider.clone(),
@@ -327,8 +334,7 @@ pub async fn serve_stdio(
 }
 
 /// Serve the pie assembly over any ACP transport — `Stdio` in
-/// production, in-memory byte streams in tests, an `acp::Channel` when
-/// an a2acp gateway hosts pie in process ([`PieHost`]).
+/// production, in-memory byte streams in tests.
 ///
 /// # Errors
 ///
@@ -364,9 +370,10 @@ mod tests {
         }
     }
 
-    async fn test_sessions() -> PieSessions {
+    fn test_sessions() -> PieSessions {
         PieSessions::new(
-            Arc::new(pie_core::db::create_test_pool().await.unwrap()),
+            Arc::new(pie_core::store::MemoryStore::new()),
+            Arc::new(pie_core::store::MemoryStore::new()),
             Arc::new(Registry {
                 agents: Vec::new(),
                 skills: Vec::new(),
@@ -416,7 +423,7 @@ mod tests {
 
     #[tokio::test]
     async fn initialize_responds_with_v1_and_capabilities() {
-        let mut client = spawn_server(test_sessions().await);
+        let mut client = spawn_server(test_sessions());
         send(
             &mut client,
             &json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
@@ -435,7 +442,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_method_answers_method_not_found() {
-        let mut client = spawn_server(test_sessions().await);
+        let mut client = spawn_server(test_sessions());
         send(
             &mut client,
             &json!({"jsonrpc":"2.0","id":2,"method":"session/list","params":{}}),
@@ -447,7 +454,7 @@ mod tests {
 
     #[tokio::test]
     async fn malformed_line_answers_parse_error_with_null_id() {
-        let mut client = spawn_server(test_sessions().await);
+        let mut client = spawn_server(test_sessions());
         client.write_all(b"not json\n").await.unwrap();
         client.flush().await.unwrap();
 
@@ -467,7 +474,7 @@ mod tests {
     #[tokio::test]
     async fn session_new_reports_modes_and_bad_cwd_fails() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut client = spawn_server(test_sessions().await);
+        let mut client = spawn_server(test_sessions());
 
         // A nonexistent cwd must fail with invalid params, not panic.
         send(
@@ -502,15 +509,15 @@ mod tests {
     async fn session_load_replays_history_and_set_mode_notifies() {
         let tmp = tempfile::tempdir().unwrap();
         let cwd = tmp.path().to_string_lossy().to_string();
-        let sessions = test_sessions().await;
+        let sessions = test_sessions();
 
-        // Seed a session directly in the store with history to replay.
-        let mut session = Session::create(sessions.pool.clone(), tmp.path())
-            .await
-            .unwrap();
-        session.add_user("what is 2+2").await.unwrap();
-        session.add_assistant("4").await.unwrap();
+        // Seed a session with history to replay: the seed lands in the
+        // assembly's memory, and `session/load` replays it as chunks.
+        let session = Session::new(tmp.path());
+        session.add_user("what is 2+2");
+        session.add_assistant("4");
         let session_id = session.id.to_string();
+        lock(&sessions.sessions).insert(session.id.clone(), session);
 
         let mut client = spawn_server(sessions);
         send(
@@ -606,7 +613,7 @@ mod tests {
 
         // The test provider points at a dead port; zero the retries so the
         // prompt fails immediately instead of backing off.
-        let mut sessions = test_sessions().await;
+        let mut sessions = test_sessions();
         sessions.retry = pie_core::config::RetryConfig {
             api_error: pie_core::config::ApiErrorConfig {
                 max_errors: 0,
@@ -746,7 +753,7 @@ mod tests {
     /// so resolution must be stable.
     #[tokio::test]
     async fn select_model_pins_a_resolved_provider_per_session() {
-        let mut sessions = test_sessions().await;
+        let mut sessions = test_sessions();
         sessions.model_tiers =
             HashMap::from([("deep".to_string(), tier("deep", "opus", "http://deep"))]);
 
@@ -787,11 +794,12 @@ mod tests {
         assert!(err.contains("unknown session"), "{err}");
     }
 
-    /// `session/set_mode` persists pie's system marker — the mode
-    /// survives the process the way `/mode` always wrote it.
+    /// `session/set_mode` records pie's system marker in the session's
+    /// memory — the engine's system-prompt side channel, shared through
+    /// the `Arc` with every clone of the session.
     #[tokio::test]
     async fn set_mode_persists_the_system_marker() {
-        let sessions = test_sessions().await;
+        let sessions = test_sessions();
         let tmp = tempfile::tempdir().unwrap();
         let opened = SessionSource::open(
             &sessions,
@@ -806,16 +814,17 @@ mod tests {
         let id = opened.id;
 
         sessions.set_mode(&id, "plan").expect("plan is a mode");
-        // The marker write is spawned — give it a beat, then reload.
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        let reloaded = Session::load(Arc::clone(&sessions.pool), PieSessionId::from(id))
-            .await
-            .unwrap();
-        let markers: Vec<String> = reloaded
+        // The marker lands synchronously — no store, no spawned write:
+        // the assembly IS the memory.
+        let session = lock(&sessions.sessions)
+            .get(&PieSessionId::from(id.as_str()))
+            .expect("the opened session is held")
+            .clone();
+        let markers: Vec<String> = session
             .history_entries()
-            .iter()
+            .into_iter()
             .filter(|entry| entry.role() == Role::System)
-            .map(pie_core::session::HistoryEntry::content)
+            .map(|entry| entry.content())
             .collect();
         assert!(
             markers.contains(&"[mode:plan]".to_string()),
@@ -829,7 +838,7 @@ mod tests {
     /// naming the catalog — before the turn starts.
     #[tokio::test]
     async fn prompt_meta_model_resolves_or_refuses() {
-        let mut sessions = test_sessions().await;
+        let mut sessions = test_sessions();
         sessions.model_tiers =
             HashMap::from([("deep".to_string(), tier("deep", "opus", "http://deep"))]);
         let tmp = tempfile::tempdir().unwrap();

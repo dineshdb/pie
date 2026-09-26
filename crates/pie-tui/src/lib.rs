@@ -1,14 +1,16 @@
 //! pie-tui — the interactive terminal frontend.
 //!
 //! A pure A2A consumer: turns and permission answers flow through the
-//! front door client ([`crate::door`]); this crate renders
-//! [`StreamEvent`]s and sends requests. It never touches the DB pool,
-//! never constructs agents, and calls no engine handlers — pie-core
-//! appears only as leaf value types (registry, config, session history),
-//! and a2acp only as the door. The frontend does not know or care that
-//! the agent is in process. Model and mode selection go through the
-//! selection extension ([`crate::door::SELECTION_EXTENSION_URI`]) — no
-//! side channels.
+//! A2A client ([`crate::client`]); this crate renders
+//! [`StreamEvent`]s and sends requests. The crate is STATELESS: the
+//! conversation transcript lives in the a2acp gateway's agent
+//! filesystem, and the pie-local database (`~/.pie/pie.db` — usage
+//! bookkeeping and MCP OAuth grants) belongs to `pie acp`
+//! ([`pie_acp::store`]), never to this frontend. pie-core appears only
+//! as leaf value types (registry, config, session history), and a2acp
+//! only through that client. Model and mode selection go through the
+//! selection extension ([`crate::client::SELECTION_EXTENSION_URI`]) —
+//! no side channels.
 
 #![cfg_attr(
     test,
@@ -20,9 +22,9 @@
     )
 )]
 
+pub mod client;
 mod command;
 mod components;
-pub mod door;
 mod notify;
 mod realm;
 mod realm_terminal;
@@ -30,6 +32,6 @@ mod state;
 mod theme;
 mod widgets;
 
-pub use door::{CatalogEntry, ModeOption, ModelCatalog, SELECTION_EXTENSION_URI, Selection};
+pub use client::{CatalogEntry, ModeOption, ModelCatalog, SELECTION_EXTENSION_URI, Selection};
 pub use realm::{AskId, SessionId, StreamEvent};
 pub use realm_terminal::{ProviderView, TuiDeps, run_tui};

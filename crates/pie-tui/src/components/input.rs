@@ -3,7 +3,7 @@
 //! Not mounted in the tuirealm App — accessed directly from the main loop.
 //! Only `ChatComponent` is the active tuirealm component.
 
-use crate::door::{Client, ModelCatalog, Selection};
+use crate::client::{CatalogEntry, Client, ModelCatalog, Selection};
 use crate::realm::{Msg, SessionId};
 use crate::theme;
 use crate::widgets::completion::{CompletionPopup, CompletionState, Direction, slash_token_range};
@@ -51,10 +51,10 @@ pub struct InputComponent {
     pub catalog: ModelCatalog,
     /// The selection the next outgoing message carries (the extension's
     /// payload — either leg optional). Set by `/mode`, `/model`, and
-    /// Ctrl+K; flushed onto the next turn, then the door's read-back
+    /// Ctrl+K; flushed onto the next turn, then the client's read-back
     /// takes over ([`InputComponent::sync_selection`]).
     pub pending: Selection,
-    /// What the conversation last confirmed — `door.selection()` after
+    /// What the conversation last confirmed — `client.selection()` after
     /// each settled turn; the mode bar's source of truth.
     pub current: Selection,
 }
@@ -365,10 +365,13 @@ impl InputComponent {
     /// Re-read the conversation's selection and the card after a settled
     /// turn: the read-back is the pickers' source of truth, and the
     /// driven agent's modes appear on the card only after its first
-    /// session reported them.
+    /// session reported them. The fresh selection arrives asynchronously
+    /// (a `StreamEvent::Selection` pokes the redraw); the cache rides
+    /// along on the next read.
     pub fn sync_selection(&mut self) {
         self.current = self.client.selection();
         self.client.refresh_card();
+        self.client.refresh_selection();
     }
 
     /// Abort the in-flight turn; the stream answers with a terminal
@@ -426,7 +429,25 @@ impl InputComponent {
             .model
             .clone()
             .or_else(|| self.current.model.clone())
+            .or_else(|| self.client.default_model())
             .unwrap_or_else(|| self.provider.model.clone())
+    }
+
+    /// Whether `/model <id>` names a model the driven agent accepts.
+    /// With an advertised catalog, only advertised ids (the gateway
+    /// refuses anything else); without one, any startup-catalog entry
+    /// id or literal model id.
+    pub fn model_known(&self, id: &str) -> bool {
+        model_known(self.client.models().as_deref(), &self.catalog, id)
+    }
+
+    /// The model catalog `/model` opens the picker over: the agent's
+    /// advertised models when its card reports one, else the startup
+    /// catalog.
+    pub fn model_entries(&self) -> Vec<CatalogEntry> {
+        self.client
+            .models()
+            .unwrap_or_else(|| self.catalog.entries.clone())
     }
 
     /// Cycle to the next advertised mode (Ctrl+K) and make it pending.
@@ -579,6 +600,17 @@ impl InputComponent {
     }
 }
 
+/// Whether a `/model` id names an accepted model: an advertised id when
+/// the agent advertises a catalog (strict — the gateway refuses
+/// anything outside it), any startup-catalog entry id or literal model
+/// id otherwise.
+fn model_known(advertised: Option<&[CatalogEntry]>, startup: &ModelCatalog, id: &str) -> bool {
+    match advertised {
+        Some(models) => models.iter().any(|model| model.id == id),
+        None => startup.contains(id),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -595,5 +627,60 @@ mod tests {
         apply_textarea_style(&mut ta);
         assert_eq!(ta.style().fg, Some(LIGHT.text));
         theme::set(&DARK);
+    }
+
+    fn entry(id: &str) -> CatalogEntry {
+        CatalogEntry {
+            id: id.into(),
+            model: format!("display for {id}"),
+        }
+    }
+
+    /// With an advertised catalog only advertised ids select — display
+    /// names are not selectable (the gateway refuses them).
+    #[test]
+    fn an_advertised_catalog_rules_alone() {
+        let advertised = [
+            entry("opencode/big-pickle"),
+            entry("zai-coding-plan/glm-5.3"),
+        ];
+        let startup = ModelCatalog {
+            entries: vec![entry("default"), entry("fast")],
+        };
+        assert!(model_known(
+            Some(&advertised),
+            &startup,
+            "opencode/big-pickle"
+        ));
+        assert!(
+            !model_known(Some(&advertised), &startup, "default"),
+            "startup ids are not the agent's catalog"
+        );
+        assert!(
+            !model_known(
+                Some(&advertised),
+                &startup,
+                "display for zai-coding-plan/glm-5.3"
+            ),
+            "a display name is not an id"
+        );
+    }
+
+    /// Without an advertised catalog the startup catalog rules — entry
+    /// ids and literal model ids both select.
+    #[test]
+    fn without_a_catalog_the_startup_catalog_rules() {
+        let startup = ModelCatalog {
+            entries: vec![
+                entry("default"),
+                CatalogEntry {
+                    id: "fast".into(),
+                    model: "claude-haiku".into(),
+                },
+            ],
+        };
+        assert!(model_known(None, &startup, "fast"));
+        assert!(model_known(None, &startup, "claude-haiku"), "a literal");
+        assert!(!model_known(None, &startup, "nope"));
     }
 }

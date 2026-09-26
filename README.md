@@ -152,7 +152,7 @@ connection; `CancelTask` aborts the in-flight turn; `GetTask`/`ListTasks`
 inspect and enumerate; `DeleteTask` removes a task or a whole
 conversation. Tasks and transcripts are durable in the gateway's own
 SQLite store (`~/.config/a2acp/a2a.sqlite3`); pie's database keeps
-sessions, usage, and cron.
+sessions and usage.
 
 **External agents.** A2A clients select the agent by `metadata.agent`
 (default `pie`). Additional ACP-speaking agents can be served alongside
@@ -168,6 +168,18 @@ Each becomes a skill on the agent card; the gateway spawns one process
 per session. `[server] url` overrides the public URL baked into the card
 (set it to the tailscale HTTPS URL when serving through `tailscale
 serve`).
+
+**Selecting an external agent's mode and model.** After an external
+agent's first session reports its selectable state, the card's
+[selection extension](https://qreta.io/a2acp/extensions/selection/v1)
+advertises it per agent: session modes (for opencode, its agents —
+`build`/`plan`) under `availableModes`, and a model catalog under
+`availableModels` when the agent reports one. A selection rides a
+message's metadata under the extension uri and forwards on the channel
+the agent speaks (`session/set_mode` / `session/set_config_option`).
+The interactive TUI gets this for free: `pie --acp-agent opencode acp`
+drives opencode through the same gateway, and `/mode` + `/model` work
+against the advertised catalogs.
 
 **Known gaps vs the old pie-native server** (tracked as `TODO(a2acp)` in
 the crate): no push-notification webhooks (`pushNotifications: false` on

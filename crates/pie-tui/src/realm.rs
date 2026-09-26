@@ -9,7 +9,7 @@ pub enum Id {
 
 /// Identifies the conversation the TUI displays — its input-history key
 /// and nothing more; turns address the agent by A2A context ids the
-/// door client owns.
+/// client owns.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SessionId(pub String);
 
@@ -27,7 +27,7 @@ impl std::fmt::Display for SessionId {
 }
 
 /// Identifies a parked permission ask — the A2A task the turn is
-/// parked on; the door client answers on that task.
+/// parked on; the client answers on that task.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AskId(pub String);
 
@@ -38,7 +38,7 @@ impl std::fmt::Display for AskId {
 }
 
 /// The TUI's projection of the A2A event stream: what the chat view
-/// renders. Derived from the front door's stream frames — this crate's
+/// renders. Derived from the front door's (a2acp `FrontDoor`) stream frames — this crate's
 /// only window onto the agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamEvent {
@@ -47,6 +47,7 @@ pub enum StreamEvent {
     Error(String),
     ToolCall {
         /// Pairs a call's pre-execution announcement with its completion —
+        /// the structured `toolCall` data part carries the call's real id;
         /// flattened status lines carry no pairing, so each is its own id.
         id: String,
         name: String,
@@ -55,7 +56,7 @@ pub enum StreamEvent {
         /// The call errored — `output` is the reason.
         failed: bool,
     },
-    /// The agent needs a permission decision; answer through the door
+    /// The agent needs a permission decision; answer through the client
     /// client (the `INPUT_REQUIRED` convention).
     PermissionAsk {
         id: AskId,
@@ -64,6 +65,16 @@ pub enum StreamEvent {
     },
     /// The next prompt starts a fresh conversation (`/new`).
     SessionSwitched(SessionId),
+    /// The startup warm settled and the card may now advertise the
+    /// agent's modes and models — the mode bar and pickers re-read it
+    /// on the redraw this pokes.
+    Warm,
+    /// The conversation's confirmed selection changed (the read-back
+    /// after a settled turn): the mode bar re-reads it on the redraw.
+    Selection,
+    /// The conversation's session usage total was re-derived from the
+    /// task history: the status bar re-reads it on the redraw.
+    Usage,
 }
 
 /// Messages returned by `AppComponent::on()` — processed in the update function.

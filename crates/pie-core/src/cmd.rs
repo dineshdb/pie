@@ -1,5 +1,4 @@
 use crate::config::{LaunchConfig, ResolvedConfig};
-use crate::db::DbPool;
 use crate::registry::Registry;
 use crate::utils::output::OutputFormat;
 use p1e_sandbox::Permission;
@@ -78,15 +77,6 @@ struct McpServerStatus {
     url: String,
 }
 
-/// The `pie server` daemon configuration: how the A2A gateway is
-/// reachable and authenticated.
-#[derive(Serialize)]
-struct ServerStatus {
-    bind: String,
-    auth_required: bool,
-    auth: String,
-}
-
 #[derive(Serialize)]
 struct StatusOutput<'a> {
     provider: &'a crate::config::ResolvedProvider,
@@ -95,7 +85,6 @@ struct StatusOutput<'a> {
     skills: Vec<String>,
     agents: Vec<String>,
     mcp_servers: Vec<McpServerStatus>,
-    server: ServerStatus,
 }
 
 fn mcp_server_status(config: &ResolvedConfig) -> Vec<McpServerStatus> {
@@ -111,26 +100,7 @@ fn mcp_server_status(config: &ResolvedConfig) -> Vec<McpServerStatus> {
     servers
 }
 
-/// One line describing how the A2A gateway authenticates RPCs: `OpenID`
-/// Connect when configured, else the loopback/tailnet trust model the
-/// a2acp gateway ships with.
-fn server_auth_summary(server: &crate::config::ServerConfig) -> String {
-    match &server.openid_connect_url {
-        Some(url) => format!("OpenID Connect ({url})"),
-        None => "none (loopback bind; tailscale is the authentication)".to_string(),
-    }
-}
-
-pub fn handle_status(
-    config: &ResolvedConfig,
-    registry: &Arc<Registry>,
-    server: &crate::config::ServerConfig,
-) {
-    let server_status = || ServerStatus {
-        bind: server.bind.clone(),
-        auth_required: server.openid_connect_url.is_some(),
-        auth: server_auth_summary(server),
-    };
+pub fn handle_status(config: &ResolvedConfig, registry: &Arc<Registry>) {
     if config.output_format.is_json() {
         let status = StatusOutput {
             provider: &config.provider,
@@ -139,7 +109,6 @@ pub fn handle_status(
             skills: registry.skills.iter().map(|s| s.name.clone()).collect(),
             agents: registry.agents.iter().map(|a| a.name.clone()).collect(),
             mcp_servers: mcp_server_status(config),
-            server: server_status(),
         };
 
         if let Ok(json) = serde_json::to_string_pretty(&status) {
@@ -165,17 +134,6 @@ pub fn handle_status(
         }
     }
 
-    let server_status = server_status();
-    println!("\n--- MCP tasks server ---");
-    println!("Bind:        {}", server_status.bind);
-    println!("Auth:        {}", server_status.auth);
-    if server.api_key.is_some() {
-        println!(
-            "Warning:     [server] api_key is obsolete (static bearer auth was removed); \
-             `pie server` will refuse to start until it is deleted"
-        );
-    }
-
     println!("\n--- Registry ---");
     println!("Skills: {}", registry.skills.len());
     for skill in &registry.skills {
@@ -199,7 +157,7 @@ struct UsageOutput<'a> {
 /// e.g. `pie usage --json=`) switches to machine-readable output.
 pub async fn handle_usage(
     config: &ResolvedConfig,
-    pool: Arc<DbPool>,
+    usage: &Arc<dyn crate::store::UsageStore>,
     days: Option<u32>,
 ) -> anyhow::Result<()> {
     let days = days.unwrap_or(30);
@@ -208,7 +166,7 @@ pub async fn handle_usage(
     } else {
         chrono::Utc::now().timestamp_millis() - i64::from(days) * 86_400_000
     };
-    let rows = crate::usage::by_model(&pool, since_ms).await?;
+    let rows = usage.usage_by_model(since_ms).await?;
 
     if config.output_format.is_json() {
         let out = UsageOutput {
@@ -604,7 +562,7 @@ pub enum McpCommand {
 pub async fn handle_mcp(
     command: McpCommand,
     config: &ResolvedConfig,
-    pool: Arc<DbPool>,
+    tokens: &Arc<dyn crate::store::TokenStore>,
 ) -> anyhow::Result<()> {
     match command {
         McpCommand::Login { name } => {
@@ -614,7 +572,7 @@ pub async fn handle_mcp(
                 ))
                 .into());
             };
-            let granted = crate::mcp_auth::login(&name, server, (*pool).clone()).await?;
+            let granted = crate::mcp_auth::login(&name, server, Arc::clone(tokens)).await?;
             let scopes = if granted.is_empty() {
                 "(none advertised)".to_string()
             } else {
@@ -624,115 +582,9 @@ pub async fn handle_mcp(
             Ok(())
         }
         McpCommand::Logout { name } => {
-            crate::mcp_auth::logout(&name, (*pool).clone()).await?;
+            crate::mcp_auth::logout(&name, Arc::clone(tokens)).await?;
             Ok(())
         }
-    }
-}
-
-/// The cron CLI surface: subcommands of `pie cron`.
-#[derive(clap::Subcommand, Clone, Debug)]
-pub enum CronCommand {
-    /// List schedules loaded from files
-    List,
-    /// Show recent run history (optionally for a specific schedule)
-    Runs { id: Option<String> },
-    /// Execute due schedules (one-shot)
-    Run,
-    /// Evaluate a `when` CEL expression against the current state
-    ///
-    /// `last_run` is treated as never, so `since`/`never_run` read as they
-    /// would on a schedule's first firing.
-    Test {
-        /// The CEL expression, e.g. 'exists("~/src/x") && `never_run`'
-        expr: String,
-    },
-}
-
-#[allow(clippy::too_many_lines)]
-pub async fn handle_cron(
-    command: CronCommand,
-    pool: Arc<DbPool>,
-    registry: Arc<Registry>,
-) -> anyhow::Result<()> {
-    match command {
-        CronCommand::List => {
-            let schedules = crate::cron::load_all_schedules();
-            if schedules.is_empty() {
-                println!("no schedules found");
-                return Ok(());
-            }
-
-            let width = schedules.iter().map(|s| s.id.len()).max().unwrap_or(4);
-            for s in &schedules {
-                let status = if s.enabled { "enabled " } else { "disabled" };
-                let trigger = match (&s.cron, &s.when) {
-                    (Some(cron), Some(when)) => format!("{cron} when {when}"),
-                    (Some(cron), None) => cron.clone(),
-                    (None, Some(when)) => format!("when {when}"),
-                    (None, None) => "(no trigger — never fires)".to_string(),
-                };
-                let id = format!("{:width$}", s.id);
-                println!("{id}  {status}  {trigger}  {}", s.description);
-            }
-            Ok(())
-        }
-        CronCommand::Test { expr } => {
-            let ctx = crate::cron::ConditionContext {
-                now: chrono::Utc::now(),
-                last_run: None,
-            };
-            match crate::cron::evaluate(&expr, &ctx) {
-                Ok(true) => {
-                    println!("true — a schedule with this `when` would fire");
-                    Ok(())
-                }
-                Ok(false) => {
-                    println!("false — not due");
-                    std::process::exit(1)
-                }
-                Err(e) => {
-                    println!("error: {e}");
-                    println!("a `when` that cannot be evaluated never fires");
-                    std::process::exit(2)
-                }
-            }
-        }
-        CronCommand::Runs { id } => {
-            let rows = match &id {
-                Some(schedule_id) => {
-                    crate::cron::CronRun::recent_for_schedule(&pool, schedule_id).await?
-                }
-                None => crate::cron::CronRun::recent_all(&pool).await?,
-            };
-
-            if rows.is_empty() {
-                let label = id.as_deref().unwrap_or("any");
-                println!("no runs for schedule '{label}'");
-                return Ok(());
-            }
-
-            let schedules = crate::cron::load_all_schedules();
-            for r in &rows {
-                let started = chrono::DateTime::from_timestamp_millis(r.started_at)
-                    .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
-                    .unwrap_or_default();
-                let dur_ms = r.finished_at.map_or(0, |f| f - r.started_at);
-                let code = r.exit_code.map_or("-".to_string(), |c| c.to_string());
-                let desc = schedules
-                    .iter()
-                    .find(|s| s.id == r.cron_id)
-                    .and_then(|s| (!s.description.is_empty()).then_some(&s.description))
-                    .unwrap_or(&r.cron_id);
-
-                println!(
-                    "{}  {}  {}  {}ms  {}  {}",
-                    desc, started, r.status, dur_ms, code, r.notes
-                );
-            }
-            Ok(())
-        }
-        CronCommand::Run => crate::cron::run_due_jobs(pool, registry).await,
     }
 }
 

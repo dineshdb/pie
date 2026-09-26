@@ -2,13 +2,12 @@
 name = "p1e"
 version = "0.3.0"
 edition = "2024"
-default-run = "pie"
 description = "A minimal AI coding agent with sandboxed command execution"
 license = "MIT"
 repository = "https://github.com/dineshdb/pie"
 
 [workspace]
-members = [".", "crates/p1e-sandbox", "crates/pie-core", "crates/pie-acp", "crates/pie-tui"]
+members = [".", "crates/p1e-sandbox", "crates/pie-core", "crates/pie-acp", "crates/pie-tui", "crates/agentsdk-plugin-agentfs"]
 
 [workspace.dependencies]
 dirs = "7"
@@ -19,12 +18,25 @@ jewels = { git = "https://github.com/dineshdb/agentsdk", branch = "main" }
 # once agentsdk main pushes add_remote_server_authorized.
 a2acp = { git = "ssh://git@github.com/qretaio/a2acp.git", branch = "main" }
 
+# TEMPORARY: pie consumes the un-pushed a2acp foundation (ea359ca) from
+# the local checkout. Remove once origin/main carries it.
+[patch."ssh://git@github.com/qretaio/a2acp.git"]
+a2acp = { path = "../a2acp" }
+
+# TEMPORARY: agentfs-sdk 0.6.4 on crates.io pins turso ^0.4.4, which
+# collides with pie-acp's turso 0.7 (two turso_core copies fail the LTO
+# link, and 0.4.4 cannot open trigger-bearing databases). Reroute to the
+# 0.6.5 bump on github (turso 0.7.2; 101/101 tests pass) — remove once
+# crates.io carries 0.6.5.
+[patch.crates-io]
+agentfs-sdk = { git = "https://github.com/dineshdb/agentfs", branch = "main" }
+
 [dependencies]
 pie-core = { path = "crates/pie-core", version = "0.3.0" }
 pie-acp = { path = "crates/pie-acp", version = "0.3.0" }
 pie-tui = { path = "crates/pie-tui", version = "0.1.0" }
 a2acp.workspace = true
-axum = "0.8"
+serde_json.workspace = true
 agentsdk = { git = "https://github.com/dineshdb/agentsdk", branch = "main" }
 # once agentsdk main pushes add_remote_server_authorized.
 anyhow = "1"

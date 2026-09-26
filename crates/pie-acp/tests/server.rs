@@ -49,6 +49,8 @@ enum Script {
     Hang,
     /// Fail immediately.
     Fail,
+    /// Complete with LLM usage to account.
+    Billed,
 }
 
 #[derive(Clone)]
@@ -112,7 +114,7 @@ impl Engine for FakeEngine {
                     failed: true,
                 });
                 let _ = events.send(Event::Error("soft failure".into()));
-                TurnEnd::Completed
+                TurnEnd::Completed { usage: None }
             }
             Script::GatedTool => {
                 let (response_tx, response_rx) = oneshot::channel();
@@ -129,9 +131,24 @@ impl Engine for FakeEngine {
                 } else {
                     "denied".into()
                 }));
-                TurnEnd::Completed
+                TurnEnd::Completed { usage: None }
             }
             Script::Fail => TurnEnd::Failed("engine exploded".into()),
+            Script::Billed => {
+                let _ = io.events.send(Event::Delta("billed work".into()));
+                TurnEnd::Completed {
+                    usage: Some(pie_core::usage::UsageReport {
+                        requests: 2,
+                        prompt_tokens: 1_000,
+                        completion_tokens: 200,
+                        total_tokens: 1_200,
+                        cached_tokens: 800,
+                        reasoning_tokens: 50,
+                        cache_rate: Some(0.8),
+                        cost_usd: Some(0.0025),
+                    }),
+                }
+            }
             Script::Hang => tokio::select! {
                 _ = io.cancel.changed() => {
                     self.cancelled.store(true, Ordering::SeqCst);
@@ -509,6 +526,63 @@ fn chunk_text(chunk: &acp::schema::v1::ContentChunk) -> Option<&str> {
         acp::schema::v1::ContentBlock::Text(text) => Some(&text.text),
         _ => None,
     }
+}
+
+/// The turn's usage rides the prompt response's standard `usage` object —
+/// token counts on the protocol fields, what the standard has no slot for
+/// (requests, cost) under the object's `_meta` extension key. No extra
+/// report method, no polling: each turn message carries its own metrics.
+#[tokio::test]
+async fn turn_usage_rides_the_prompt_response_meta() {
+    let (mut client, _engine, _) = spawn_server(Script::Billed);
+    let session = new_session(&mut client).await;
+
+    send(
+        &mut client,
+        &json!({"jsonrpc":"2.0","id":31,"method":"session/prompt","params":{
+            "sessionId": session,
+            "prompt": [{"type": "text", "text": "spend tokens"}]
+        }}),
+    )
+    .await;
+    let (response, _) = recv_response(&mut client, 31).await;
+    assert_eq!(response["result"]["stopReason"], "end_turn", "{response}");
+    assert_eq!(
+        response["result"]["usage"],
+        json!({
+            "totalTokens": 1200,
+            "inputTokens": 1000,
+            "outputTokens": 200,
+            "thoughtTokens": 50,
+            "cachedReadTokens": 800,
+            "_meta": {
+                "https://qreta.io/a2acp/extensions/usage/v1": {
+                    "requests": 2,
+                    "costUsd": 0.0025,
+                },
+            },
+        }),
+        "{response}"
+    );
+}
+
+/// A turn the provider reported no usage for carries no `usage` object —
+/// a zero line must not pretend usage was measured.
+#[tokio::test]
+async fn an_unmeasured_turn_carries_no_usage_meta() {
+    let (mut client, _engine, _) = spawn_server(Script::Vocabulary);
+    let session = new_session(&mut client).await;
+
+    send(
+        &mut client,
+        &json!({"jsonrpc":"2.0","id":32,"method":"session/prompt","params":{
+            "sessionId": session,
+            "prompt": [{"type": "text", "text": "do things"}]
+        }}),
+    )
+    .await;
+    let (response, _) = recv_response(&mut client, 32).await;
+    assert!(response["result"].get("usage").is_none(), "{response}");
 }
 
 #[tokio::test]

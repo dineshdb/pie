@@ -2,7 +2,7 @@
 //! the default entry plus one per configured tier. The `*` marks the
 //! selection the next turn carries; Enter confirms, Esc closes.
 
-use crate::door::CatalogEntry;
+use crate::client::CatalogEntry;
 use crate::theme::Theme;
 use tuirealm::ratatui::buffer::Buffer;
 use tuirealm::ratatui::layout::Rect;

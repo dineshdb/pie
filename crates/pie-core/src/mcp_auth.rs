@@ -3,19 +3,21 @@
 //!
 //! The browser flow (metadata discovery, dynamic or pre-registered client,
 //! authorization code + PKCE) runs once per server via `pie mcp login`: a
-//! localhost listener catches the redirect, the token set lands in
-//! `~/.pie/pie.db`, and every later run authorizes from the store through
+//! localhost listener catches the redirect, the token set lands in the
+//! [`crate::store::TokenStore`] (SQLite in pie-acp's `store`, over
+//! `~/.pie/pie.db`), and every later run authorizes from the store through
 //! [`authorization_manager`] — rmcp refreshes and retries transparently
-//! behind `McpPlugin::add_remote_server_authorized`.
+//! behind `McpPlugin::add_remote_server_authorized`. This module holds no
+//! SQL: persistence arrives as the trait.
 
 use crate::config::McpServerConfig;
-use crate::db::DbPool;
 use crate::error::{AppError, Result};
-use chrono::Utc;
+use crate::store::{TokenCredentialStore, TokenStore};
 use rmcp::transport::auth::{
     AuthError, AuthorizationCallback, AuthorizationManager, AuthorizationRequest,
-    AuthorizationSession, CredentialStore, StoredCredentials,
+    AuthorizationSession, CredentialStore,
 };
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -30,12 +32,12 @@ const CALLBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600
 pub async fn authorization_manager(
     name: &str,
     server: &McpServerConfig,
-    pool: DbPool,
+    tokens: Arc<dyn TokenStore>,
 ) -> Result<(AuthorizationManager, bool)> {
     let mut manager = AuthorizationManager::new(server.url.as_str())
         .await
         .map_err(auth_err(name))?;
-    manager.set_credential_store(SqliteCredentialStore::new(pool, name.to_string()));
+    manager.set_credential_store(TokenCredentialStore::new(tokens, name));
     let stored = manager
         .initialize_from_store()
         .await
@@ -47,13 +49,17 @@ pub async fn authorization_manager(
 /// tokens. Returns the granted scopes. Works for any configured server —
 /// `[mcp.<name>.auth]` only overrides the defaults (pre-registered
 /// credentials, scopes, fixed callback port).
-pub async fn login(name: &str, server: &McpServerConfig, pool: DbPool) -> Result<Vec<String>> {
+pub async fn login(
+    name: &str,
+    server: &McpServerConfig,
+    tokens: Arc<dyn TokenStore>,
+) -> Result<Vec<String>> {
     let listener =
         bind_callback_listener(server.auth.as_ref().and_then(|a| a.redirect_port)).await?;
     let manager = AuthorizationManager::new(server.url.as_str())
         .await
         .map_err(auth_err(name))?;
-    run_login(name, manager, server, listener, pool, |url| {
+    run_login(name, manager, server, listener, tokens, |url| {
         println!("Open this URL to authorize {name}:\n\n  {url}\n\nWaiting for the browser callback (Ctrl-C aborts)…");
         if let Err(e) = open::that(url) {
             tracing::warn!("could not open a browser ({e}); copy the URL manually");
@@ -63,8 +69,8 @@ pub async fn login(name: &str, server: &McpServerConfig, pool: DbPool) -> Result
 }
 
 /// Forget the stored tokens for `name`.
-pub async fn logout(name: &str, pool: DbPool) -> Result<()> {
-    SqliteCredentialStore::new(pool, name.to_string())
+pub async fn logout(name: &str, tokens: Arc<dyn TokenStore>) -> Result<()> {
+    TokenCredentialStore::new(tokens, name)
         .clear()
         .await
         .map_err(auth_err(name))?;
@@ -88,10 +94,10 @@ pub(crate) async fn run_login(
     mut manager: AuthorizationManager,
     server: &McpServerConfig,
     listener: TcpListener,
-    pool: DbPool,
+    tokens: Arc<dyn TokenStore>,
     announce: impl Fn(&str),
 ) -> Result<Vec<String>> {
-    manager.set_credential_store(SqliteCredentialStore::new(pool.clone(), name.to_string()));
+    manager.set_credential_store(TokenCredentialStore::new(Arc::clone(&tokens), name));
 
     let resolution = manager
         .resolve_metadata_from_challenge(None)
@@ -136,7 +142,7 @@ pub(crate) async fn run_login(
         .await
         .map_err(auth_err(name))?;
 
-    let stored = SqliteCredentialStore::new(pool, name.to_string())
+    let stored = TokenCredentialStore::new(tokens, name)
         .load()
         .await
         .map_err(auth_err(name))?
@@ -175,63 +181,6 @@ fn auth_err(name: &str) -> impl Fn(AuthError) -> AppError + '_ {
     move |e| AppError::Plugin(format!("mcp '{name}': oauth: {e}"))
 }
 
-/// rmcp's [`CredentialStore`] backed by the `mcp_oauth_tokens` table — one
-/// row per configured server, holding `StoredCredentials` as JSON.
-struct SqliteCredentialStore {
-    pool: DbPool,
-    server: String,
-}
-
-impl SqliteCredentialStore {
-    fn new(pool: DbPool, server: String) -> Self {
-        Self { pool, server }
-    }
-}
-
-#[async_trait::async_trait]
-impl CredentialStore for SqliteCredentialStore {
-    async fn load(&self) -> std::result::Result<Option<StoredCredentials>, AuthError> {
-        let row: Option<(String,)> =
-            sqlx::query_as("SELECT credentials FROM mcp_oauth_tokens WHERE server_name = ?")
-                .bind(&self.server)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(store_err)?;
-        row.map(|(json,)| serde_json::from_str(&json).map_err(store_err))
-            .transpose()
-    }
-
-    async fn save(&self, credentials: StoredCredentials) -> std::result::Result<(), AuthError> {
-        let json = serde_json::to_string(&credentials).map_err(store_err)?;
-        sqlx::query(
-            "INSERT INTO mcp_oauth_tokens (server_name, credentials, updated_at) \
-             VALUES (?, ?, ?) \
-             ON CONFLICT(server_name) DO UPDATE SET \
-             credentials = excluded.credentials, updated_at = excluded.updated_at",
-        )
-        .bind(&self.server)
-        .bind(&json)
-        .bind(Utc::now().to_rfc3339())
-        .execute(&self.pool)
-        .await
-        .map_err(store_err)?;
-        Ok(())
-    }
-
-    async fn clear(&self) -> std::result::Result<(), AuthError> {
-        sqlx::query("DELETE FROM mcp_oauth_tokens WHERE server_name = ?")
-            .bind(&self.server)
-            .execute(&self.pool)
-            .await
-            .map_err(store_err)?;
-        Ok(())
-    }
-}
-
-fn store_err(e: impl std::fmt::Display) -> AuthError {
-    AuthError::CredentialStoreError(e.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -239,9 +188,14 @@ mod tests {
     use super::*;
     use crate::config::McpAuthConfig;
     use crate::config::McpServerConfig;
+    use crate::store::MemoryStore;
     use rmcp::transport::auth::{OAuthHttpClient, OAuthHttpClientFuture, OAuthHttpRequest};
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
+
+    fn test_tokens() -> Arc<dyn TokenStore> {
+        Arc::new(MemoryStore::new())
+    }
 
     fn server_with(auth: McpAuthConfig) -> McpServerConfig {
         McpServerConfig {
@@ -317,7 +271,7 @@ mod tests {
 
     #[tokio::test]
     async fn login_flow_registers_dynamically_and_persists_tokens() {
-        let pool = crate::db::create_test_pool().await.unwrap();
+        let tokens = test_tokens();
         let server = server_with(McpAuthConfig {
             scopes: vec!["read".to_string(), "write".to_string()],
             ..Default::default()
@@ -339,7 +293,7 @@ mod tests {
             manager,
             &server,
             listener,
-            pool.clone(),
+            Arc::clone(&tokens),
             move |url| flow_urls.lock().unwrap().push(url.to_string()),
         );
 
@@ -381,30 +335,29 @@ mod tests {
             "granted: {granted:?}"
         );
 
-        let row: (String,) =
-            sqlx::query_as("SELECT credentials FROM mcp_oauth_tokens WHERE server_name = 'linear'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let stored = tokens
+            .load_token("linear")
+            .await
+            .unwrap()
+            .expect("the login persists its tokens");
         // StoredCredentials is rmcp's serde type; assert on its JSON rather
         // than re-walking oauth2's accessors.
         assert!(
-            row.0.contains("\"client_id\":\"dcr-client-123\""),
-            "{}",
-            row.0
+            stored.contains("\"client_id\":\"dcr-client-123\""),
+            "{stored}"
         );
-        assert!(row.0.contains("at-123"), "{}", row.0);
-        assert!(row.0.contains("rt-123"), "{}", row.0);
+        assert!(stored.contains("at-123"), "{stored}");
+        assert!(stored.contains("rt-123"), "{stored}");
     }
 
     #[tokio::test]
     async fn authorization_manager_reports_missing_token_without_failing() {
-        let pool = crate::db::create_test_pool().await.unwrap();
+        let tokens = test_tokens();
         let server = server_with(McpAuthConfig::default());
 
         // No stored token is not an error: the manager still connects
         // servers unauthenticated and lets OAuth servers challenge.
-        let (_manager, stored) = authorization_manager("linear", &server, pool)
+        let (_manager, stored) = authorization_manager("linear", &server, tokens)
             .await
             .expect("manager builds without stored credentials");
         assert!(!stored);
@@ -412,7 +365,7 @@ mod tests {
 
     #[tokio::test]
     async fn login_works_without_an_auth_section() {
-        let pool = crate::db::create_test_pool().await.unwrap();
+        let tokens = test_tokens();
         // OAuth is assumed: no [mcp.<name>.auth] at all, defaults everywhere.
         let server = server_with(McpAuthConfig::default());
         let server = McpServerConfig {
@@ -436,7 +389,7 @@ mod tests {
             manager,
             &server,
             listener,
-            pool.clone(),
+            Arc::clone(&tokens),
             move |url| flow_urls.lock().unwrap().push(url.to_string()),
         );
 
@@ -473,11 +426,11 @@ mod tests {
             "granted: {granted:?}"
         );
 
-        let row: (String,) =
-            sqlx::query_as("SELECT credentials FROM mcp_oauth_tokens WHERE server_name = 'board'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert!(row.0.contains("at-123"), "{}", row.0);
+        let stored = tokens
+            .load_token("board")
+            .await
+            .unwrap()
+            .expect("the login persists its tokens");
+        assert!(stored.contains("at-123"), "{stored}");
     }
 }

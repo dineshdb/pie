@@ -5,7 +5,8 @@ use pie_core::session::Role;
 pub enum MessageKind {
     /// Regular message rendered in insertion order.
     Normal,
-    /// The main LLM response — always rendered last (after tool calls).
+    /// A turn's in-flight text segment — deltas append to it. A turn may
+    /// hold several segments, split at the tool calls between them.
     Response,
 }
 
@@ -38,7 +39,8 @@ impl ChatMessage {
         }
     }
 
-    /// Create a streaming response placeholder — rendered last, content updated via deltas.
+    /// Create a streaming response segment — deltas append to it, and a
+    /// tool call mid-turn closes it so the next text starts fresh.
     pub fn response() -> Self {
         Self {
             role: Role::Assistant,

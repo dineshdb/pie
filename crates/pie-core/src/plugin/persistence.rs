@@ -33,11 +33,7 @@ impl AgentPlugin for PersistencePlugin {
         if let Some(content) = &a.content
             && !content.is_empty()
         {
-            let mut session = self.session.clone();
-            let content = content.clone();
-            tokio::spawn(async move {
-                let _ = session.add_assistant(&content).await;
-            });
+            self.session.add_assistant(content);
         }
 
         let Some(calls) = &a.tool_calls else {
@@ -68,7 +64,7 @@ impl AgentPlugin for PersistencePlugin {
                 Ok(v) => Ok(v.clone()),
                 Err(e) => Err(Value::String(e.clone())),
             });
-            let _ = self.session.add_tool_call(&tc).await;
+            let _ = self.session.add_tool_call(&tc);
         }
         agentsdk::core::agent::PostToolAction::Proceed(None)
     }

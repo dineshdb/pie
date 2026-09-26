@@ -62,6 +62,10 @@ pub struct HandleParams {
     pub model: agentsdk::OpenAI,
     pub query: Instructions,
     pub session: Session,
+    /// Usage bookkeeping — one row per run behind `pie usage`.
+    pub usage: Arc<dyn crate::store::UsageStore>,
+    /// MCP OAuth grants — `pie mcp login` writes, runs authorize from.
+    pub tokens: Arc<dyn crate::store::TokenStore>,
     pub format: OutputFormat,
     pub sandbox_settings: Arc<SandboxConfig>,
     pub retry: RetryConfig,
@@ -81,6 +85,8 @@ pub async fn handle_query(params: HandleParams) -> Result<()> {
         params.registry,
         params.sandbox_settings,
         params.session,
+        params.usage,
+        params.tokens,
         config,
     );
 

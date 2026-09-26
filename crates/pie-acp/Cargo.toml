@@ -9,10 +9,15 @@ repository = "https://github.com/dineshdb/pie"
 [dependencies]
 pie-core = { path = "../pie-core", version = "0.3.0" }
 a2acp.workspace = true
-agent-client-protocol = "2.1.0"
+agent-client-protocol = { version = "2.1.0", features = ["unstable_end_turn_token_usage"] }
 anyhow = "1"
+async-trait = "0.1"
+chrono = "0.4"
+serde = { workspace = true }
+serde_json.workspace = true
 tokio = { version = "1", features = ["io-util", "macros", "rt-multi-thread", "sync"] }
 tracing.workspace = true
+turso = { version = "0.7", default-features = false }
 
 [dev-dependencies]
 pie-core = { path = "../pie-core", version = "0.3.0", features = ["test-util"] }

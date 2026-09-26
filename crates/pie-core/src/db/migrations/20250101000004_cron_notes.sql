@@ -1,1 +1,0 @@
-ALTER TABLE cron_runs ADD COLUMN notes TEXT NOT NULL DEFAULT '';

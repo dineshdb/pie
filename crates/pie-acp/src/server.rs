@@ -20,13 +20,13 @@
 //! | `Error` (mid-turn, non-fatal)      | `session/update`: `agent_message_chunk` "error: …"     |
 //! | `ToolCall` pre-execution half      | `tool_call` (title = `display`, kind from the name, `pending`) |
 //! | `ToolCall` post-execution half     | `tool_call_update` (`completed`/`failed` + output text) |
-//! | turn end                           | `session/prompt` response: `Completed` → `end_turn`, `Cancelled` → `cancelled`, `Failed` → error `-32603` (never `-32000`: ACP reserves it for `AuthRequired`) |
+//! | turn end                           | `session/prompt` response: `Completed` → `end_turn`, `Cancelled` → `cancelled`, `Failed` → error `-32603` (never `-32000`: ACP reserves it for `AuthRequired`); the turn's LLM usage rides the response's `usage` object |
 //! | `Ask`                              | `session/request_permission` (agent → client); `allow_always` settles `true` and grants the tool for the session |
 //! | `session/cancel`, `$/cancel_request` | the `TurnIO` cancel signal — drops the engine future  |
 //!
-//! Deliberate gaps: final text, usage totals, and stop reasons ride the
-//! turn's end instead of the event channel (see `pie_core::bridge`), so
-//! nothing here forwards them as updates.
+//! Deliberate gaps: final text and stop reasons ride the turn's end
+//! instead of the event channel (see `pie_core::bridge`), so nothing here
+//! forwards them as updates.
 
 use agent_client_protocol as acp;
 use agent_client_protocol::schema::v1::{
@@ -41,6 +41,7 @@ use agent_client_protocol::schema::v1::{
 };
 use agent_client_protocol::{Client, ConnectTo as _, ConnectionTo, Error, Responder};
 use pie_core::bridge::{Ask, Engine, Event, TurnEnd, TurnIO};
+use pie_core::usage::UsageReport;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -632,7 +633,7 @@ async fn drive_turn<S: SessionSource>(
 
     release_turn(&connection, &session_id);
     let result = match end {
-        TurnEnd::Completed => Ok(PromptResponse::new(StopReason::EndTurn)),
+        TurnEnd::Completed { usage } => Ok(turn_response(usage)),
         TurnEnd::Cancelled => Ok(PromptResponse::new(StopReason::Cancelled)),
         TurnEnd::Failed(_) if cancellation.is_cancelled() => {
             // The engine failed *because* the turn was cancelled (dropped
@@ -652,6 +653,42 @@ async fn drive_turn<S: SessionSource>(
         }
     }
     Ok(())
+}
+
+/// The completed turn's response: the stop reason plus the turn's own LLM
+/// usage as the protocol's `usage` object — token counts on the standard
+/// fields; what the standard has no slot for (cost, request count) rides
+/// the object's `_meta` under the `usage` extension uri. Each turn
+/// message carries its metrics; no client ever has to ask for a report.
+fn turn_response(usage: Option<UsageReport>) -> PromptResponse {
+    let response = PromptResponse::new(StopReason::EndTurn);
+    let Some(usage) = usage else {
+        return response;
+    };
+    let Ok(total) = u64::try_from(usage.total_tokens) else {
+        return response;
+    };
+    let Ok(input) = u64::try_from(usage.prompt_tokens) else {
+        return response;
+    };
+    let Ok(output) = u64::try_from(usage.completion_tokens) else {
+        return response;
+    };
+    let thought = u64::try_from(usage.reasoning_tokens).unwrap_or(0);
+    let cached_read = u64::try_from(usage.cached_tokens).unwrap_or(0);
+    let mut turn_usage = acp::schema::v1::Usage::new(total, input, output)
+        .thought_tokens(thought)
+        .cached_read_tokens(cached_read);
+    let mut meta = serde_json::Map::new();
+    meta.insert(
+        "https://qreta.io/a2acp/extensions/usage/v1".to_string(),
+        serde_json::json!({
+            "requests": usage.requests,
+            "costUsd": usage.cost_usd,
+        }),
+    );
+    turn_usage = turn_usage.meta(meta);
+    response.usage(turn_usage)
 }
 
 /// Send `session/request_permission` for one ask and interpret the
@@ -784,9 +821,12 @@ fn forward_update(cx: &ConnectionTo<Client>, session_id: &SessionId, event: Even
                         )])),
                 ))
             } else {
-                // Pre-execution half: announce the call.
+                // Pre-execution half: announce the call. The programmatic
+                // name rides along so clients can parse the output shape
+                // (the kind alone only picks an icon).
                 SessionUpdate::ToolCall(
                     ToolCall::new(id, display)
+                        .name(name.as_str())
                         .kind(tool_kind(&name))
                         .status(ToolCallStatus::Pending),
                 )

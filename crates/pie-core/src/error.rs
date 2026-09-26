@@ -20,9 +20,6 @@ pub enum AppError {
     #[error("UI error: {0}")]
     Ui(String),
 
-    #[error("Database error: {0}")]
-    Db(#[from] sqlx::Error),
-
     // The SDK error renders its own "API error:" prefix; adding another
     // here doubled it in every client-visible message.
     #[error("{0}")]

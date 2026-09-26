@@ -30,11 +30,11 @@ impl MessageRenderCache {
         self.entries.push(None);
     }
 
-    pub fn insert(&mut self, index: usize) {
+    /// Drop the entry at `index`, shifting later entries down — the cache
+    /// side of removing a message from the middle of the transcript.
+    pub fn remove(&mut self, index: usize) {
         if index < self.entries.len() {
-            self.entries.insert(index, None);
-        } else {
-            self.entries.push(None);
+            self.entries.remove(index);
         }
     }
 

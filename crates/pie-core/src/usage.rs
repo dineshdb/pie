@@ -2,15 +2,14 @@
 //!
 //! [`RunUsage`] is what the provider reports per interaction; [`UsageReport`]
 //! is the enriched view (cache rate + cost) used for display and the JSON
-//! envelope. Per-run rows land in the `llm_usage` table via
-//! [`crate::session::Session::record_usage`] for bookkeeping, and
-//! [`by_model`] aggregates that table for the `pie usage` report.
+//! envelope. Per-run rows land in the usage table via
+//! [`crate::store::UsageStore::record_usage`] for bookkeeping, and
+//! [`crate::store::UsageStore::usage_by_model`] aggregates that table for
+//! the `pie usage` report. This module stays SQL-free: aggregation and
+//! rendering over rows happen here, storage behind the trait.
 
 use crate::config::{CONFIG, ModelPricing};
-use crate::db::DbPool;
-use crate::error::Result;
 use serde::{Deserialize, Serialize};
-use sqlx::Row as _;
 
 /// Configured pricing for a model id (exact `[pricing.*]` match).
 pub(crate) fn pricing_for(model: &str) -> Option<ModelPricing> {
@@ -37,7 +36,7 @@ pub struct RunUsage {
 /// Token counts are bounded by context sizes; the precision loss of
 /// `i64 -> f64` is far below a cent of cost.
 #[allow(clippy::cast_precision_loss)]
-fn to_f64(n: i64) -> f64 {
+pub(crate) fn to_f64(n: i64) -> f64 {
     n as f64
 }
 
@@ -137,50 +136,6 @@ pub struct ModelUsage {
     pub model: String,
     #[serde(flatten)]
     pub usage: UsageReport,
-}
-
-/// Aggregate `llm_usage` rows per model within a window: `since_ms = 0`
-/// means all time. Models without configured pricing report a `null` cost.
-/// Rows are ordered by cost (unpriced last), then by token volume.
-pub async fn by_model(pool: &DbPool, since_ms: i64) -> Result<Vec<ModelUsage>> {
-    let rows = sqlx::query(
-        "SELECT model, COUNT(*) AS requests, SUM(prompt_tokens) AS prompt, \
-         SUM(completion_tokens) AS completion, SUM(cached_tokens) AS cached, \
-         SUM(reasoning_tokens) AS reasoning, SUM(total_tokens) AS total, \
-         SUM(cost_usd) AS cost \
-         FROM llm_usage WHERE (? = 0 OR ts >= ?) \
-         GROUP BY model \
-         ORDER BY cost IS NULL, cost DESC, total DESC",
-    )
-    .bind(since_ms)
-    .bind(since_ms)
-    .fetch_all(pool)
-    .await?;
-
-    rows.into_iter()
-        .map(|row| {
-            let prompt_tokens: i64 = row.try_get("prompt")?;
-            let cached_tokens: i64 = row.try_get("cached")?;
-            Ok(ModelUsage {
-                model: row.try_get("model")?,
-                usage: UsageReport {
-                    requests: row.try_get::<i64, _>("requests")?.try_into().map_err(
-                        |e: std::num::TryFromIntError| {
-                            crate::error::AppError::Db(sqlx::Error::Decode(Box::new(e)))
-                        },
-                    )?,
-                    prompt_tokens,
-                    completion_tokens: row.try_get("completion")?,
-                    total_tokens: row.try_get("total")?,
-                    cached_tokens,
-                    reasoning_tokens: row.try_get("reasoning")?,
-                    cache_rate: (prompt_tokens > 0)
-                        .then(|| to_f64(cached_tokens) / to_f64(prompt_tokens)),
-                    cost_usd: row.try_get("cost")?,
-                },
-            })
-        })
-        .collect()
 }
 
 /// Grand total across report rows. The cost sums the models that have
@@ -396,62 +351,6 @@ mod tests {
         assert_eq!(report.cache_rate, Some(0.5));
         assert_eq!(report.cost_usd, Some(0.5));
         assert_eq!(report.total_tokens, 110);
-    }
-
-    async fn insert_run(
-        pool: &DbPool,
-        session_id: &str,
-        ts: i64,
-        model: &str,
-        cost: Option<f64>,
-    ) -> anyhow::Result<()> {
-        sqlx::query(
-            "INSERT INTO llm_usage (session_id, ts, model, agent, requests, prompt_tokens, \
-             completion_tokens, cached_tokens, reasoning_tokens, total_tokens, cost_usd) \
-             VALUES (?, ?, ?, NULL, 1, 100, 50, 80, 20, 150, ?)",
-        )
-        .bind(session_id)
-        .bind(ts)
-        .bind(model)
-        .bind(cost)
-        .execute(pool)
-        .await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn by_model_aggregates_within_window() -> anyhow::Result<()> {
-        use std::sync::Arc;
-
-        let pool = Arc::new(crate::db::create_test_pool().await?);
-        let session =
-            crate::session::Session::create(pool.clone(), std::path::Path::new("/test")).await?;
-        let sid = session.id.to_string();
-        let now = chrono::Utc::now().timestamp_millis();
-
-        // priced model, two runs (one recent, one old)
-        insert_run(&pool, &sid, now - 1_000, "m1", Some(0.01)).await?;
-        insert_run(&pool, &sid, now - 40 * 86_400_000, "m1", Some(0.02)).await?;
-        // unpriced model, recent — cost stays NULL
-        insert_run(&pool, &sid, now - 1_000, "m2", None).await?;
-
-        // all time: both models, m1 aggregated, ordered by cost (unpriced last)
-        let rows = by_model(&pool, 0).await?;
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].model, "m1");
-        assert_eq!(rows[0].usage.requests, 2);
-        assert_eq!(rows[0].usage.prompt_tokens, 200);
-        assert_eq!(rows[0].usage.total_tokens, 300);
-        assert_eq!(rows[0].usage.cache_rate, Some(0.8));
-        assert_eq!(rows[0].usage.cost_usd, Some(0.03));
-        assert_eq!(rows[1].model, "m2");
-        assert_eq!(rows[1].usage.cost_usd, None, "unpriced model has null cost");
-
-        // window excludes the 40-day-old run
-        let rows = by_model(&pool, now - 30 * 86_400_000).await?;
-        assert_eq!(rows.len(), 2, "m2 and the recent m1 run");
-        assert_eq!(rows[0].usage.requests, 1);
-        Ok(())
     }
 
     #[test]
