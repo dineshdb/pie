@@ -126,8 +126,10 @@ pub(crate) fn truncate_for_log(text: &str) -> String {
 }
 
 /// Human-friendly single-line rendering of tool arguments for progress and
-/// chat lines: `key = value` pairs instead of JSON escapes. Newlines inside
-/// values are re-escaped — a display must stay one terminal line.
+/// chat lines: a lone string argument renders bare — `Bash cd ..`, the name
+/// adds nothing — while other objects render as `key = value` pairs instead
+/// of JSON escapes. Newlines inside values are re-escaped — a display must
+/// stay one terminal line.
 fn display_args(arguments: &Value) -> String {
     let Value::Object(map) = arguments else {
         return arguments.to_string();
@@ -135,20 +137,30 @@ fn display_args(arguments: &Value) -> String {
     if map.is_empty() {
         return "{}".to_string();
     }
+    // A lone string argument renders bare — `Bash cd ..` — the key adds
+    // nothing. A lone non-string keeps its name: the value alone is ambiguous.
+    if let Some((_, Value::String(value))) = map.iter().next().filter(|_| map.len() == 1) {
+        return escape_line(value);
+    }
     let pairs: Vec<String> = map
         .iter()
         .map(|(k, v)| {
             let value = match v {
-                Value::String(s) => s
-                    .replace('\n', "\\n")
-                    .replace('\r', "\\r")
-                    .replace('\t', "\\t"),
+                Value::String(s) => escape_line(s),
                 other => other.to_string(),
             };
             format!("{k} = {value}")
         })
         .collect();
-    format!("{{{}}}", pairs.join(", "))
+    pairs.join(", ")
+}
+
+/// Re-escape line breaks so a value stays one terminal line.
+fn escape_line(value: &str) -> String {
+    value
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
 }
 
 #[async_trait]
@@ -246,7 +258,7 @@ impl AgentPlugin for StreamPlugin {
         let _ = self.event_tx.send(AgentEvent::ToolCall {
             id: id.to_string(),
             name: name.to_string(),
-            display: format!("{name}{}", display_args(arguments)),
+            display: format!("{name} {}", display_args(arguments)),
             output: String::new(),
             failed: false,
         });
@@ -445,19 +457,20 @@ mod tests {
     }
 
     #[test]
-    fn display_args_shows_pairs_without_json_escapes() {
+    fn display_args_single_string_renders_bare() {
         let args: Value = serde_json::from_str(r#"{"command":"rg -n \"pie_home\" file"}"#).unwrap();
-        assert_eq!(display_args(&args), r#"{command = rg -n "pie_home" file}"#);
+        assert_eq!(display_args(&args), r#"rg -n "pie_home" file"#);
     }
 
     #[test]
     fn display_args_joins_pairs_and_keeps_one_line() {
         let args: Value =
             serde_json::from_str(r#"{"content":"line1\nline2","path":"a.rs"}"#).unwrap();
-        assert_eq!(
-            display_args(&args),
-            "{content = line1\\nline2, path = a.rs}"
-        );
+        assert_eq!(display_args(&args), "content = line1\\nline2, path = a.rs");
+
+        // A lone non-string keeps its name — the value alone is ambiguous.
+        let args: Value = serde_json::from_str(r#"{"limit":10}"#).unwrap();
+        assert_eq!(display_args(&args), "limit = 10");
 
         assert_eq!(display_args(&serde_json::json!({})), "{}");
         assert_eq!(display_args(&serde_json::json!(null)), "null");
