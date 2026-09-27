@@ -13,5 +13,3 @@ env = {}
 [pi]
 args = []
 env = {}
-[pi.sandbox]
-allow_write = [".", "~/.pi"]

@@ -156,6 +156,9 @@ pub struct PieConfig {
     #[serde(default)]
     pub pricing: HashMap<String, ModelPricing>,
     pub agent: Option<GlobalAgentConfig>,
+    /// Execution provider selection: `[sandbox]` with
+    /// `provider = "platform"` runs commands under the OS sandbox;
+    /// the default (`"none"`) runs everything directly on the host.
     pub sandbox: Option<SandboxConfig>,
     pub output_format: Option<String>,
     pub log_level: Option<String>,
@@ -472,6 +475,8 @@ impl Default for ApiErrorConfig {
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(default)]
 pub struct LaunchConfig {
+    /// Per-launch sandbox override (`[<name>.sandbox]`); its `provider`
+    /// decides whether `pie launch <name>` wraps the command.
     pub sandbox: Option<SandboxConfig>,
     pub args: Vec<String>,
     pub env: HashMap<String, String>,

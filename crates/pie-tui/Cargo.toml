@@ -2,20 +2,23 @@
 name = "pie-tui"
 version = "0.1.0"
 edition = "2024"
-description = "The pie interactive TUI: an A2A consumer over the a2acp front door"
+description = "The pie interactive TUI: an A2A client over the gateway daemon's HTTP endpoint"
 license = "MIT"
 repository = "https://github.com/dineshdb/pie"
 
 [dependencies]
-a2acp.workspace = true
 pie-core = { path = "../pie-core", version = "0.3.0" }
 anyhow = "1"
 arboard = "3"
 async-trait = "0.1"
+dirs.workspace = true
+futures = "0.3"
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream"] }
+serde.workspace = true
 serde_json.workspace = true
 pulldown-cmark = "0.13"
 tachyonfx = "0.25"
-tokio = { version = "1", features = ["rt", "macros", "sync"] }
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 tracing.workspace = true
 tui-textarea-2 = "0.13"
 tuirealm = { version = "4.0", features = ["termion"] }

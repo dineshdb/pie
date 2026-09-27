@@ -3,12 +3,13 @@
 //! A pure A2A consumer: turns and permission answers flow through the
 //! A2A client ([`crate::client`]); this crate renders
 //! [`StreamEvent`]s and sends requests. The crate is STATELESS: the
-//! conversation transcript lives in the a2acp gateway's agent
+//! conversation transcript lives in the gateway daemon's agent
 //! filesystem, and the pie-local database (`~/.pie/pie.db` — usage
 //! bookkeeping and MCP OAuth grants) belongs to `pie acp`
 //! ([`pie_acp::store`]), never to this frontend. pie-core appears only
-//! as leaf value types (registry, config, session history), and a2acp
-//! only through that client. Model and mode selection go through the
+//! as leaf value types (registry, config, session history). The wire
+//! client ([`crate::a2a`]) speaks the A2A HTTP contract itself — JSON-RPC
+//! plus SSE, no gateway library. Model and mode selection go through the
 //! selection extension ([`crate::client::SELECTION_EXTENSION_URI`]) —
 //! no side channels.
 
@@ -22,6 +23,7 @@
     )
 )]
 
+pub mod a2a;
 pub mod client;
 mod command;
 mod components;

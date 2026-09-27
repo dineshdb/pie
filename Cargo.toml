@@ -2,7 +2,7 @@
 name = "p1e"
 version = "0.3.0"
 edition = "2024"
-description = "A minimal AI coding agent with sandboxed command execution"
+description = "A minimal AI coding agent"
 license = "MIT"
 repository = "https://github.com/dineshdb/pie"
 
@@ -15,13 +15,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
 jewels = { git = "https://github.com/dineshdb/agentsdk", branch = "main" }
-# once agentsdk main pushes add_remote_server_authorized.
-a2acp = { git = "ssh://git@github.com/qretaio/a2acp.git", branch = "main" }
-
-# TEMPORARY: pie consumes the un-pushed a2acp foundation (ea359ca) from
-# the local checkout. Remove once origin/main carries it.
-[patch."ssh://git@github.com/qretaio/a2acp.git"]
-a2acp = { path = "../a2acp" }
 
 # TEMPORARY: agentfs-sdk 0.6.4 on crates.io pins turso ^0.4.4, which
 # collides with pie-acp's turso 0.7 (two turso_core copies fail the LTO
@@ -33,9 +26,8 @@ agentfs-sdk = { git = "https://github.com/dineshdb/agentfs", branch = "main" }
 
 [dependencies]
 pie-core = { path = "crates/pie-core", version = "0.3.0" }
-pie-acp = { path = "crates/pie-acp", version = "0.3.0" }
-pie-tui = { path = "crates/pie-tui", version = "0.1.0" }
-a2acp.workspace = true
+pie-acp = { path = "crates/pie-acp", version = "0.3.0", optional = true }
+pie-tui = { path = "crates/pie-tui", version = "0.1.0", optional = true }
 serde_json.workspace = true
 agentsdk = { git = "https://github.com/dineshdb/agentsdk", branch = "main" }
 # once agentsdk main pushes add_remote_server_authorized.
@@ -57,7 +49,17 @@ agent-client-protocol = "2.1.0"
 serde_json.workspace = true
 pie-core = { path = "crates/pie-core", version = "0.3.0", features = ["test-util"] }
 toml = "0.9"
-reqwest = { version = "0.12", default-features = false, features = ["json"] }
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
+
+# The frontend features: `tui` is the interactive terminal (it talks to
+# the gateway daemon over HTTP — the daemon is a separate binary), `acp`
+# is the Agent Client Protocol server (`pie acp`, what editors and the
+# daemon spawn) and the pie-local store (usage, OAuth tokens). Either
+# builds without the other; both is the default.
+[features]
+default = ["tui", "acp"]
+tui = ["dep:pie-tui"]
+acp = ["dep:pie-acp"]
 
 [profile.release]
 lto = true

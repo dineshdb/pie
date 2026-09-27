@@ -48,7 +48,7 @@ impl DoomLoopPlugin {
     /// [`NUDGE_FIRST_AT`], then every [`NUDGE_EVERY`].
     fn nudge_due(reads: usize) -> bool {
         reads == NUDGE_FIRST_AT
-            || (reads > NUDGE_FIRST_AT && (reads - NUDGE_FIRST_AT) % NUDGE_EVERY == 0)
+            || (reads > NUDGE_FIRST_AT && (reads - NUDGE_FIRST_AT).is_multiple_of(NUDGE_EVERY))
     }
 }
 
@@ -134,7 +134,7 @@ impl AgentPlugin for DoomLoopPlugin {
         };
         if let Some((cut, _)) = base.char_indices().nth(NUDGE_BASE_MAX_CHARS) {
             base.truncate(cut);
-            base.push_str("…");
+            base.push('…');
         }
         base.push_str(&nudge);
         PostToolAction::Proceed(Some(Value::String(base)))

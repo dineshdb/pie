@@ -1,10 +1,9 @@
 //! Ask an out-of-band approver (ACP client, TUI dialog, …) before a tool
-//! changes the user's machine. Two kinds of tool need this and for opposite
-//! reasons: `Write`/`Edit` run inside pie, where the shell sandbox cannot see
-//! them; `Bash` runs in the sandbox, but the sandbox only draws a boundary
-//! (the workspace is writable by design) — it cannot tell `cargo test` from
-//! `rm -rf .`. Gating only the file tools left `printf 'x' > f.txt` as a
-//! silent way around an approver that thought it was guarding edits.
+//! changes the user's machine. All three gated tools change the same
+//! tree — `Write`/`Edit` inside pie, `Bash` through any command it runs
+//! — and none of them can tell `cargo test` from `rm -rf .`. Gating only
+//! the file tools would leave `printf 'x' > f.txt` as a silent way
+//! around an approver that thought it was guarding edits.
 //!
 //! Grants are per tool name, per session: answering "always" for `Bash`
 //! allows every later shell command in that session.

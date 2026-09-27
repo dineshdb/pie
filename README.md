@@ -1,8 +1,7 @@
 # pie
 
 A fast, minimal AI coding agent in Rust. Any OpenAI-compatible provider,
-persistent sessions, skill-based subagents, and sandboxed shell execution.
-
+persistent sessions, and skill-based subagents.
 > **Disclaimer:** This project is actively developed. While it supports any
 > OpenAI-compatible API, **not all models have been thoroughly tested**.
 > `mlx-community/gemma-4-e4b-it-4bit` (Gemma 4) is used as the primary model for
@@ -32,9 +31,10 @@ pie -m mlx-community/gemma-4-e4b-it-4bit
   OpenAI-compatible API
 - **Skills & subagents** — markdown-based skills from
   [agentskills.io](https://agentskills.io), auto-loaded from queries
-- **Native Sandboxing** — shell commands run with built-in OS isolation
-  (sandbox-exec on macOS, bubblewrap on Linux)
 - **Streaming TUI** — real-time tool calls, markdown rendering, command history
+- **Optional OS sandboxing** — commands run directly on the host by default;
+  set `[sandbox] provider = "platform"` to wrap them with sandbox-exec
+  (macOS) or bubblewrap (Linux)
 - **Scriptable** — `--json` and `--md` flags for single-shot mode
 
 ## Usage
@@ -91,18 +91,16 @@ What the client gets:
 - **Sessions** — `session/new` creates a persistent pie session; `session/load`
   resumes one and replays the history. Session ids are pie session ids, so
   `pie -r` on the same directory picks up where the editor left off.
-- **Workspace trust** — the `cwd` (and `additionalDirectories`) the client
-  sends is granted read+write in the sandbox for that session, and commands
-  run with the session directory as their working directory. `~/.ssh`,
-  `.env` and the other `deny_*` rules still apply on top.
+- **Workspace trust** — commands run with the session directory the client
+  sends as their working directory; under `provider = "platform"` that
+  workspace is granted read+write in the session's sandbox copy.
 - **Modes** — pie's plan/build/debug/test/review/architect modes appear as
   the session's mode selector; `session/set_mode` switches between them.
 - **Approval before anything changes** — Write, Edit and Bash each wait for a
   `session/request_permission` answer (allow once / always for that tool this
-  session / reject). Shell is gated too: the sandbox draws the boundary, but
-  inside a writable workspace `printf 'x' > f` is an edit like any other, and
-  a client that approves edits should not be walked around. Reads (Read, Ls,
-  Glob, Grep) never ask.
+  session / reject). Shell is gated too: inside a writable workspace
+  `printf 'x' > f` is an edit like any other, and a client that approves
+  edits should not be walked around. Reads (Read, Ls, Glob, Grep) never ask.
 
 ## A2A server (agent-to-agent over HTTP)
 
@@ -213,8 +211,8 @@ plugins: [fs-readonly, shell]
 
 skills_paths: ["~/src/my-skills"]   # extra skill directories (needs skills)
 readonly: true            # demotes fs to fs-readonly (belt and suspenders)
-sandbox:                  # full sandbox config, merged like pie.toml's
-  allow_write: ["."]
+sandbox:                  # sandbox config layered onto pie.toml's; a
+  allow_write: ["."]      # platform provider here upgrades this agent
 grants: ["fs-read:/tmp"]  # pre-granted permissions
 ---
 
@@ -404,8 +402,10 @@ pie -p ollama "how are you?"
 
 ### Advanced Configuration
 
-- **Sandbox:** Configure restrictions in `pie.toml` under `[sandbox]`; set
-  `enabled = false` there to disable sandboxing entirely.
+- **Execution provider:** commands run directly on the host by default. Set
+  `[sandbox] provider = "platform"` in `pie.toml` to run them under the OS
+  sandbox (sandbox-exec on macOS, bubblewrap on Linux) with the `allow_*` /
+  `deny_*` rules from the same section.
 - **Skills:** Add custom skills to `.pie/skills/<name>/SKILL.md`.
 - **Instructions:** Add project-level instructions to `AGENTS.md`.
 

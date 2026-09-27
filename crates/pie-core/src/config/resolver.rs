@@ -332,6 +332,9 @@ fn resolve_model_tiers(
     tiers
 }
 
+/// The run's sandbox configuration: `[sandbox]` from pie.toml, defaults
+/// when absent (provider `none` = direct execution). Duplicate/conflicting
+/// entries cost warnings, never the run.
 pub fn build_sandbox(pie_config: &PieConfig) -> Arc<SandboxConfig> {
     let sandbox = pie_config.sandbox.clone().unwrap_or_default();
     if let Err(warnings) = sandbox.validate() {

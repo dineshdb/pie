@@ -38,7 +38,7 @@ impl std::fmt::Display for AskId {
 }
 
 /// The TUI's projection of the A2A event stream: what the chat view
-/// renders. Derived from the front door's (a2acp `FrontDoor`) stream frames — this crate's
+/// renders. Derived from the gateway daemon's SSE stream frames — this crate's
 /// only window onto the agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamEvent {

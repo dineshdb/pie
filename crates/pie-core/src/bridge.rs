@@ -123,6 +123,8 @@ pub struct PieEngineDeps {
     /// MCP OAuth grants — `pie mcp login` writes, runs authorize from.
     pub tokens: Arc<dyn TokenStore>,
     pub registry: Arc<Registry>,
+    /// The run's sandbox configuration; its `provider` selects the
+    /// execution provider (platform sandbox vs direct).
     pub sandbox: Arc<SandboxConfig>,
     pub provider: ResolvedProvider,
     pub retry: RetryConfig,
@@ -324,8 +326,7 @@ fn translate(event: AgentEvent) -> Option<Event> {
         AgentEvent::Done(_)
         | AgentEvent::UserMessage(_)
         | AgentEvent::Usage { .. }
-        | AgentEvent::TurnUsage { .. }
-        | AgentEvent::PermissionRequest(_) => return None,
+        | AgentEvent::TurnUsage { .. } => return None,
     };
     Some(event)
 }

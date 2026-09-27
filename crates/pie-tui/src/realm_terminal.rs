@@ -52,7 +52,7 @@ type Terminal = tuirealm::ratatui::Terminal<CrosstermBackend<std::io::Stdout>>;
 /// tiers, no live fetch).
 #[derive(Debug)]
 pub struct TuiDeps {
-    /// Sends A2A requests through the gateway's front door (a2acp's `FrontDoor`).
+    /// Sends A2A requests through the gateway daemon's HTTP endpoint.
     pub client: Client,
     /// The client's projected event stream — wired into the app's `StreamPort`.
     pub events: tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,

@@ -14,9 +14,8 @@
 //! run concurrently in one process. The cwd (and any
 //! `additionalDirectories`) is granted read+write in the session's
 //! sandbox copy — an ACP client explicitly points the agent at that
-//! workspace, which is exactly the trust pie's CLI gets from being
-//! started inside a project. `deny_read`/`deny_write` still apply on
-//! top, so `~/.ssh` and `.env` stay off limits even under a broad root.
+//! workspace. Under the default `none` provider the lists are inert;
+//! under `platform` the grant is what makes the workspace writable.
 //!
 //! Protocol reference: <https://agentclientprotocol.com>.
 
@@ -67,6 +66,8 @@ pub struct PieSessions {
     /// MCP OAuth grants — `pie mcp login` writes, runs authorize from.
     pub tokens: Arc<dyn TokenStore>,
     pub registry: Arc<Registry>,
+    /// The base sandbox config; each session gets a copy with its
+    /// workspace roots granted.
     pub sandbox: Arc<SandboxConfig>,
     pub provider: ResolvedProvider,
     pub retry: pie_core::config::RetryConfig,

@@ -1,5 +1,4 @@
 use crate::config::RetryConfig;
-use crate::plugin::PermissionRequest;
 use crate::usage::RunUsage;
 use agentsdk::core::agent::{CompletionAction, PostToolAction, PreToolAction};
 use agentsdk::core::retry::RetryAction;
@@ -43,7 +42,6 @@ pub enum AgentEvent {
         usage: RunUsage,
         cost_usd: Option<f64>,
     },
-    PermissionRequest(PermissionRequest),
 }
 
 pub struct StreamPlugin {

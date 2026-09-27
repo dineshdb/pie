@@ -1,5 +1,5 @@
 class Pie < Formula
-  desc "A minimal AI coding agent with sandboxed command execution"
+  desc "A minimal AI coding agent"
   homepage "https://github.com/dineshdb/pie"
   url "https://github.com/dineshdb/pie/releases/download/v0.3.0/pie-0.3.0-aarch64-apple-darwin.tar.gz"
   sha256 "9e76040178a57f5e35c00b71b75d430533fe72dc8321ecb0f17965b5861edb79"

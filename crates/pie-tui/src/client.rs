@@ -1,8 +1,8 @@
-//! The TUI as an A2A consumer: drives an agent through an in-process
-//! [`FrontDoor`] from the a2acp gateway — the same JSON-RPC requests and
-//! streaming event sequences an HTTP client would see. The frontend
-//! never knows (or cares) that the agent is in process; the client is the
-//! only handle it has.
+//! The TUI as an A2A consumer: drives an agent through the gateway
+//! daemon's HTTP endpoint ([`crate::a2a::A2aClient`]) — spec JSON-RPC
+//! requests, SSE event streams, and the daemon's documented wire
+//! extensions. The client is the only handle it has; the daemon could
+//! be any A2A server speaking the same contract.
 //!
 //! ## Request mapping (TUI action → A2A method)
 //!
@@ -12,6 +12,7 @@
 //! | cancel (Esc/Ctrl-C)         | `CancelTask` on the running task                                 |
 //! | permission answer           | `SendMessage` on the parked task with `metadata.permissionOptionId` |
 //! | `/new`                      | nothing on the wire — drop the `contextId`, so the next prompt starts a fresh conversation |
+//! | warm (before first message) | `x_warm` — the gateway opens the agent's session early           |
 //!
 //! ## Event mapping (stream frame → [`StreamEvent`])
 //!
@@ -36,68 +37,19 @@
 //! success. Model and mode selection go through the selection extension
 //! (below) — no side channels.
 
+use crate::a2a::{A2aClient, A2aReply};
 use crate::realm::{AskId, SessionId, StreamEvent};
-use a2acp::FrontDoor;
-use a2acp::a2a::FrontReply;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-
-/// The TUI's gateway connection: the in-process front door (the TUI
-/// assembled its own gateway) or the HTTP door onto a running pie
-/// daemon. Both speak the same protocol; every request the client makes
-/// goes through here.
-#[derive(Debug, Clone)]
-pub enum Door {
-    /// Same-process gateway (`FrontDoor` from `Gateway::connect`).
-    InProcess(FrontDoor),
-    /// Same-machine daemon over HTTP (`a2acp::HttpDoor`).
-    Http(a2acp::HttpDoor),
-}
-
-impl Door {
-    /// One JSON-RPC call against the gateway.
-    ///
-    /// # Errors
-    ///
-    /// Transport errors surface only on the HTTP leg; the in-process
-    /// door cannot fail.
-    pub async fn call(&self, body: Value) -> anyhow::Result<FrontReply> {
-        match self {
-            Door::InProcess(door) => Ok(door.call(body).await),
-            Door::Http(door) => door.call(body).await,
-        }
-    }
-
-    /// The agent card (the directory).
-    pub async fn card(&self) -> Value {
-        match self {
-            Door::InProcess(door) => door.card(),
-            Door::Http(door) => door.card().await.unwrap_or(Value::Null),
-        }
-    }
-
-    /// Warm start: open the agent's session before any message.
-    /// `None` = the daemon refused; the lazy first-prompt open remains.
-    pub async fn warm(&self, agent: &str, cwd: &std::path::Path) -> Option<String> {
-        match self {
-            Door::InProcess(door) => door.warm(agent, cwd).await,
-            Door::Http(door) => door.warm(agent, cwd).await,
-        }
-    }
-
-    /// The conversation's confirmed selection (the read-back).
-    pub async fn selection(&self, context_id: &str) -> Option<a2acp::a2a::ConversationSelection> {
-        match self {
-            Door::InProcess(door) => door.selection(context_id),
-            Door::Http(door) => door.selection(context_id).await,
-        }
-    }
-}
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::mpsc;
+
+/// The TUI's gateway connection: the A2A HTTP client onto the daemon.
+/// Every request the client makes goes through here.
+type Door = A2aClient;
 
 /// URI of the **selection extension** — the spec-sanctioned A2A
 /// `AgentExtension` this client opts into per message when a selection
@@ -110,6 +62,10 @@ pub const SELECTION_EXTENSION_URI: &str = "https://qreta.io/a2acp/extensions/sel
 /// object's `_meta`. The same convention names the `usage` data part on
 /// the turn's final A2A status (docs/A2A.md).
 pub const USAGE_EXTENSION_URI: &str = "https://qreta.io/a2acp/extensions/usage/v1";
+
+/// The selection id that restores the agent's startup model — the
+/// model catalog's default entry.
+pub const DEFAULT_MODEL_SELECTION: &str = "default";
 
 /// A selection the next outgoing message carries: the mode and/or model
 /// leg of the selection extension, either optional. Composed onto the
@@ -247,16 +203,17 @@ impl std::fmt::Debug for Client {
     }
 }
 
-/// Wire a [`Client`] to a gateway door: requests go through the
+/// Wire a [`Client`] to the gateway daemon: requests go through the
 /// returned handle, and every projected turn arrives on the returned
-/// stream. The door is in-process or HTTP (`Door`).
+/// stream. The door is the A2A HTTP client (`Door`).
 pub async fn open(
     door: Door,
     agent: impl Into<String>,
     cwd: PathBuf,
 ) -> (Client, mpsc::UnboundedReceiver<StreamEvent>) {
     let (events, stream) = mpsc::unbounded_channel();
-    let card = Arc::new(StdMutex::new(door.card().await));
+    // An unreadable card starts empty — the refresh paths re-read it.
+    let card = Arc::new(StdMutex::new(door.card().await.unwrap_or(Value::Null)));
     (
         Client {
             door,
@@ -330,10 +287,10 @@ impl Client {
         let asks = Arc::clone(&self.asks);
         tokio::spawn(async move {
             match door.call(body).await {
-                Ok(FrontReply::Stream(frames)) => {
+                Ok(A2aReply::Stream(frames)) => {
                     pump(frames, events, asks, task_id).await;
                 }
-                Ok(FrontReply::Envelope(envelope)) => {
+                Ok(A2aReply::Envelope(envelope)) => {
                     let message = rpc_error(&envelope).unwrap_or_else(|| "turn failed".into());
                     let _ = events.send(StreamEvent::Error(message));
                 }
@@ -383,7 +340,7 @@ impl Client {
                         "jsonrpc": "2.0", "id": n, "method": "ListTasks", "params": params,
                     }))
                     .await;
-                let Ok(FrontReply::Envelope(envelope)) = reply else {
+                let Ok(A2aReply::Envelope(envelope)) = reply else {
                     return;
                 };
                 let result = envelope.get("result").cloned().unwrap_or(Value::Null);
@@ -466,16 +423,16 @@ impl Client {
 
     /// Re-read the card — live state: after the first turn the driven
     /// agent's session has reported its modes, so the mode list fills in.
-    /// Re-read the card — live state: after the first turn the driven
-    /// agent's session has reported its modes, so the mode list fills in.
-    /// Returns the refresh task handle so tests (and callers that care)
-    /// can await the fresh value; normal callers drop it.
+    /// A failed re-read keeps the cached card. Returns the refresh task
+    /// handle so tests (and callers that care) can await the fresh
+    /// value; normal callers drop it.
     pub fn refresh_card(&self) -> tokio::task::JoinHandle<()> {
         let door = self.door.clone();
         let card = Arc::clone(&self.card);
         tokio::spawn(async move {
-            let fresh = door.card().await;
-            *lock(&card) = fresh;
+            if let Ok(fresh) = door.card().await {
+                *lock(&card) = fresh;
+            }
         })
     }
 
@@ -511,7 +468,7 @@ impl Client {
                     *conversation = Some(context_id);
                 }
             }
-            let fresh_card = door.card().await;
+            let fresh_card = door.card().await.unwrap_or(Value::Null);
             *lock(&card) = fresh_card;
             let _ = events.send(StreamEvent::Warm);
         });
@@ -576,7 +533,7 @@ impl Client {
         let door = self.door.clone();
         let events = self.events.clone();
         tokio::spawn(async move {
-            if let Ok(FrontReply::Envelope(envelope)) = door.call(body).await
+            if let Ok(A2aReply::Envelope(envelope)) = door.call(body).await
                 && let Some(message) = rpc_error(&envelope)
             {
                 // The ask survives a bad answer; surface why.
@@ -851,7 +808,7 @@ async fn pump(
             _ => {}
         }
     }
-    // The stream closed without a final status (the front door shut down).
+    // The stream closed without a final status (the daemon shut down).
     let _ = events.send(StreamEvent::Error("the agent stream ended".into()));
 }
 

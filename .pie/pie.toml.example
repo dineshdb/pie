@@ -117,10 +117,13 @@ url = "https://mcp.context7.com/mcp"
 # linear_secret = "..."
 
 [sandbox]
-# Native OS-level isolation (sandbox-exec on macOS, bubblewrap on Linux)
+# The execution provider for shell commands and the fs tools.
+#   "none"     (default) run everything directly on the host
+#   "platform" wrap commands in the OS sandbox (sandbox-exec on macOS,
+#              bubblewrap on Linux); the rules below apply then.
+provider = "none"
 
-# Disabled by default; set true to run commands under the OS sandbox
-enabled = false
+# The rules below only take effect under provider = "platform".
 
 # Paths that the agent is explicitly forbidden from reading
 deny_read = [

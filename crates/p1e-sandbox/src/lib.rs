@@ -93,13 +93,37 @@ impl<'de> Deserialize<'de> for Permission {
     }
 }
 
+/// Which execution provider runs commands and file access. Configured
+/// as `provider = "none"` (default) or `provider = "platform"` in pie.toml
+/// `[sandbox]`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SandboxProvider {
+    /// Direct host execution — no OS sandbox. The default: the gateway
+    /// (a2acp) process is unsandboxed anyway, so wrapping buys nothing.
+    #[default]
+    None,
+    /// Native OS sandboxing: sandbox-exec on macOS, bubblewrap on Linux.
+    Platform,
+}
+
+impl std::fmt::Display for SandboxProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => write!(f, "none"),
+            Self::Platform => write!(f, "platform"),
+        }
+    }
+}
+
 /// Sandbox configuration. Flat structure, deserialized from pie.toml `[sandbox]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SandboxConfig {
-    /// Master switch: `false` runs commands and file access unsandboxed,
-    /// regardless of the other rules.
-    pub enabled: bool,
+    /// The execution provider. `"none"` runs commands and file access
+    /// directly on the host, regardless of the other rules; `"platform"`
+    /// applies them under the OS sandbox.
+    pub provider: SandboxProvider,
     pub deny_read: Vec<String>,
     pub allow_read: Vec<String>,
     pub allow_write: Vec<String>,
@@ -115,7 +139,7 @@ pub struct SandboxConfig {
 impl Default for SandboxConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            provider: SandboxProvider::None,
             deny_read: vec!["~/.ssh".into(), "~/.gnupg".into()],
             allow_read: vec![
                 "/".into(),
@@ -189,7 +213,7 @@ impl SandboxConfig {
             SecurityMode::Isolation
         };
 
-        if !self.enabled {
+        if self.provider == SandboxProvider::None {
             return SecurityReport {
                 is_safe: true,
                 errors: Vec::new(),
@@ -343,7 +367,11 @@ impl SandboxConfig {
     /// Merge another `SandboxConfig` on top of this one.
     /// Fields from `other` override or extend this config's fields.
     pub fn merge(&mut self, other: &SandboxConfig) {
-        self.enabled &= other.enabled;
+        // The stricter provider wins: a merge never silently downgrades
+        // a platform-sandboxed side to direct execution.
+        if other.provider == SandboxProvider::Platform {
+            self.provider = SandboxProvider::Platform;
+        }
         self.deny_read.extend_from_slice(&other.deny_read);
         self.allow_read.extend_from_slice(&other.allow_read);
         self.allow_write.extend_from_slice(&other.allow_write);
@@ -368,7 +396,7 @@ impl SandboxConfig {
     /// run's sandbox is fully determined by `(config, base)` and never by
     /// the process cwd.
     pub fn is_within_allowed_paths(&self, candidate: &str, base: &Path) -> std::io::Result<bool> {
-        if !self.enabled {
+        if self.provider == SandboxProvider::None {
             return Ok(true);
         }
 
@@ -437,7 +465,7 @@ fn find_duplicates(list: &[String], name: &str, warnings: &mut Vec<String>) {
 /// Falls back to unsandboxed command if the sandbox tool is unavailable.
 /// The child runs in `base` (the run's working directory).
 pub fn build_command(program: &str, args: &[String], cfg: &SandboxConfig, base: &Path) -> Command {
-    if !cfg.enabled {
+    if cfg.provider == SandboxProvider::None {
         let mut c = Command::new(program);
         c.args(args);
         c.current_dir(base);
@@ -856,29 +884,25 @@ mod tests {
     }
 
     #[test]
-    fn disabled_config_runs_commands_unsandboxed() {
-        let cfg = SandboxConfig {
-            enabled: false,
-            ..SandboxConfig::default()
-        };
-        let cmd = build_command("echo", &["hi".into()], &cfg, Path::new("/workspaces/proj"));
+    fn none_provider_runs_commands_unsandboxed() {
+        let cmd = build_command(
+            "echo",
+            &["hi".into()],
+            &SandboxConfig::default(),
+            Path::new("/workspaces/proj"),
+        );
         assert_eq!(cmd.get_program(), "echo");
     }
 
     #[test]
-    fn disabled_config_skips_command_safety_checks() {
-        let cfg = SandboxConfig {
-            enabled: false,
-            ..SandboxConfig::default()
-        };
-        let report = cfg.check_command_safety("sudo rm -rf /", Path::new("/"));
+    fn none_provider_skips_command_safety_checks() {
+        let report = SandboxConfig::default().check_command_safety("sudo rm -rf /", Path::new("/"));
         assert!(report.is_safe);
     }
 
     #[test]
-    fn disabled_config_allows_any_path() {
+    fn none_provider_allows_any_path() {
         let cfg = SandboxConfig {
-            enabled: false,
             allow_read: vec![],
             allow_write: vec![],
             ..SandboxConfig::default()
@@ -890,26 +914,54 @@ mod tests {
     }
 
     #[test]
-    fn enabled_defaults_to_true() {
+    fn provider_defaults_to_none() {
         let cfg: SandboxConfig = serde_json::from_str("{}").unwrap();
-        assert!(cfg.enabled);
+        assert_eq!(cfg.provider, SandboxProvider::None);
     }
 
     #[test]
-    fn merge_can_disable_but_not_reenable() {
-        let mut merged = SandboxConfig::default();
-        merged.merge(&SandboxConfig {
-            enabled: false,
-            ..SandboxConfig::default()
-        });
-        assert!(!merged.enabled);
+    fn provider_parses_from_config() {
+        let cfg: SandboxConfig = serde_json::from_str(r#"{"provider": "platform"}"#).unwrap();
+        assert_eq!(cfg.provider, SandboxProvider::Platform);
+        let cfg: SandboxConfig = serde_json::from_str(r#"{"provider": "none"}"#).unwrap();
+        assert_eq!(cfg.provider, SandboxProvider::None);
+        let err = serde_json::from_str::<SandboxConfig>(r#"{"provider": "bogus"}"#).unwrap_err();
+        assert!(err.to_string().contains("unknown variant"), "{err}");
+    }
 
-        let mut disabled = SandboxConfig {
-            enabled: false,
+    #[test]
+    fn merge_can_enable_platform_but_not_downgrade_it() {
+        // A "none" side merged over "platform" stays "platform" — a merge
+        // never silently downgrades the stricter provider.
+        let mut merged = SandboxConfig {
+            provider: SandboxProvider::Platform,
             ..SandboxConfig::default()
         };
-        disabled.merge(&SandboxConfig::default());
-        assert!(!disabled.enabled);
+        merged.merge(&SandboxConfig::default());
+        assert_eq!(merged.provider, SandboxProvider::Platform);
+
+        let mut none = SandboxConfig::default();
+        none.merge(&SandboxConfig {
+            provider: SandboxProvider::Platform,
+            ..SandboxConfig::default()
+        });
+        assert_eq!(none.provider, SandboxProvider::Platform);
+    }
+
+    #[test]
+    fn platform_provider_wraps_commands() {
+        // Only meaningful where a sandbox tool exists; the program under
+        // sandbox-exec/bwrap is the tool itself, not `echo`.
+        let cfg = SandboxConfig {
+            provider: SandboxProvider::Platform,
+            ..SandboxConfig::default()
+        };
+        let cmd = build_command("echo", &["hi".into()], &cfg, Path::new("/workspaces/proj"));
+        let program = cmd.get_program().to_string_lossy().to_string();
+        assert!(
+            program == "sandbox-exec" || program == "bwrap",
+            "unexpected program: {program}"
+        );
     }
 
     #[test]
@@ -925,6 +977,7 @@ mod tests {
         std::fs::write(root.join("outside").join("file.txt"), "x").unwrap();
 
         let cfg = SandboxConfig {
+            provider: SandboxProvider::Platform,
             // Defaults allow reading `/`, which would make every path pass;
             // an empty read list isolates the write grant under test.
             allow_read: vec![],

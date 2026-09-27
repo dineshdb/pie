@@ -17,8 +17,10 @@
 //! - Every mutation is recorded as file history in the agentfs kv
 //!   facet (`fshist:{session}:{stamp}-{seq}` → [`HistoryRecord`]:
 //!   op, path, before/after contents), namespaced per session.
-//! - Path policy is identical to the host plugin's: the same
-//!   [`PlatformSandbox`] checks gate every operation.
+//! - Path policy rides the configured sandbox provider: under
+//!   `platform` the [`PlatformSandbox`] checks gate every operation;
+//!   under `none` they pass through, leaving the overlay's own
+//!   one-directory chroot as the only boundary.
 //!
 //! One instance per session: each session opens its own agentfs file
 //! (no cross-process lock contention, history isolated per session).
@@ -85,7 +87,8 @@ pub struct HistoryRecord {
 
 /// An open per-session agent filesystem: the overlay handle, the host
 /// base it mirrors, the session its history is namespaced under, and
-/// the path policy every operation is gated by.
+/// the path policy every operation is gated by (a pass-through under
+/// the `none` provider).
 pub struct AgentFsHandle {
     agent: Arc<AgentFS>,
     /// The session file backing this handle (for lifecycle cleanup).
@@ -157,8 +160,8 @@ impl Drop for AgentFsHandle {
 impl AgentFsHandle {
     /// Open (creating) the session's agentfs file at `db_path`, mirroring
     /// host directory `base`, namespacing history under `session_id`.
-    /// `policy` gates every operation exactly like the host fs plugin's
-    /// sandbox does.
+    /// `policy` gates every operation; under the `none` provider it
+    /// passes everything through, leaving the overlay's base chroot.
     ///
     /// # Errors
     ///
@@ -885,17 +888,10 @@ mod tests {
     use super::*;
     use agentsdk::core::plugin::PluginToolCall;
 
-    /// A policy that allows everything under `base`: the tests exercise
-    /// the overlay, not the sandbox lists.
+    /// A provider-`none` policy: the checks pass everything through and
+    /// the tests exercise the overlay, not the sandbox lists.
     fn open_policy(base: &Path) -> PlatformSandbox {
-        let config = p1e_sandbox::SandboxConfig {
-            allow_read: vec![base.display().to_string()],
-            allow_write: vec![base.display().to_string()],
-            deny_read: Vec::new(),
-            deny_write: Vec::new(),
-            ..Default::default()
-        };
-        PlatformSandbox::new(config, base)
+        PlatformSandbox::new(p1e_sandbox::SandboxConfig::default(), base.to_path_buf())
     }
 
     async fn test_handle(base: &Path, session: &str) -> (tempfile::TempDir, AgentFsHandle) {
@@ -1146,8 +1142,7 @@ mod tests {
         let base = tempfile::tempdir().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("s.db");
-        let policy = || open_policy(base.path());
-        let fa = AgentFsHandle::open(&db, base.path(), "s-r", policy())
+        let fa = AgentFsHandle::open(&db, base.path(), "s-r", open_policy(base.path()))
             .await
             .unwrap();
         fa.write_bytes("/a.txt", b"one").await.unwrap();
@@ -1156,7 +1151,7 @@ mod tests {
 
         // A fresh handle over the same file continues the sequence —
         // per-turn handles never collide on keys.
-        let fb = AgentFsHandle::open(&db, base.path(), "s-r", policy())
+        let fb = AgentFsHandle::open(&db, base.path(), "s-r", open_policy(base.path()))
             .await
             .unwrap();
         fb.write_bytes("/b.txt", b"two").await.unwrap();
@@ -1305,9 +1300,8 @@ mod tests {
         let base = tempfile::tempdir().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("keep.db");
-        let policy = || open_policy(base.path());
         {
-            let fs = AgentFsHandle::open(&db, base.path(), "s-keep", policy())
+            let fs = AgentFsHandle::open(&db, base.path(), "s-keep", open_policy(base.path()))
                 .await
                 .unwrap();
             fs.write_bytes("/k.txt", b"v").await.unwrap();
@@ -1317,7 +1311,7 @@ mod tests {
         // A later read-only turn over the same file must not wipe the
         // earlier turn's audit when it drops.
         {
-            let _fs = AgentFsHandle::open(&db, base.path(), "s-keep", policy())
+            let _fs = AgentFsHandle::open(&db, base.path(), "s-keep", open_policy(base.path()))
                 .await
                 .unwrap();
         }

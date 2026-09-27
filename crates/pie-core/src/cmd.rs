@@ -434,11 +434,7 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-pub fn handle_launch(
-    config: &ResolvedConfig,
-    all_args: &[String],
-    no_sandbox: bool,
-) -> anyhow::Result<()> {
+pub fn handle_launch(config: &ResolvedConfig, all_args: &[String]) -> anyhow::Result<()> {
     let (command, args) = all_args
         .split_first()
         .map(|(cmd, rest)| (cmd.clone(), rest.to_vec()))
@@ -456,7 +452,7 @@ pub fn handle_launch(
     let (launch_cfg, resolved_command) = resolve_launch_command(&command, &launch_configs);
     let final_args = resolve_launch_args(&resolved_command, &args, launch_cfg);
 
-    let mut cmd = build_launch_process(&resolved_command, &final_args, launch_cfg, no_sandbox);
+    let mut cmd = build_launch_process(&resolved_command, &final_args, launch_cfg);
 
     cmd.stdin(std::process::Stdio::inherit());
     cmd.stdout(std::process::Stdio::inherit());
@@ -526,13 +522,10 @@ fn build_launch_process(
     command: &str,
     args: &[String],
     launch_cfg: Option<&LaunchConfig>,
-    no_sandbox: bool,
 ) -> std::process::Command {
-    if no_sandbox {
-        let mut c = std::process::Command::new(command);
-        c.args(args);
-        return c;
-    }
+    // A launch entry opts into the platform sandbox with its own
+    // `[<name>.sandbox]` section; the configured provider decides
+    // whether that wraps (`provider = "platform"`) or runs direct.
     if let Some(cfg) = launch_cfg
         && let Some(sandbox) = &cfg.sandbox
     {

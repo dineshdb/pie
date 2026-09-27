@@ -3,8 +3,8 @@ use crate::config::CONFIG;
 use crate::config::McpServerConfig;
 use crate::error::{AppError, Result};
 use crate::plugin::{
-    AgentMode, GateAsk, HelperBinariesPlugin, ModePlugin, PermissionRequest, PersistencePlugin,
-    ToolGatePlugin, ToolGrants, UserCommandPlugin, WebsearchPlugin,
+    AgentMode, GateAsk, HelperBinariesPlugin, ModePlugin, PersistencePlugin, ToolGatePlugin,
+    ToolGrants, UserCommandPlugin, WebsearchPlugin,
 };
 use crate::prompt::SystemPrompt;
 use crate::registry::Registry;
@@ -19,9 +19,9 @@ use agentsdk_plugin_mcp::McpPlugin;
 use agentsdk_plugin_shell::ShellPlugin;
 use agentsdk_plugin_skills::SkillsPlugin;
 use futures::future::BoxFuture;
-use p1e_sandbox::{Permission, SandboxConfig};
+use p1e_sandbox::{SandboxConfig, SandboxProvider};
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -135,6 +135,8 @@ impl PluginSelection {
 pub struct PieAgent {
     pub model: agentsdk::OpenAI,
     pub registry: Arc<Registry>,
+    /// The run's sandbox configuration; its `provider` decides whether
+    /// commands run under the OS sandbox or directly on the host.
     pub sandbox: Arc<SandboxConfig>,
     pub session: Session,
     /// Usage bookkeeping — one row per run behind `pie usage`.
@@ -142,7 +144,6 @@ pub struct PieAgent {
     /// MCP OAuth grants — `pie mcp login` writes, runs authorize from.
     pub tokens: Arc<dyn TokenStore>,
     pub config: AgentConfig,
-    permission_tx: Option<UnboundedSender<PermissionRequest>>,
     /// Approval channel for the gated tools + the "always allow" memory
     /// shared with the approver (one set per ACP session, so a grant
     /// outlives one turn).
@@ -162,8 +163,6 @@ pub struct AgentConfig {
     #[allow(dead_code)]
     pub max_retries: u32,
     pub retry: crate::config::RetryConfig,
-    #[serde(default)]
-    pub grants: HashSet<Permission>,
     /// Operating mode the run starts in. `None` = build (the default).
     /// A remote client (ACP) seeds this from `session/set_mode`.
     #[serde(default)]
@@ -174,8 +173,8 @@ pub struct AgentConfig {
     /// out of the advertised list instead of failing when called.
     #[serde(default = "default_true")]
     pub mode_switching: bool,
-    /// The directory this run happens in: sandbox entries, fs/shell tool
-    /// paths, repo discovery, and the `<pwd>` prompt block all key off it.
+    /// The directory this run happens in: fs/shell tool paths, repo
+    /// discovery, and the `<pwd>` prompt block all key off it.
     /// `None` = the process working directory (the CLI frontends).
     #[serde(default)]
     pub cwd: Option<std::path::PathBuf>,
@@ -193,7 +192,6 @@ impl Default for AgentConfig {
             depth: 0,
             max_retries: 3,
             retry: crate::config::RetryConfig::default(),
-            grants: HashSet::new(),
             mode: None,
             mode_switching: true,
             cwd: None,
@@ -235,14 +233,8 @@ impl PieAgent {
             usage,
             tokens,
             config,
-            permission_tx: None,
             tool_gate: None,
         }
-    }
-
-    pub fn with_permission_channel(mut self, tx: UnboundedSender<PermissionRequest>) -> Self {
-        self.permission_tx = Some(tx);
-        self
     }
 
     /// Route Write/Edit/Bash tool calls through an out-of-band approver (an
@@ -253,23 +245,14 @@ impl PieAgent {
         self
     }
 
-    fn resolve_grants(&self) -> HashSet<Permission> {
-        let mut grants = self.config.grants.clone();
-        if let Some(name) = &self.config.agent_name
-            && let Some(agent) = self.registry.agents.iter().find(|a| &a.name == name)
-        {
-            for g in &agent.grants {
-                grants.insert(g.clone());
-            }
-        }
-        grants
-    }
-
     /// Whether the agent should run with read-only filesystem tools: either
-    /// the agent forces it via frontmatter, or the sandbox permits no writes
-    /// so `Write`/`Edit` would only ever fail.
+    /// the agent forces it via frontmatter, or the platform sandbox permits
+    /// no writes so `Write`/`Edit` would only ever fail. Under the `none`
+    /// provider the write list is meaningless — only the agent's
+    /// frontmatter decides.
     fn wants_readonly(agent: Option<&Agent>, sandbox: &SandboxConfig) -> bool {
-        agent.is_some_and(|a| a.readonly) || sandbox.allow_write.is_empty()
+        agent.is_some_and(|a| a.readonly)
+            || (sandbox.provider == SandboxProvider::Platform && sandbox.allow_write.is_empty())
     }
 
     fn find_agent_definition(&self) -> Option<&Agent> {
@@ -568,6 +551,9 @@ impl PieAgent {
             bin_dirs.push(std::path::PathBuf::from(git_root).join(".pie").join("bin"));
         }
 
+        // The provider inside the config decides: `platform` wraps
+        // commands in the OS sandbox, `none` runs them directly — either
+        // way the helper-bin dirs ride `PATH` and commands run in `cwd`.
         let sandbox =
             p1e_sandbox::PlatformSandbox::new((*self.sandbox).clone(), cwd).with_bin_dirs(bin_dirs);
 
@@ -702,11 +688,6 @@ impl PieAgent {
             })
             .plugin(crate::plugin::EmbeddedSystemPromptPlugin::new(
                 include_str!("../../../../.pie/SYSTEM.md"),
-            ))
-            .plugin(crate::plugin::PermissionsPlugin::new(
-                self.registry.clone(),
-                self.resolve_grants(),
-                self.permission_tx.clone(),
             ));
 
         if let Some((gate_tx, grants)) = &self.tool_gate {
@@ -971,8 +952,9 @@ mod tests {
         }
     }
 
-    fn sandbox(write_paths: &[&str]) -> SandboxConfig {
+    fn sandbox(provider: SandboxProvider, write_paths: &[&str]) -> SandboxConfig {
         SandboxConfig {
+            provider,
             allow_write: write_paths.iter().map(|p| (*p).into()).collect(),
             ..SandboxConfig::default()
         }
@@ -982,16 +964,25 @@ mod tests {
     fn readonly_forced_by_agent_frontmatter() {
         assert!(PieAgent::wants_readonly(
             Some(&test_agent(true)),
-            &sandbox(&["."])
+            &sandbox(SandboxProvider::None, &["."])
         ));
     }
 
+    /// Only the platform provider reads meaning into an empty write list:
+    /// under `none` the lists are inert, so writes stay available.
     #[test]
-    fn readonly_when_sandbox_permits_no_writes() {
-        assert!(PieAgent::wants_readonly(None, &sandbox(&[])));
+    fn readonly_when_the_platform_sandbox_permits_no_writes() {
+        assert!(PieAgent::wants_readonly(
+            None,
+            &sandbox(SandboxProvider::Platform, &[])
+        ));
         assert!(PieAgent::wants_readonly(
             Some(&test_agent(false)),
-            &sandbox(&[])
+            &sandbox(SandboxProvider::Platform, &[])
+        ));
+        assert!(!PieAgent::wants_readonly(
+            None,
+            &sandbox(SandboxProvider::None, &[])
         ));
     }
 
@@ -999,9 +990,12 @@ mod tests {
     fn full_fs_when_agent_writable_and_sandbox_allows_write() {
         assert!(!PieAgent::wants_readonly(
             Some(&test_agent(false)),
-            &sandbox(&["."])
+            &sandbox(SandboxProvider::Platform, &["."])
         ));
-        assert!(!PieAgent::wants_readonly(None, &sandbox(&["."])));
+        assert!(!PieAgent::wants_readonly(
+            None,
+            &sandbox(SandboxProvider::Platform, &["."])
+        ));
     }
 
     fn tooled_agent(plugins: Option<Vec<String>>, readonly: bool) -> Agent {
@@ -1012,28 +1006,25 @@ mod tests {
         }
     }
 
+    /// `selected_plugins` against a default (`none`-provider) sandbox,
+    /// whose lists are inert — agent frontmatter alone decides.
+    fn selected(agent: Option<&Agent>) -> Result<PluginSelection> {
+        PieAgent::selected_plugins(agent, &SandboxConfig::default())
+    }
+
     #[test]
     fn no_plugins_key_means_tracked_default_set() {
-        let sel =
-            PieAgent::selected_plugins(Some(&tooled_agent(None, false)), &sandbox(&["."])).unwrap();
+        let sel = selected(Some(&tooled_agent(None, false))).unwrap();
         assert_eq!(sel, PluginSelection::default());
         assert_eq!(sel.fs, FsMode::AgentFs);
-
-        // empty allow_write demotes fs even in the default set
-        let sel =
-            PieAgent::selected_plugins(Some(&tooled_agent(None, false)), &sandbox(&[])).unwrap();
-        assert_eq!(sel.fs, FsMode::Readonly);
     }
 
     #[test]
     fn explicit_plugins_are_the_whole_set() {
-        let sel = PieAgent::selected_plugins(
-            Some(&tooled_agent(
-                Some(vec!["fs-readonly".into(), "shell".into()]),
-                false,
-            )),
-            &sandbox(&["."]),
-        )
+        let sel = selected(Some(&tooled_agent(
+            Some(vec!["fs-readonly".into(), "shell".into()]),
+            false,
+        )))
         .unwrap();
         assert_eq!(sel.fs, FsMode::Readonly);
         assert!(sel[PluginFlags::SHELL]);
@@ -1042,29 +1033,19 @@ mod tests {
         assert!(!sel[PluginFlags::AGENTSMD]);
 
         // empty list = no tools at all
-        let sel =
-            PieAgent::selected_plugins(Some(&tooled_agent(Some(vec![]), false)), &sandbox(&["."]))
-                .unwrap();
+        let sel = selected(Some(&tooled_agent(Some(vec![]), false))).unwrap();
         assert_eq!(sel, PluginSelection::none());
     }
 
     #[test]
     fn readonly_demotes_explicit_fs_to_readonly() {
-        let sel = PieAgent::selected_plugins(
-            Some(&tooled_agent(Some(vec!["fs".into()]), true)),
-            &sandbox(&["."]),
-        )
-        .unwrap();
+        let sel = selected(Some(&tooled_agent(Some(vec!["fs".into()]), true))).unwrap();
         assert_eq!(sel.fs, FsMode::Readonly);
     }
 
     #[test]
     fn fs_agentfs_selects_the_tracked_variant() {
-        let sel = PieAgent::selected_plugins(
-            Some(&tooled_agent(Some(vec!["fs-agentfs".into()]), false)),
-            &sandbox(&["."]),
-        )
-        .unwrap();
+        let sel = selected(Some(&tooled_agent(Some(vec!["fs-agentfs".into()]), false))).unwrap();
         assert_eq!(sel.fs, FsMode::AgentFs);
     }
 
@@ -1072,23 +1053,16 @@ mod tests {
     fn readonly_demotes_explicit_fs_agentfs_to_readonly() {
         // Tracked writes are still writes: a readonly run must not get
         // the overlay any more than the host plugin.
-        let sel = PieAgent::selected_plugins(
-            Some(&tooled_agent(Some(vec!["fs-agentfs".into()]), true)),
-            &sandbox(&["."]),
-        )
-        .unwrap();
+        let sel = selected(Some(&tooled_agent(Some(vec!["fs-agentfs".into()]), true))).unwrap();
         assert_eq!(sel.fs, FsMode::Readonly);
     }
 
     #[test]
     fn unknown_plugin_name_fails() {
-        let err = PieAgent::selected_plugins(
-            Some(&tooled_agent(
-                Some(vec!["fs".into(), "webserch".into()]),
-                false,
-            )),
-            &sandbox(&["."]),
-        )
+        let err = selected(Some(&tooled_agent(
+            Some(vec!["fs".into(), "webserch".into()]),
+            false,
+        )))
         .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("unknown plugin 'webserch'"), "{msg}");
@@ -1097,21 +1071,14 @@ mod tests {
     #[test]
     fn mcp_plugin_names_parse_to_selection() {
         // bare `mcp` selects every configured server
-        let sel = PieAgent::selected_plugins(
-            Some(&tooled_agent(Some(vec!["mcp".into()]), false)),
-            &sandbox(&["."]),
-        )
-        .unwrap();
+        let sel = selected(Some(&tooled_agent(Some(vec!["mcp".into()]), false))).unwrap();
         assert_eq!(sel.mcp, McpSelection::All);
 
         // `mcp:<server>` selects just that server, alongside other plugins
-        let sel = PieAgent::selected_plugins(
-            Some(&tooled_agent(
-                Some(vec!["mcp:deepwiki".into(), "fs".into()]),
-                false,
-            )),
-            &sandbox(&["."]),
-        )
+        let sel = selected(Some(&tooled_agent(
+            Some(vec!["mcp:deepwiki".into(), "fs".into()]),
+            false,
+        )))
         .unwrap();
         assert_eq!(sel.mcp, McpSelection::Only(vec!["deepwiki".into()]));
         assert_eq!(sel.fs, FsMode::Full);
@@ -1125,23 +1092,16 @@ mod tests {
         assert_eq!(PluginSelection::default().mcp, McpSelection::Available);
         assert_eq!(PluginSelection::none().mcp, McpSelection::Off);
 
-        let sel =
-            PieAgent::selected_plugins(Some(&tooled_agent(None, false)), &sandbox(&["."])).unwrap();
+        let sel = selected(Some(&tooled_agent(None, false))).unwrap();
         assert_eq!(sel.mcp, McpSelection::Available);
 
-        let sel =
-            PieAgent::selected_plugins(Some(&tooled_agent(Some(vec![]), false)), &sandbox(&["."]))
-                .unwrap();
+        let sel = selected(Some(&tooled_agent(Some(vec![]), false))).unwrap();
         assert_eq!(sel.mcp, McpSelection::Off);
     }
 
     #[test]
     fn mcp_with_empty_server_name_is_unknown_plugin() {
-        let err = PieAgent::selected_plugins(
-            Some(&tooled_agent(Some(vec!["mcp:".into()]), false)),
-            &sandbox(&["."]),
-        )
-        .unwrap_err();
+        let err = selected(Some(&tooled_agent(Some(vec!["mcp:".into()]), false))).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("unknown plugin 'mcp:'"), "{msg}");
     }

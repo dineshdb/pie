@@ -13,7 +13,8 @@
 /// else the card's first skill (the daemon's default agent) — an
 /// honestly-driven agent beats a hard failure when the daemon is
 /// configured for other agents.
-async fn pie_agent_on(door: &a2acp::HttpDoor) -> anyhow::Result<String> {
+#[cfg(feature = "tui")]
+async fn pie_agent_on(door: &pie_tui::a2a::A2aClient) -> anyhow::Result<String> {
     let card = door
         .card()
         .await
@@ -42,6 +43,7 @@ async fn pie_agent_on(door: &a2acp::HttpDoor) -> anyhow::Result<String> {
 /// gateway and spawns `pie acp` per conversation (pie's agent core
 /// lives behind `pie acp`); this process is just the frontend, so
 /// a second `pie` in the same directory shares the same conversations.
+#[cfg(feature = "tui")]
 async fn run_interactive(setup: Interactive) -> anyhow::Result<()> {
     let Interactive {
         registry,
@@ -62,12 +64,10 @@ async fn run_interactive(setup: Interactive) -> anyhow::Result<()> {
     };
     let catalog = model_catalog(&startup_provider, &resolved.model_tiers);
 
-    let daemon = a2acp::daemon::ensure_daemon("a2acp", &spawn_a2acp).await?;
-    let http = a2acp::HttpDoor::new(&daemon.base_url)?;
-    let agent = pie_agent_on(&http).await?;
-    let (context, history) = resume_lookup(&http, &cwd, resume).await;
-    let door = pie_tui::client::Door::Http(http);
-
+    let base_url = pie_tui::a2a::ensure_daemon(&spawn_a2acp).await?;
+    let door = pie_tui::a2a::A2aClient::new(base_url)?;
+    let agent = pie_agent_on(&door).await?;
+    let (context, history) = resume_lookup(&door, &cwd, resume).await;
     let session_id = pie_tui::SessionId::new(
         context
             .clone()
@@ -98,18 +98,20 @@ async fn run_interactive(setup: Interactive) -> anyhow::Result<()> {
     .await
 }
 
-/// The spawn command for [`a2acp::daemon::ensure_daemon`]: the `a2acp`
+/// The spawn command for [`pie_tui::a2a::ensure_daemon`]: the `a2acp`
 /// binary from `$PATH` with its own configuration (bind, agents,
 /// permission mode are the daemon's business, not pie's).
+#[cfg(feature = "tui")]
 fn spawn_a2acp() -> std::process::Command {
     std::process::Command::new("a2acp")
 }
 
-/// The resume lookup over the daemon's HTTP door: the directory's most
-/// recent conversation plus its transcript (empty without `--resume`
-/// or when nothing is persisted).
+/// The resume lookup over the daemon's HTTP endpoint: the directory's
+/// most recent conversation plus its transcript (empty without
+/// `--resume` or when nothing is persisted).
+#[cfg(feature = "tui")]
 async fn resume_lookup(
-    door: &a2acp::HttpDoor,
+    door: &pie_tui::a2a::A2aClient,
     cwd: &std::path::Path,
     resume: bool,
 ) -> (Option<String>, Vec<HistoryEntry>) {
@@ -138,6 +140,7 @@ async fn resume_lookup(
 
 /// A short unique suffix for the TUI's local display id (the
 /// input-history key) when no gateway conversation exists yet.
+#[cfg(feature = "tui")]
 fn mint_session_suffix() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -157,7 +160,9 @@ use pie_core::config::{ResolvedConfig, build_sandbox, load_config};
 use pie_core::handler;
 use pie_core::instructions::Instructions;
 use pie_core::registry::Registry;
-use pie_core::session::{HistoryEntry, Role, Session};
+use pie_core::session::Session;
+#[cfg(feature = "tui")]
+use pie_core::session::{HistoryEntry, Role};
 use pie_core::utils::output::OutputFormat;
 use pie_core::{cmd, config};
 use std::io::{self, IsTerminal, Read};
@@ -193,7 +198,8 @@ struct Cli {
 enum Commands {
     /// Show current configuration and system status
     Status,
-    /// Show LLM usage and cost per model (bookkeeping)
+    /// Show LLM usage and cost per model (bookkeeping; needs the store)
+    #[cfg(feature = "acp")]
     Usage {
         /// Only include runs from the last N days (0 = all time)
         #[arg(long)]
@@ -206,11 +212,9 @@ enum Commands {
         /// Command and arguments to execute
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         all_args: Vec<String>,
-        /// Do not sandbox the command
-        #[arg(short = 'S', long)]
-        no_sandbox: bool,
     },
-    /// Manage MCP server OAuth authorization
+    /// Manage MCP server OAuth authorization (needs the store)
+    #[cfg(feature = "acp")]
     Mcp {
         #[command(subcommand)]
         command: cmd::McpCommand,
@@ -226,6 +230,7 @@ enum Commands {
         script: Vec<String>,
     },
     /// Serve the Agent Client Protocol (ACP) over stdio, for editor clients
+    #[cfg(feature = "acp")]
     Acp,
 }
 
@@ -304,18 +309,28 @@ pub async fn run() -> anyhow::Result<()> {
         };
         run_single_shot(cli, config, session, format, engine).await
     } else {
-        init_file_subscriber(&session.id.to_string(), &config.log_level)?;
-        let setup = Interactive {
-            registry,
-            agent_name: agent.map(|a| a.name),
-            resume: cli.resume,
-            yolo: cli.yolo,
-        };
-        run_interactive(setup).await
+        #[cfg(not(feature = "tui"))]
+        {
+            anyhow::bail!(
+                "this build has no interactive frontend (compile with the `tui` feature)"
+            );
+        }
+        #[cfg(feature = "tui")]
+        {
+            init_file_subscriber(&session.id.to_string(), &config.log_level)?;
+            let setup = Interactive {
+                registry,
+                agent_name: agent.map(|a| a.name),
+                resume: cli.resume,
+                yolo: cli.yolo,
+            };
+            run_interactive(setup).await
+        }
     }
 }
 
-/// The agent's sandbox config layered on top of the base one.
+/// The agent's sandbox config layered on top of the base one. The
+/// merged provider decides the execution provider for the run.
 fn merged_sandbox(base: &Arc<SandboxConfig>, agent: Option<&Agent>) -> Arc<SandboxConfig> {
     let mut sandbox = (**base).clone();
     if let Some(agent_sandbox) = agent.and_then(|a| a.sandbox.as_ref()) {
@@ -348,6 +363,9 @@ fn resolve_agent_provider(
         .unwrap_or_else(|| default.clone().with_model(model.to_string()))
 }
 
+/// Dispatch a subcommand. Async only because the `acp` arms open the
+/// store; without that feature every remaining arm is synchronous.
+#[cfg_attr(not(feature = "acp"), allow(clippy::unused_async))]
 async fn handle_command(
     cmd: Commands,
     config: &ResolvedConfig,
@@ -361,6 +379,7 @@ async fn handle_command(
             cmd::handle_status(config, registry);
             Ok(())
         }
+        #[cfg(feature = "acp")]
         Commands::Usage { days } => {
             // The only database consumers are the ones below — the
             // interactive TUI stays stateless and never opens pie.db.
@@ -372,16 +391,15 @@ async fn handle_command(
             cmd::handle_skills(config, registry);
             Ok(())
         }
-        Commands::Launch {
-            all_args,
-            no_sandbox,
-        } => cmd::handle_launch(config, &all_args, no_sandbox),
+        Commands::Launch { all_args } => cmd::handle_launch(config, &all_args),
+        #[cfg(feature = "acp")]
         Commands::Mcp { command } => {
             let store = Arc::new(pie_acp::store::create_persistent_pool().await?);
             let tokens: Arc<dyn pie_core::store::TokenStore> = store.clone();
             cmd::handle_mcp(command, config, &tokens).await
         }
         Commands::Exec { skill, script } => cmd::handle_exec(config, registry, skill, &script),
+        #[cfg(feature = "acp")]
         Commands::Acp => {
             let store = Arc::new(pie_acp::store::create_persistent_pool().await?);
             let usage: Arc<dyn pie_core::store::UsageStore> = store.clone();
@@ -391,9 +409,8 @@ async fn handle_command(
     }
 }
 
-/// The engine dependencies shared by both run paths (single-shot and
-/// interactive): the model handle, the sandbox and the registry/agent
-/// selection resolved at startup.
+/// The engine dependencies shared by single-shot runs: the model handle,
+/// the sandbox and the registry/agent selection resolved at startup.
 struct RunEngine {
     registry: Arc<Registry>,
     agent: Option<Agent>,
@@ -432,9 +449,18 @@ async fn run_single_shot(
 
     // One store, both seams: usage bookkeeping + MCP OAuth grants. The
     // single-shot CLI records runs; the interactive TUI never gets here.
+    // An `acp`-less build carries no database — usage stays in memory.
+    #[cfg(feature = "acp")]
     let store = Arc::new(pie_acp::store::create_persistent_pool().await?);
+    #[cfg(feature = "acp")]
     let usage: Arc<dyn pie_core::store::UsageStore> = store.clone();
+    #[cfg(feature = "acp")]
     let tokens: Arc<dyn pie_core::store::TokenStore> = store.clone();
+    #[cfg(not(feature = "acp"))]
+    let usage: Arc<dyn pie_core::store::UsageStore> = Arc::new(pie_core::store::MemoryStore::new());
+    #[cfg(not(feature = "acp"))]
+    let tokens: Arc<dyn pie_core::store::TokenStore> =
+        Arc::new(pie_core::store::MemoryStore::new());
 
     let full_query = match (piped_stdin.as_deref(), cli_query.is_empty()) {
         (Some(stdin), false) => format!("## Stdin\n```\n{stdin}\n```\n\n{cli_query}"),
@@ -459,6 +485,7 @@ async fn run_single_shot(
 }
 
 /// Everything interactive mode needs to open its A2A client.
+#[cfg(feature = "tui")]
 struct Interactive {
     registry: Arc<Registry>,
     agent_name: Option<String>,
@@ -473,6 +500,7 @@ struct Interactive {
 /// `"default"` entry (the startup provider and model) plus one entry
 /// per configured `[model.<name>]` tier in name order — plain data,
 /// matching what the agent-side resolver accepts.
+#[cfg(feature = "tui")]
 fn model_catalog(
     startup: &config::ResolvedProvider,
     tiers: &std::collections::HashMap<String, config::ResolvedProvider>,
@@ -481,7 +509,7 @@ fn model_catalog(
     names.sort_unstable();
     pie_tui::ModelCatalog {
         entries: std::iter::once(pie_tui::CatalogEntry {
-            id: pie_acp::DEFAULT_MODEL_SELECTION.to_string(),
+            id: pie_tui::client::DEFAULT_MODEL_SELECTION.to_string(),
             model: startup.model.clone(),
         })
         .chain(names.into_iter().map(|name| pie_tui::CatalogEntry {
@@ -496,7 +524,7 @@ fn default_env_filter(default_level: &str) -> EnvFilter {
     // rmcp logs every MCP handshake at INFO with full peer metadata —
     // connection noise, only useful while debugging.
     let filter_str = match default_level {
-        "debug" => "warn,p1e=debug,pie=debug,p1e_sandbox=debug,rmcp=debug".to_string(),
+        "debug" => "warn,p1e=debug,pie=debug,rmcp=debug".to_string(),
         others => format!("{others},rmcp=warn"),
     };
     EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(filter_str))
@@ -515,6 +543,7 @@ fn init_stderr_subscriber(debug: bool, config_level: &str) {
         .init();
 }
 
+#[cfg(feature = "tui")]
 fn init_file_subscriber(session_id: &str, log_level: &str) -> anyhow::Result<()> {
     let filter = default_env_filter(log_level);
 
